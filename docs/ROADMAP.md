@@ -9,7 +9,7 @@
 
 | 版本 | 状态 | 目标交付 | 详细 |
 |------|------|----------|------|
-| **v0.1** | 🟡 设计收尾中 | 6 tab 骨架 + 流式管道 + AI stub + 项目 = 文件夹 | [§v0.1](#v01当前) |
+| **v0.1** | 🟡 设计收尾中 | 6 tab 框架 + Chat + Setting 实装 + 真 LLM + 反 Locus 卡顿 | [§v0.1](#v01当前) |
 | v0.2 | ⬜ 未启动 | 真实 AI 集成 + 引导流 + 共创模式 | [§v0.2](#v02) |
 | v0.3 | ⬜ 未启动 | 关系图 + 真实图片生成 + macOS 适配 | [§v0.3](#v03) |
 | v0.4+ | ⬜ 未启动 | i18n / vitest / 模板市场 / 协作 / 评测 / 导出 | [§v0.4](#v04) |
@@ -20,31 +20,51 @@
 
 ## v0.1（当前）
 
-**目标**：让 app 能起、6 tab 可切、新建项目能落 4 个 starter md、流式管道端到端跑通，**反卡顿基础设施从第一行起就位**。
+**目标**：6 tab 框架跑起来，**Chat + Setting 实装**，真 LLM 接入，**反 Locus 卡顿从第一行起就位**。
+
+> ⚠️ **范围 2026-07-28 重切**（用户决策）。原计划 AI stub 验证管道改为**直接接真 LLM**。
+> 详见 [CHAT_LLM_DESIGN.md](./CHAT_LLM_DESIGN.md)（v0.1 启动的最终设计依据）。
 
 **核心交付**：
+
 - ✅ Tauri 2 + Vue 3 + Rust + bun 骨架（package.json / Cargo.toml / vite / tauri.conf / capabilities / icons）
-- ✅ 6 个 tab placeholder：概览 / 世界 / 人物 / 剧情 / 设定图 / 会话
-- ✅ `create_project` + `list_projects` Tauri 命令（落 4 个 starter md）
-- ✅ `ai_stub` 假流式管道（每 100ms 推一个 chunk，端到端验证 Tauri event 链路）
-- ✅ `mimalloc` 全局 allocator + 所有 commands `async fn`
-- ✅ identity-stable array 模式（学 Locus `useStreamReducer.ts:410`）
-- ✅ shallowRef 包大对象 + 启动分阶段（phase 1 < 500ms）
-- ✅ Settings tab（4-5 个 setting 字段：API key / endpoint / model / theme / output folder）
-- ✅ 性能验收 P1-P4（流式不卡 / 启动 < 1.5s / tab 切换 < 100ms / 100MB 扫描不卡 UI）
+- ✅ 6 tab 路由（vue-router）—— 7 个 view 含 Setting
+- ✅ **Chat tab（SessionView）实装**：
+  - 简化版 `useStreamReducer`（≤ 8 字段 / 8 mutation，identity-stable array 模式学 Locus 410-414）
+  - 简化版 LLM client（OpenAI 兼容，spawn_blocking 隔离 SSE 解析）
+  - 16ms emit 节流 + mpsc channel 解耦 parse / emit
+  - markdown 渲染走 worker（学 Locus `markdown.worker.ts`，用 marked + dompurify 简化）
+  - abort signal + 错误重试（参考 Locus `retry.rs`）
+- ✅ **Setting tab（SettingsView）实装**：API key / endpoint / model / 主题 / 最近项目
+- ✅ **新建项目流**：5 问引导（chat tab 内完成）→ 落 4 个 starter md
+- ✅ **create_project / list_projects** Tauri 命令
+- ✅ **反卡顿基础设施**：
+  - `mimalloc` 全局 allocator（Locus 同款）
+  - 所有 Tauri commands `async fn`
+  - `tokio::task::spawn_blocking` 隔离 CPU 密集解析
+  - `tokio::sync::mpsc::channel` 解耦 parse / emit
+  - 16ms rAF 节流 emit（60 fps）
+  - `shallowRef` 包大对象（messages / currentText）
+  - 启动分阶段（phase 1 < 500ms 目标）
+- ✅ 性能验收 P1-P8（流式不卡 / 启动 < 1.5s / tab 切换 < 100ms / 100MB 扫描不卡 / **P5 真 LLM 流式 / P6 markdown worker 延迟 / P7 spawn_blocking 隔离 / P8 phase 1 严格 < 500ms**）
 - ✅ 根 `AGENTS.md`（基于 CHECKLIST.md）
 
+**4 个 Placeholder tab**（v0.1 仅占位）：
+- 概览 (Overview) / 世界 (World) / 人物 (Characters) / 剧情 (Plot) / 设定图 (Concept Art) — "v0.2 实装"
+
 **v0.1 不做**（已决）：
-- ❌ 真实 AI 集成（v0.2）
+- ❌ AI stub（v0.1 直接接真 LLM，2026-07-28 决策）
 - ❌ 关系图可视化（v0.3）
 - ❌ 真实图片生成（v0.3）
+- ❌ 独立 OnboardingView（v0.1 引导流在 chat tab 内完成，v0.2 再分）
 - ❌ i18n（v0.4+）
 - ❌ vitest 自动化测试（v0.4+）
+- ❌ CI / GitHub Actions（v0.1 手动 cargo check + typecheck）
 - ❌ 多人协作 / 云端同步（v0.4+）
 - ❌ 模板市场（v0.4+）
 - ❌ macOS / Linux 适配（v0.3+）
 
-**详细设计**：[DESIGN.md §"v0.1 范围"](./DESIGN.md#v01-范围) + [CHECKLIST.md](./CHECKLIST.md)
+**详细设计**：[CHAT_LLM_DESIGN.md](./CHAT_LLM_DESIGN.md) — v0.1 启动的**最终设计依据**。
 
 ---
 
@@ -192,6 +212,16 @@
 | 2026-07-28 | v0.1 不上 vitest，靠 manual smoke 11 项 | v0.4+ 再做 |
 | 2026-07-28 | v0.1 不上 CI（GitHub Actions） | 个人项目成本 > 收益 |
 | 2026-07-28 | App icon 走开源 SVG + 自导出 5 尺寸 | 不复制 Locus icons |
+| 2026-07-28 | App icon 选型 → Iconoir | MIT，1.6k+ icons，写书主题贴合 |
+| 2026-07-28 | v0.1 直接接真 LLM，不做 AI stub | 用户决策，"自用先行"节奏 |
+| 2026-07-28 | v0.1 范围重切：Chat + Setting 实装 + 4 tab placeholder | 原 6 tab 全部 placeholder 改为实装 2 个 |
+| 2026-07-28 | 反 Locus 卡顿：spawn_blocking + 16ms emit 节流 + mpsc channel | Locus 4 个具体卡顿源（带行号引用）见 CHAT_LLM_DESIGN §2 |
+| 2026-07-28 | chat state 砍到 ≤ 8 字段 / 8 mutation | Locus 是 35+ 字段 |
+| 2026-07-28 | markdown 渲染走 worker | 学 Locus `markdown.worker.ts`，简化用 marked+dompurify |
+| 2026-07-28 | 新增 6 tab：Setting 独立（原 6 tab 不含） | v0.1 改 API key 必须 |
+| 2026-07-28 | v0.1 引导流用 chat tab 完成 | v0.2 再开独立 OnboardingView |
+| 2026-07-28 | "游戏剧情设计需要哪些东西"完整清单 | CHAT_LLM_DESIGN §5.1，作为数据模型 backbone |
+| 2026-07-28 | 性能验收新增 P5-P8 | 真 LLM 流式 / markdown worker / spawn_blocking 隔离 / phase 1 < 500ms |
 
 **更新规则**：每次 release 完成 / 大决策变更时，更新本表 + 状态总览。
 

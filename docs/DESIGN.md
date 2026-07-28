@@ -73,6 +73,13 @@ cd .. && bun run tauri dev    # 起一次完整 app 验
 - 项目之间的导入导出
 - AI 自动覆盖玩家内容（**永远不**）
 
+> ⚠️ **v0.1 范围 2026-07-28 重切**（用户决策）：
+> - 6 tab → **7 tab**（新增独立 Setting tab，原 6 tab 不含）
+> - Chat + Setting **实装**，其余 4 tab（Overview / World / Characters / Plot / Concept Art）**placeholder**
+> - **直接接真 LLM**，取消 AI stub
+> - 反卡顿基础设施（spawn_blocking / 16ms emit 节流 / mpsc channel / markdown worker / 启动分阶段）从第一行起就位
+> - 详细 v0.1 设计：[CHAT_LLM_DESIGN.md](./CHAT_LLM_DESIGN.md)
+
 ---
 
 ## 技术栈
@@ -828,6 +835,20 @@ total_tokens: 1234
 - **identity-stable array 是 chat 流式反卡顿核心**：纯文本 delta 只 append 到 part.content，**不动数组引用**。配合 shallowRef，transcript 不重渲染。这条从 Locus `useStreamReducer.ts:410-414` 学的，PlotCraft 必须照搬
 - **不 over-abstract**：Locus 5 周重构 workspace_root vs unity_root 推到一半被 revert 是血的教训。PlotCraft 直接"项目=文件夹"，**不**分多级根
 - **Tab 用 vue-router 不学 Locus view runtime**：Locus 的 view runtime（83k）是动态 SFC 编译 export 给子进程用，PlotCraft 没这个需求
+
+### 2026-07-28 新增决策（v0.1 范围重切后）
+
+- **v0.1 直接接真 LLM，不做 AI stub**——用户决策，"自用先行"节奏，stub 验证管道没真实价值
+- **v0.1 范围：6 tab 框架 + Chat + Setting 实装 + 4 tab placeholder**——6 tab 全部实装改为 2 实装 + 4 placeholder（原 §"v0.1 范围"被本决策 supersede，详细看 [CHAT_LLM_DESIGN.md §1](./CHAT_LLM_DESIGN.md#1-v01-范围重切)）
+- **新增第 7 个 tab：Setting**——原 6 tab 不含 Setting，但 v0.1 改 API key 必须独立 tab（不是 chat tab 内的子菜单）
+- **反 Locus 4 个卡顿源 + PlotCraft 4 条反制**：spawn_blocking 隔离 SSE 解析 / 16ms emit 节流 / mpsc channel 解耦 / markdown 渲染走 worker（详细 + 行号引用：[CHAT_LLM_DESIGN.md §2-3](./CHAT_LLM_DESIGN.md#2-locus-实地考察4-个具体卡顿源)）
+- **chat state 砍到 ≤ 8 字段 / 8 mutation**——Locus 是 35+ 字段 / 35+ mutation，PlotCraft 不学复杂度
+- **"游戏剧情设计需要哪些东西"完整清单**——CHAT_LLM_DESIGN §5.1 列出 9 大类（世界观 / 人物 / 剧情 / 设定图 / 主题 / 叙事 / 玩法 / 元信息 / 资产），v0.1 只落最小子集 4 个 starter md，v0.2+ 扩展时数据模型不重构
+- **v0.1 引导流用 chat tab 完成**——不开独立 OnboardingView（v0.2 再分）
+- **性能验收 P1-P8**（P5-P8 新增）——真 LLM 流式不卡 / markdown worker 渲染延迟 / spawn_blocking 隔离 / 启动 phase 1 < 500ms
+- **App icon 选 Iconoir**（MIT，1.6k+ icons，写书主题贴合）——CHECKLIST §12 TODO-1 已决
+- **v0.1 不上 CI（GitHub Actions）**——CHECKLIST §12 TODO-3 推荐方案，个人项目 CI 维护成本 > 收益
+- **v0.1 不上 i18n / vitest**——CHECKLIST §12 TODO-4 / TODO-5 已决，v0.4+ 再做
 
 ---
 

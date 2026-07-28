@@ -358,20 +358,11 @@ feat(project): 新建项目流 4 个 starter md
 
 ---
 
-## 11. 第一个 PR 拆 commit 粒度（建议）🟡
+## 11. ~~第一个 PR 拆 commit 粒度（建议）~~ ⛔ **本节作废（2026-07-28）**
 
-按 DESIGN.md §"v0.1 最小可交付" + 反卡顿基础设施，建议拆成 **5 个独立可编译 commit**：
-
-| # | Commit | 内容 | 验证 |
-|---|--------|------|------|
-| 1 | `chore: 初始 Tauri 2 + Vue 3 + bun 骨架` | package.json / Cargo.toml / vite.config / tauri.conf.json / capabilities / icons / .gitignore / 6 个 view placeholder / 根 README | `bun run tauri dev` 起窗口，6 tab 可切 |
-| 2 | `feat(project): create_project / list_projects + ai_stub 流式管道` | commands/project.rs + commands/system.rs + commands/ai_stub.rs + lib.rs 注册 + 假流式端到端 | `bun run typecheck` + 假流式能在 SessionView 渲染 |
-| 3 | `feat(infra): 启动分阶段 + 性能基线` | main.ts 分阶段 + performance.now 打点 + P2 验收 | 启动 < 1.5s（测量）|
-| 4 | `feat(ui): Settings tab + config.json 读写` | SettingsView + commands/settings.rs + 4-5 个 setting 字段 | 改完写盘 + 重启加载 |
-| 5 | `docs: 写根 AGENTS.md` | AGENTS.md（基于 CHECKLIST.md） | 下一个 agent 接手能 build |
-
-> **不一定按这个拆**——也可以一次 commit 全做（如果用户喜欢 atomic PR）。
-> 🟡 等待你拍板
+> **本节作废**——v0.1 范围已重切，详见 [CHAT_LLM_DESIGN.md](./CHAT_LLM_DESIGN.md)。
+> 新切法基于"v0.1 直接接真 LLM + Chat/Setting 实装 + 4 tab placeholder"，5 commit 拆法不再适用。
+> 新的 commit 拆法会在 v0.1 启动时**作为 CHAT_LLM_DESIGN.md 附录**重写。
 
 ---
 
@@ -379,11 +370,10 @@ feat(project): 新建项目流 4 个 starter md
 
 需要你拍板的项（按优先级）：
 
-1. **TODO-1：App icon 选哪个开源库**（§2）
-   - A. Iconoir（推荐，MIT，1.6k+）
-   - B. Lucide（ISC，DESIGN 已用 lucide-vue-next）
-   - C. Phosphor（MIT，6 种 weight）
-   - D. 我有别的想法
+1. ~~**TODO-1：App icon 选哪个开源库**~~ ✅ **已决（2026-07-28）**
+   - **A. Iconoir**（MIT，1.6k+ icons，写书主题贴合）
+   - v0.1 用 Iconoir `book-stack` 或 `quill` 当源 + 自导出 5 尺寸 PNG/ICO
+   - v0.2+ 再考虑换正式 P/C monogram
 
 2. **TODO-2：第一个 PR 拆粒度**（§11）
    - A. 5 个 commit（推荐）
@@ -409,8 +399,8 @@ feat(project): 新建项目流 4 个 starter md
 
 下面这些是这次 CHECKLIST 新增的决策，**v0.1 启动时**会一起回写到 DESIGN.md §"决策记录"末尾：
 
-- **App icon 走开源 SVG + 自导出 5 尺寸**（不复制 Locus icons）
-- **第一个 PR 拆 5 commit / 1 commit**（TODO-2 待定）
+- **App icon 走开源 SVG + 自导出 5 尺寸**（不复制 Locus icons）✅ TODO-1 已决 → Iconoir
+- **第一个 PR 拆 5 commit / 1 commit**（TODO-2 待定）⛔ **本项作废**（§11 已废，由 CHAT_LLM_DESIGN 取代）
 - **错误处理统一用 thiserror + AppError enum**，前端 handleError 统一入口
 - **配置写入直接覆盖，不 atomic write**（文件小，无所谓）
 - **手动 smoke test 11 项** 进 PR checklist
@@ -418,6 +408,18 @@ feat(project): 新建项目流 4 个 starter md
 - **性能 P1-P4 + 测量方法** 是 v0.1 release 硬门槛
 - **v0.1 不上 i18n**（vue-i18n），全中文硬编码；v0.2+ 出海再加 → DESIGN §"v0.2+ 方向"
 - **v0.1 不上 vitest**，靠 manual smoke；v0.2+ reducer 复杂了再加 → DESIGN §"v0.2+ 方向"
+
+### 来自 [CHAT_LLM_DESIGN.md](./CHAT_LLM_DESIGN.md) 的新增决策（2026-07-28）
+
+- **v0.1 直接接真 LLM，不做 AI stub**（用户决策）
+- **反 Locus 卡顿**：spawn_blocking 隔离 SSE 解析 + 16ms emit 节流 + mpsc channel 解耦
+- **chat state 砍到 ≤ 8 字段 / ≤ 8 mutation**（学 Locus 410-414 identity-stable array，砍 Locus 35+ 字段复杂度）
+- **markdown 渲染走 worker**（学 Locus `markdown.worker.ts`，用 marked+dompurify 简化）
+- **6 tab 框架 v0.1 实装 2 个**（Chat + Setting），4 个 placeholder → v0.2 实装
+- **设置 tab 独立**（原 DESIGN 6 tab 不含 Setting，本次新增）
+- **v0.1 引导流用 chat tab 完成**（不开独立 OnboardingView，v0.2 再分）
+- **"游戏剧情设计需要哪些东西" 完整清单**（CHAT_LLM_DESIGN §5.1）作为数据模型 backbone，v0.1 只落最小子集（4 个 starter md）
+- **新增性能验收 P5-P8**（真 LLM 流式不卡 / markdown worker 渲染延迟 / spawn_blocking 隔离 / 启动 phase 1 < 500ms）
 
 ---
 
