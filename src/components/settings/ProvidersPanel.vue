@@ -30,7 +30,6 @@ import {
   PowerOff,
   Pencil,
   X,
-  Save,
   Download,
   Zap,
   Loader2,
@@ -42,6 +41,7 @@ import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
 import { importFromLocus, type LocusImportData } from '@/lib/locusImport'
 import { testProvider, type TestProviderResult } from '@/lib/llm'
 import { useSettingsStore } from '@/stores/settings'
+import ProviderEditModal from '@/components/settings/ProviderEditModal.vue'
 
 const props = defineProps<{
   baseUrl: string | null
@@ -57,99 +57,48 @@ const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
 // === Saved library (v-model) ===
 const customProviders = defineModel<CustomProvider[]>('custom-providers', { required: true })
 
-// === Add / Edit form state ===
-const editingId = ref<string | null>(null)
-const showForm = computed(() => editingId.value !== null || addingNew.value)
-const addingNew = ref(false)
+// === Add / Edit modal (v0.1.2+ 用 ProviderEditModal 替换原 inline form) ===
+const editingProvider = ref<CustomProvider | null>(null)
+const isAdding = ref(false)
 
-const draftId = ref('')
-const draftName = ref('')
-const draftBaseUrl = ref('')
-const draftApiKey = ref('')
-const draftApiFormat = ref<ApiFormat>(DEFAULT_API_FORMAT)
-const draftEnabled = ref(true)
-const draftDefaultModel = ref('')
-const formError = ref<string | null>(null)
+const existingProviderIds = computed(() => customProviders.value.map((p) => p.id))
 
 function startAdd() {
-  addingNew.value = true
-  editingId.value = null
-  draftId.value = ''
-  draftName.value = ''
-  draftBaseUrl.value = 'https://'
-  draftApiKey.value = ''
-  draftApiFormat.value = DEFAULT_API_FORMAT
-  draftEnabled.value = true
-  draftDefaultModel.value = ''
-  formError.value = null
+  isAdding.value = true
+  editingProvider.value = {
+    id: '',
+    name: '',
+    baseUrl: 'https://',
+    apiKey: '',
+    apiFormat: DEFAULT_API_FORMAT,
+    enabled: true,
+    defaultModel: '',
+  }
 }
 
 function startEdit(p: CustomProvider) {
-  addingNew.value = false
-  editingId.value = p.id
-  draftId.value = p.id
-  draftName.value = p.name
-  draftBaseUrl.value = p.baseUrl
-  draftApiKey.value = p.apiKey
-  draftApiFormat.value = p.apiFormat
-  draftEnabled.value = p.enabled
-  draftDefaultModel.value = p.defaultModel ?? ''
-  formError.value = null
+  isAdding.value = false
+  // 浅拷贝（modal 内会修改 draft，但 props.provider 是 readonly）
+  editingProvider.value = { ...p }
 }
 
-function cancelForm() {
-  addingNew.value = false
-  editingId.value = null
-  formError.value = null
+function closeModal() {
+  editingProvider.value = null
+  isAdding.value = false
 }
 
-function saveForm() {
-  if (!draftId.value.trim()) {
-    formError.value = 'id 不能为空'
-    return
-  }
-  if (!draftName.value.trim()) {
-    formError.value = 'name 不能为空'
-    return
-  }
-  if (!draftBaseUrl.value.trim() || !draftBaseUrl.value.startsWith('http')) {
-    formError.value = 'baseUrl 必须以 http/https 开头'
-    return
-  }
-  if (editingId.value === null) {
-    if (customProviders.value.some((p) => p.id === draftId.value)) {
-      formError.value = `id "${draftId.value}" 已存在`
-      return
-    }
-  } else {
-    if (
-      draftId.value !== editingId.value &&
-      customProviders.value.some((p) => p.id === draftId.value)
-    ) {
-      formError.value = `id "${draftId.value}" 已存在`
-      return
-    }
-  }
-
-  const newProvider: CustomProvider = {
-    id: draftId.value.trim(),
-    name: draftName.value.trim(),
-    baseUrl: draftBaseUrl.value.trim(),
-    apiKey: draftApiKey.value.trim(),
-    apiFormat: draftApiFormat.value,
-    enabled: draftEnabled.value,
-    defaultModel: draftDefaultModel.value.trim(),
-  }
-
-  if (editingId.value === null) {
+function onModalSave(newProvider: CustomProvider) {
+  if (isAdding.value) {
+    // 新增
     customProviders.value = [...customProviders.value, newProvider]
   } else {
+    // 编辑
+    const oldId = editingProvider.value?.id
     customProviders.value = customProviders.value.map((p) =>
-      p.id === editingId.value ? newProvider : p,
+      p.id === oldId ? newProvider : p,
     )
   }
-
-  cancelForm()
+  closeModal()
 }
 
 function removeProvider(id: string) {
@@ -417,7 +366,7 @@ async function onTestConnection() {
         <span class="section-title">Saved Providers</span>
         <span class="section-tag">{{ customProviders.length }} 个</span>
         <button
-          v-if="!showForm"
+          v-if="!editingProvider"
           @click="openImportModal"
           class="import-btn"
           title="从 Locus config 导入（跨 app 读 Locus 的 settings）"
@@ -426,7 +375,7 @@ async function onTestConnection() {
           <span>Import from Locus</span>
         </button>
         <button
-          v-if="!showForm"
+          v-if="!editingProvider"
           @click="startAdd"
           class="add-btn"
         >
@@ -435,81 +384,8 @@ async function onTestConnection() {
         </button>
       </div>
 
-      <!-- Add / Edit form (inline) -->
-      <div v-if="showForm" class="form">
-        <div class="form-title">
-          {{ editingId === null ? 'Add new provider' : `Edit "${editingId}"` }}
-        </div>
-        <div class="form-grid">
-          <label>
-            <span class="label-text">id（唯一 key，小写英文）</span>
-            <input v-model="draftId" type="text" placeholder="deepseek" />
-          </label>
-          <label>
-            <span class="label-text">name（显示名）</span>
-            <input v-model="draftName" type="text" placeholder="DeepSeek" />
-          </label>
-          <label class="form-grid-full">
-            <span class="label-text">baseUrl（OpenAI 兼容端点）</span>
-            <input
-              v-model="draftBaseUrl"
-              type="text"
-              placeholder="https://api.deepseek.com/v1"
-            />
-          </label>
-          <label class="form-grid-full">
-            <span class="label-text">apiKey（v0.1 裸存）</span>
-            <input
-              v-model="draftApiKey"
-              type="password"
-              placeholder="sk-..."
-              autocomplete="off"
-            />
-          </label>
-          <label class="form-grid-full">
-            <span class="label-text">apiFormat（API 协议）</span>
-            <select v-model="draftApiFormat">
-              <option
-                v-for="(label, fmt) in API_FORMAT_LABELS"
-                :key="fmt"
-                :value="fmt"
-              >
-                {{ label }}
-              </option>
-            </select>
-          </label>
-          <label class="form-grid-full">
-            <span class="label-text">Default Model（v0.1+ chat 用该 provider 发请求时带的 model id）</span>
-            <input
-              v-model="draftDefaultModel"
-              type="text"
-              placeholder="claude-sonnet-4-5"
-              spellcheck="false"
-            />
-            <span class="field-hint">
-              留空 → 该 provider 不出现在 chat selector（player 去别处填 model 也行）
-            </span>
-          </label>
-          <label class="form-grid-full enabled-row">
-            <input v-model="draftEnabled" type="checkbox" />
-            <span>启用</span>
-          </label>
-        </div>
-        <div v-if="formError" class="form-error">{{ formError }}</div>
-        <div class="form-actions">
-          <button @click="saveForm" class="primary">
-            <Save :size="12" />
-            <span>保存</span>
-          </button>
-          <button @click="cancelForm">
-            <X :size="12" />
-            <span>取消</span>
-          </button>
-        </div>
-      </div>
-
       <!-- Provider cards -->
-      <div v-if="customProviders.length === 0 && !showForm" class="empty">
+      <div v-if="customProviders.length === 0 && !editingProvider" class="empty">
         还没有保存的 provider —— 点右上角"Add provider"加一个
         （DeepSeek / Qwen / OpenRouter / Ollama 等 OpenAI 兼容端点都行）
       </div>
@@ -564,6 +440,15 @@ async function onTestConnection() {
         </div>
       </div>
     </section>
+
+    <!-- Provider Edit Modal (v0.1.2+ Locus 同款) -->
+    <ProviderEditModal
+      :provider="editingProvider"
+      :is-new="isAdding"
+      :existing-ids="existingProviderIds"
+      @close="closeModal"
+      @save="onModalSave"
+    />
 
     <!-- Import from Locus modal -->
     <Teleport to="body">
@@ -879,77 +764,6 @@ label input:focus {
   border-radius: 3px;
   padding: 1px 5px;
   word-break: break-all;
-}
-
-/* Form (Add / Edit) */
-.form {
-  background: var(--bg-elev);
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  padding: 12px 14px;
-  margin-bottom: 12px;
-}
-.form-title {
-  font-size: 12px;
-  color: var(--accent);
-  font-weight: 500;
-  margin-bottom: 10px;
-}
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.form-grid-full {
-  grid-column: 1 / -1;
-}
-.form-grid label {
-  margin-bottom: 0;
-}
-.form-grid .enabled-row {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.form-grid .enabled-row input {
-  margin: 0;
-}
-.form-error {
-  font-size: 12px;
-  color: var(--error);
-  margin-top: 8px;
-}
-.form-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-.form-actions button {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 12px;
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: inherit;
-}
-.form-actions button:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-.form-actions button.primary {
-  background: var(--accent);
-  color: var(--bg);
-  border-color: var(--accent);
-}
-.form-actions button.primary:hover {
-  opacity: 0.85;
 }
 
 /* Provider list */
