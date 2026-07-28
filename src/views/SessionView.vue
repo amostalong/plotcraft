@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertCircle, Bot, Send, Square, User as UserIcon } from 'lucide-vue-next'
 
 import { useChatStore } from '@/stores/chat'
+import { renderMarkdown } from '@/lib/markdown'
 
 const chat = useChatStore()
 
@@ -14,6 +15,11 @@ const currentText = computed(() => chat.state.currentText)
 const status = computed(() => chat.state.status)
 const error = computed(() => chat.state.error)
 const isStreaming = computed(() => status.value === 'streaming')
+
+// markdown 渲染（assistant 消息 + streaming）
+function renderMd(md: string): string {
+  return renderMarkdown(md)
+}
 
 onMounted(async () => {
   await chat.init()
@@ -62,14 +68,17 @@ watch(
       >
         <UserIcon v-if="msg.role === 'user'" :size="16" />
         <Bot v-else :size="16" />
-        <div class="content">{{ msg.content }}</div>
+        <div v-if="msg.role === 'user'" class="content">{{ msg.content }}</div>
+        <div
+          v-else
+          class="content markdown"
+          v-html="renderMd(msg.content)"
+        />
       </div>
 
       <div v-if="currentText" class="message assistant streaming">
         <Bot :size="16" />
-        <div class="content">
-          {{ currentText }}<span class="cursor">▍</span>
-        </div>
+        <div class="content markdown streaming" v-html="renderMd(currentText) + '<span class=\'cursor\'>▍</span>'" />
       </div>
 
       <div v-if="status === 'error' && error" class="error">
@@ -160,6 +169,85 @@ watch(
   white-space: pre-wrap;
   word-break: break-word;
 }
+.message .content.markdown {
+  white-space: normal; /* markdown 自己的换行处理 */
+}
+
+/* markdown 内部样式 */
+.markdown :deep(p) {
+  margin: 0 0 8px;
+}
+.markdown :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.markdown :deep(h1),
+.markdown :deep(h2),
+.markdown :deep(h3),
+.markdown :deep(h4) {
+  margin: 12px 0 8px;
+  font-weight: 600;
+  color: var(--text);
+}
+.markdown :deep(h1) { font-size: 18px; }
+.markdown :deep(h2) { font-size: 16px; }
+.markdown :deep(h3) { font-size: 15px; }
+.markdown :deep(h4) { font-size: 14px; }
+.markdown :deep(ul),
+.markdown :deep(ol) {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+.markdown :deep(li) {
+  margin-bottom: 2px;
+}
+.markdown :deep(code) {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.markdown :deep(pre) {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.markdown :deep(pre code) {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.markdown :deep(blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-muted);
+  background: var(--accent-soft);
+}
+.markdown :deep(a) {
+  color: var(--accent);
+  text-decoration: none;
+}
+.markdown :deep(a:hover) {
+  text-decoration: underline;
+}
+.markdown :deep(strong) {
+  font-weight: 600;
+  color: var(--text);
+}
+.markdown :deep(em) {
+  font-style: italic;
+}
+.markdown :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+
 .cursor {
   display: inline-block;
   animation: blink 1s steps(2) infinite;
