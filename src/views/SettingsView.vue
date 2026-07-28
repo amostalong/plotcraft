@@ -84,12 +84,13 @@ function onReset() {
         <ApiProviders
           v-if="activeCategory === 'api'"
           key="api"
-          :providers="settings.config.providers"
+          v-model:base-url="settings.config.base_url"
+          v-model:api-key="settings.config.apiKey"
         />
         <ModelDefaultsPanel
           v-else-if="activeCategory === 'models'"
           key="models"
-          :model-defaults="settings.config.modelDefaults"
+          v-model:model="settings.config.model"
         />
         <GeneralSettingsPanel
           v-else

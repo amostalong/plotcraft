@@ -1,76 +1,63 @@
 <script setup lang="ts">
-// API Providers panel（v0.1 Locus-shape subset）
+// API Providers / Connection panel（v0.1 Locus-shape subset）
 //
-// Locus 那边 `<ApiProviders>` 是个 700+ 行的庞然大物：管所有 provider 列表 + OAuth +
-// Codex + model catalog 拉取。PlotCraft v0.1 只 hardcoded `openai` 一个 provider，
-// 暂不做 OAuth / 模型目录 / 自定义 provider —— schema 留位，UI 简化。
-//
-// 跟 Locus 的差别：
-// - 玩家编辑不直接落盘，要点 SettingsView 顶部的"保存"才一次性写 config.json
-// - v0.1 只显示 openai，v0.2+ 加 provider 时这个 component 改 v-for 即可
+// 跟 Locus 差别：
+// - Locus `ApiProviders` 管多 provider 列表 + OAuth + Codex auth + keychain 索引
+// - PlotCraft v0.1 是 single `baseUrl` + `apiKey`（v0.1 裸存；v0.2 升 keyring）
+// - 字段位置跟 Locus `AppConfig` 顶层一致：`base_url` / `apiKey`
+//   （Locus 把 apiKey 放 keychain 索引文件 `provider_key_ids.json` 里，PlotCraft 简化）
 
-import { computed } from 'vue'
-import { Power, PowerOff, AlertTriangle } from 'lucide-vue-next'
-import type { ProviderConfig } from '@/lib/settings'
+import { AlertTriangle } from 'lucide-vue-next'
 
-const props = defineProps<{
-  providers: Record<string, ProviderConfig>
-}>()
-
-// v0.1 固定只显示 openai（hardcoded）
-// v0.2+ 改成 v-for 渲染 props.providers
-const openaiProvider = computed<ProviderConfig | null>(() => {
-  return props.providers['openai'] ?? null
-})
+// v-model:base-url + v-model:api-key 双向绑定
+// 注意 prop 名是 kebab-case `base-url` / `api-key`，对应 JSON 字段 `base_url` / `apiKey`
+const baseUrl = defineModel<string | null>('base-url', { required: true })
+const apiKey = defineModel<string>('api-key', { required: true })
 </script>
 
 <template>
   <div class="api-providers">
-    <h2>API Providers</h2>
+    <h2>Connection</h2>
     <p class="hint">
-      v0.1 仅实装 <code>openai</code> 一个 provider（OpenAI 兼容接口）。
-      v0.2+ 加 Claude / Gemini 等 —— schema 已留位（<code>providers</code> dict），
-      这个 panel 改成 <code>v-for</code> 即可。
+      PlotCraft v0.1 走 OpenAI 兼容接口 —— 填 endpoint + API key 就能用。
+      字段名 <code>base_url</code> / <code>apiKey</code> 跟 Locus <code>AppConfig</code> 顶层
+      完全一致（<a href="https://github.com/amostalong/locus" target="_blank" rel="noopener">参考 Locus</a>）。
     </p>
 
-    <div v-if="openaiProvider" class="provider">
+    <div class="provider">
       <div class="provider-header">
-        <span class="provider-name">openai</span>
-        <label class="enabled-toggle">
-          <input v-model="openaiProvider.enabled" type="checkbox" />
-          <Power v-if="openaiProvider.enabled" :size="14" />
-          <PowerOff v-else :size="14" />
-          <span>{{ openaiProvider.enabled ? '已启用' : '已禁用' }}</span>
-        </label>
+        <span class="provider-name">openai-compatible</span>
+        <span class="provider-tag">v0.1 唯一 provider</span>
       </div>
 
       <label>
-        <span class="label-text">Endpoint</span>
+        <span class="label-text">Endpoint (base_url)</span>
         <input
-          v-model="openaiProvider.endpoint"
+          v-model="baseUrl"
           type="text"
           placeholder="https://api.openai.com/v1"
         />
+        <span class="field-hint">
+          OpenAI 兼容 endpoint（OpenAI / DeepSeek / Qwen / Ollama / 自建 proxy 都行）
+        </span>
       </label>
 
       <label>
         <span class="label-text">API Key</span>
         <input
-          v-model="openaiProvider.apiKey"
+          v-model="apiKey"
           type="password"
           placeholder="sk-..."
           autocomplete="off"
         />
         <span class="field-hint">
           <AlertTriangle :size="12" />
-          v0.1 裸存在本地 config.json（自用风险可接受；v0.2 升 keyring）
+          v0.1 裸存在本地 <code>config.json</code> 顶层 <code>apiKey</code> 字段（自用风险可接受；
+          v0.2 升 OS keyring）。Locus 走 keychain 索引（<code>provider_key_ids.json</code>），
+          PlotCraft 这边简化。
         </span>
       </label>
     </div>
-
-    <p v-else class="empty">
-      openai provider 未配置 —— 试试点 Settings 顶部的"重置"。
-    </p>
   </div>
 </template>
 
@@ -99,6 +86,13 @@ h2 {
   border-radius: 3px;
   padding: 1px 4px;
 }
+.hint a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.hint a:hover {
+  text-decoration: underline;
+}
 .provider {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -117,18 +111,13 @@ h2 {
   color: var(--accent);
   font-weight: 500;
 }
-.enabled-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
+.provider-tag {
+  font-size: 10px;
   color: var(--text-muted);
-  cursor: pointer;
-  flex-direction: row;
-  margin-bottom: 0;
-}
-.enabled-toggle input {
-  margin: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
 }
 label {
   display: flex;
@@ -146,7 +135,7 @@ label:last-child {
 label input {
   padding: 8px 10px;
   font-size: 13px;
-  font-family: inherit;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
   background: var(--bg-elev);
   color: var(--text);
   border: 1px solid var(--border);
@@ -162,17 +151,7 @@ label input:focus {
   gap: 4px;
   font-size: 11px;
   color: var(--text-muted);
-  margin-top: 2px;
-}
-.empty {
-  font-size: 12px;
-  color: var(--text-muted);
-  font-style: italic;
-  padding: 16px;
-  text-align: center;
-  background: var(--bg);
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  margin: 0;
+  margin-top: 4px;
+  line-height: 1.4;
 }
 </style>

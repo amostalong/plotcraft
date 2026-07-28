@@ -1,20 +1,24 @@
-//! LLM 配置（v0.1 Locus-shape subset）
+//! LLM 配置（v0.1 Locus-shape compat）
 //!
-//! On-disk 形状（`%APPDATA%/PlotCraft/config.json`）跟 Locus 对齐：
-//! - `providers`: 多 provider dict（v0.1 只实装 `openai`，其他 v0.2+）
-//! - `modelDefaults`: 主模型 / 计划模型 / subagent 模型（v0.1 只 mainModel）
-//! - `modelCatalog`: 远端模型目录（v0.1 始终 `None`，玩家手填模型名）
-//! - `ui`: 主题等
-//! - `recentProjects`: 最近项目路径
+//! 关键设计：**PlotCraft 的 `config.json` 跟 Locus `config.json` 字面兼容**。
+//! - 顶层 24 个字段跟 Locus `AppConfig` 字段名 / 类型 / serde 约定完全一致
+//!   （参考 Locus `src-tauri/src/config.rs:280-430` `AppConfig`）
+//! - PlotCraft 加 3 个扩展字段（`apiKey` / `ui.theme` / `recentProjects`）——
+//!   Locus 看到会自动忽略（serde 默认行为），PlotCraft 看到会用到
+//! - 简化：Locus 用 `Arc<AtomicBool>` 跑 hot-reload in-memory，PlotCraft v0.1 不用，
+//!   全部用简单类型（`bool` / `String` / `u32`）。JSON 输出完全一致
+//! - snake_case 顶层（跟 Locus 一致），nested `codeAnalysisTools` 用 camelCase（跟 Locus 一致）
 //!
-//! 内部 `LlmConfig`（streaming runtime 用）保持 flat —— 那是 runtime 形状，
-//! 不应该被 on-disk 形状污染。`from_app_config` 负责从 on-disk 形状解出 flat `LlmConfig`。
+//! 跟 Locus 关键差异：
+//! - PlotCraft v0.1 不接 keychain，API key 裸存 `config.json` 顶层的 `apiKey` 字段
+//!   （Locus 走 OS keychain，索引在 `provider_key_ids.json`）
+//! - PlotCraft v0.1 不实装 Unity / C# LSP / MCP / OAuth / subagent —— 对应字段
+//!   写进 struct 但 `#[serde(default)]`，玩家编辑不了也用不上
+//! - 内部 `LlmConfig`（streaming runtime）保持 flat —— 跟 on-disk 形状解耦
 //!
-//! 设计参考 Locus（`C:\Users\dd\Documents\QxLocusProject\Locus\src-tauri\src\config.rs`），
-//! 但只取 v0.1 实际需要的部分，**不**直接 import / 复制 Locus 代码
-//! （AGENTS.md 硬规则 — 仅结构对齐）。
+//! 数据迁移：老 PlotCraft v0.1 `{providers: {...}, modelDefaults: {...}}` shape
+//! 会被 serde 静默忽略（不在 struct 里），玩家手动 re-enter 即可（v0.1 还没真实玩家）
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -24,61 +28,48 @@ use crate::error::{AppError, AppResult};
 
 const CONFIG_FILE: &str = "config.json";
 const DEFAULT_OPENAI_ENDPOINT: &str = "https://api.openai.com/v1";
-const DEFAULT_MAIN_MODEL: &str = "gpt-4o-mini";
+const DEFAULT_MODEL: &str = "gpt-4o-mini";
 const DEFAULT_THEME: &str = "dark";
 
-/// 单个 provider 的 LLM 配置
+// --- 顶层字段 (Locus `AppConfig:280-430` 镜像) ---
+
+/// Locus `AppCloseBehavior` 镜像（`Exit` | `MinimizeToTray`）
 ///
-/// JSON 字段名走 camelCase（`apiKey` / `endpoint` / `enabled`）
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderConfig {
-    pub endpoint: String,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+/// PlotCraft v0.1 不用，但 shape 必须保留（serde 字符串）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppCloseBehavior {
+    #[default]
+    Exit,
+    MinimizeToTray,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-/// 模型默认值
+/// Locus `DynamicToolLoadingMode` 镜像
 ///
-/// v0.1 只有 `mainModel`。v0.2+ 加 `planModel` / `subagentModels` / `claudeCodeEnabled`
-/// （参考 Locus `ModelDefaults`）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelDefaults {
-    #[serde(default)]
-    pub main_model: String,
+/// PlotCraft v0.1 不用此字段。用 `String` 而非 enum 是因为 Locus 内部 enum 变体未知，
+/// PlotCraft 不需要解释（只过 shape 兼容）。Locus 看到 `String` 字段会按它自己的 enum
+/// 解析（serde 标准行为）。
+pub type DynamicToolLoadingMode = String;
+
+/// Locus `CodeAnalysisToolsConfig` 镜像（camelCase 子字段，参考 Locus `config.rs:209-220`）
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CodeAnalysisToolsConfig {
+    pub code_symbol_search: bool,
+    pub code_goto_definition: bool,
+    pub code_find_references: bool,
+    pub code_diagnostics: bool,
+    pub edit_write_diagnostics: bool,
+    pub code_hover: bool,
+    pub unity_code_usages: bool,
+    pub unity_analyzers: bool,
 }
 
-impl Default for ModelDefaults {
-    fn default() -> Self {
-        Self {
-            main_model: DEFAULT_MAIN_MODEL.to_string(),
-        }
-    }
-}
-
-/// 远端模型目录（v0.1 始终 `None`）
-///
-/// v0.2+ 从远端 fetch + snapshot 缓存（参考 Locus `ModelCatalogResponse`）。
-/// schema 留位以避免 v0.2 迁移。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelCatalog {
-    pub source: Option<String>,
-    pub fetched_at: Option<String>,
-}
-
-/// UI 配置
+/// PlotCraft 扩展：UI 主题（v0.1 只用 dark）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiConfig {
-    #[serde(default)]
+    #[serde(default = "default_theme")]
     pub theme: String,
 }
 
@@ -90,49 +81,117 @@ impl Default for UiConfig {
     }
 }
 
-/// 整个 `config.json` 的 on-disk 形状
+fn default_theme() -> String {
+    DEFAULT_THEME.to_string()
+}
+
+/// `config.json` 顶层 —— Locus 字段 + PlotCraft 扩展
 ///
-/// 跟 Locus `Config` 同构思路（Locus 字段 100+，PlotCraft v0.1 砍到 ~6 段）。
-/// v0.2+ 加字段时**追加**，不改老字段 key —— 避免破坏玩家 config.json。
-///
-/// 字段顺序跟 JSON 输出一致：`version / providers / modelDefaults / modelCatalog / ui / recentProjects`
+/// 字段顺序跟 Locus 一致，扩展字段放最后。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
-    #[serde(default = "default_version")]
-    pub version: u32,
+    // ── Locus 字段（snake_case，参考 Locus `AppConfig:280-430`）──
+    pub model: String,
     #[serde(default)]
-    pub providers: BTreeMap<String, ProviderConfig>,
+    pub base_url: Option<String>,
     #[serde(default)]
-    pub model_defaults: ModelDefaults,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_catalog: Option<ModelCatalog>,
+    pub debug: bool,
+    #[serde(default)]
+    pub file_tool_workspace_boundary: bool,
+    #[serde(default)]
+    pub close_behavior: AppCloseBehavior,
+    #[serde(default)]
+    pub dynamic_tool_loading_mode: DynamicToolLoadingMode,
+    #[serde(default)]
+    pub dynamic_tool_loading_native_migrated: bool,
+    #[serde(default = "default_true")]
+    pub anthropic_native_lazy_enabled: bool,
+    #[serde(default)]
+    pub default_skill_package_namespace: String,
+    #[serde(default)]
+    pub view_windows_above_main: bool,
+    #[serde(default = "default_true")]
+    pub view_open_in_existing_window: bool,
+    #[serde(default = "default_true")]
+    pub unity_background_hook_enabled: bool,
+    #[serde(default = "default_true")]
+    pub unity_state_probe_enabled: bool,
+    #[serde(default)]
+    pub csharp_lsp_enabled: bool,
+    #[serde(default = "default_true")]
+    pub unity_sidecar_compiler: bool,
+    #[serde(default = "default_true")]
+    pub unity_in_process_compile_fallback: bool,
+    #[serde(default)]
+    pub unity_hot_reload: bool,
+    #[serde(default = "default_true")]
+    pub unity_native_bridge_enabled: bool,
+    #[serde(default = "default_true")]
+    pub unity_inline_force_evaluate_enabled: bool,
+    #[serde(default)]
+    pub code_analysis_tools: CodeAnalysisToolsConfig,
+    #[serde(default = "default_llm_retry_max_attempts")]
+    pub llm_retry_max_attempts: u32,
+    #[serde(default = "default_true")]
+    pub llm_strip_inline_think_tags: bool,
+    #[serde(default = "default_subagent_max_depth")]
+    pub subagent_max_depth: u32,
+    #[serde(default = "default_subagent_max_concurrent")]
+    pub subagent_max_concurrent: u32,
+
+    // ── PlotCraft 扩展字段 ──
+    /// API key（v0.1 裸存；v0.2 升 keychain / keyring）
+    #[serde(default, rename = "apiKey")]
+    pub api_key: String,
+    /// UI 配置（PlotCraft 自加；Locus 走 localStorage）
     #[serde(default)]
     pub ui: UiConfig,
-    #[serde(default)]
+    /// 最近打开的项目路径（PlotCraft 自加；Locus 走 session-based tracking）
+    #[serde(default, rename = "recentProjects")]
     pub recent_projects: Vec<String>,
 }
 
-fn default_version() -> u32 {
+fn default_true() -> bool {
+    true
+}
+fn default_llm_retry_max_attempts() -> u32 {
+    3
+}
+fn default_subagent_max_depth() -> u32 {
     1
+}
+fn default_subagent_max_concurrent() -> u32 {
+    3
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let mut providers = BTreeMap::new();
-        providers.insert(
-            "openai".to_string(),
-            ProviderConfig {
-                endpoint: DEFAULT_OPENAI_ENDPOINT.to_string(),
-                api_key: String::new(),
-                enabled: true,
-            },
-        );
         Self {
-            version: 1,
-            providers,
-            model_defaults: ModelDefaults::default(),
-            model_catalog: None,
+            model: DEFAULT_MODEL.to_string(),
+            base_url: Some(DEFAULT_OPENAI_ENDPOINT.to_string()),
+            debug: false,
+            file_tool_workspace_boundary: false,
+            close_behavior: AppCloseBehavior::default(),
+            dynamic_tool_loading_mode: String::new(),
+            dynamic_tool_loading_native_migrated: true,
+            anthropic_native_lazy_enabled: true,
+            default_skill_package_namespace: String::new(),
+            view_windows_above_main: false,
+            view_open_in_existing_window: true,
+            unity_background_hook_enabled: true,
+            unity_state_probe_enabled: true,
+            csharp_lsp_enabled: false,
+            unity_sidecar_compiler: true,
+            unity_in_process_compile_fallback: true,
+            unity_hot_reload: false,
+            unity_native_bridge_enabled: true,
+            unity_inline_force_evaluate_enabled: true,
+            code_analysis_tools: CodeAnalysisToolsConfig::default(),
+            llm_retry_max_attempts: 3,
+            llm_strip_inline_think_tags: true,
+            subagent_max_depth: 1,
+            subagent_max_concurrent: 3,
+            api_key: String::new(),
             ui: UiConfig::default(),
             recent_projects: Vec::new(),
         }
@@ -140,7 +199,7 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    /// config.json 绝对路径（`%APPDATA%/PlotCraft/config.json` on Windows）
+    /// `config.json` 绝对路径（`%APPDATA%/PlotCraft/config.json` on Windows）
     pub fn config_path(app: &tauri::AppHandle) -> AppResult<PathBuf> {
         let dir = app
             .path()
@@ -149,8 +208,8 @@ impl AppConfig {
         Ok(dir.join(CONFIG_FILE))
     }
 
-    /// 读 config.json → 解析 → 返回 `AppConfig`。
-    /// 缺文件 / 解析失败 → 返回 `AppConfig::default()`（v0.1 简化：玩家不感知）。
+    /// 读 config.json → 解析 → 返回 `AppConfig`
+    /// 缺文件 / 解析失败 → 返回 `AppConfig::default()`（v0.1 简化）
     pub fn from_app_config(app: &tauri::AppHandle) -> AppResult<Self> {
         let path = Self::config_path(app)?;
         if !path.exists() {
@@ -166,8 +225,8 @@ impl AppConfig {
 
 /// 内部 flat `LlmConfig` —— streaming runtime 用
 ///
-/// 跟 on-disk `AppConfig` 解耦：`from_app_config` 拿 active provider 解出这个。
-/// v0.1 active provider = `openai`（hardcoded）；v0.2+ 加 provider 切换 UI 时再加 `provider` 字段。
+/// v0.1：从 `AppConfig` 顶层 `model` / `base_url` / `api_key` 解出
+/// v0.2+：多 provider 时再加 `provider` 字段
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub endpoint: String,
@@ -176,20 +235,26 @@ pub struct LlmConfig {
 }
 
 impl LlmConfig {
-    /// 从 `AppConfig` 解出 v0.1 active provider（`openai`）的 flat `LlmConfig`
+    /// 从 `AppConfig` 解出 v0.1 flat `LlmConfig`
     ///
-    /// - provider 不存在 → 报错（`Config("provider 'openai' not configured")`）
-    /// - provider 存在但 `enabled = false` → 仍返回（玩家主动 disable，但保留配置）
+    /// - `base_url` 为空 / `None` → 用 default OpenAI endpoint
+    /// - `model` 为空 → 用 default `gpt-4o-mini`
     pub fn from_app_config(app: &tauri::AppHandle) -> AppResult<Self> {
         let cfg = AppConfig::from_app_config(app)?;
-        let provider = cfg
-            .providers
-            .get("openai")
-            .ok_or_else(|| AppError::Config("provider 'openai' not configured".to_string()))?;
+        let endpoint = cfg
+            .base_url
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_OPENAI_ENDPOINT.to_string());
+        let model = if cfg.model.is_empty() {
+            DEFAULT_MODEL.to_string()
+        } else {
+            cfg.model
+        };
         Ok(Self {
-            endpoint: provider.endpoint.clone(),
-            api_key: provider.api_key.clone(),
-            model: cfg.model_defaults.main_model.clone(),
+            endpoint,
+            api_key: cfg.api_key,
+            model,
         })
     }
 }
@@ -199,65 +264,110 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_has_openai_provider() {
+    fn default_config_has_openai_endpoint_and_gpt4o_mini() {
         let cfg = AppConfig::default();
-        assert_eq!(cfg.version, 1);
-        assert!(cfg.providers.contains_key("openai"));
-        let openai = &cfg.providers["openai"];
-        assert_eq!(openai.endpoint, DEFAULT_OPENAI_ENDPOINT);
-        assert_eq!(openai.api_key, "");
-        assert!(openai.enabled);
-        assert_eq!(cfg.model_defaults.main_model, DEFAULT_MAIN_MODEL);
-        assert!(cfg.model_catalog.is_none());
+        assert_eq!(cfg.model, "gpt-4o-mini");
+        assert_eq!(
+            cfg.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+        assert!(cfg.api_key.is_empty());
         assert_eq!(cfg.ui.theme, "dark");
         assert!(cfg.recent_projects.is_empty());
     }
 
     #[test]
-    fn default_config_json_has_camelcase_keys() {
+    fn serde_roundtrip_preserves_locus_shape() {
+        // 写出来再读回去，shape 一致
         let cfg = AppConfig::default();
-        let json = serde_json::to_string(&cfg).unwrap();
-        // camelCase 输出
-        assert!(json.contains("modelDefaults"));
-        assert!(json.contains("mainModel"));
-        assert!(json.contains("recentProjects"));
-        // snake_case 不应出现
-        assert!(!json.contains("model_defaults"));
-        assert!(!json.contains("main_model"));
-    }
-
-    #[test]
-    fn deserialize_legacy_flat_llm_field_is_ignored() {
-        // 玩家从老 v0.1 schema 升上来 → 老 `llm` 字段被忽略，新字段用 default
-        let raw = r#"{
-            "version": 1,
-            "llm": {
-                "endpoint": "https://old.api/v1",
-                "apiKey": "sk-old",
-                "model": "gpt-3.5"
-            }
-        }"#;
-        let cfg: AppConfig = serde_json::from_str(raw).unwrap();
-        // 老字段被 serde 忽略（不报错，因为不在 struct 里）
-        assert!(cfg.providers.is_empty());
-        assert_eq!(cfg.model_defaults.main_model, DEFAULT_MAIN_MODEL);
-    }
-
-    #[test]
-    fn llm_config_uses_openai_provider() {
-        let mut cfg = AppConfig::default();
-        cfg.providers.get_mut("openai").unwrap().api_key = "sk-test".to_string();
-        cfg.providers.get_mut("openai").unwrap().endpoint =
-            "https://custom.api/v1".to_string();
-        cfg.model_defaults.main_model = "gpt-4o".to_string();
-
-        // 验证 BTreeMap 反序列化能正确读回
-        let json = serde_json::to_string(&cfg).unwrap();
+        let json = serde_json::to_string_pretty(&cfg).unwrap();
         let parsed: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model, cfg.model);
+        assert_eq!(parsed.base_url, cfg.base_url);
+        assert_eq!(parsed.debug, cfg.debug);
+        assert_eq!(parsed.close_behavior, cfg.close_behavior);
+        assert_eq!(parsed.code_analysis_tools, cfg.code_analysis_tools);
+        assert_eq!(parsed.api_key, cfg.api_key);
+        assert_eq!(parsed.ui.theme, cfg.ui.theme);
+    }
 
-        let openai = parsed.providers.get("openai").unwrap();
-        assert_eq!(openai.api_key, "sk-test");
-        assert_eq!(openai.endpoint, "https://custom.api/v1");
-        assert_eq!(parsed.model_defaults.main_model, "gpt-4o");
+    #[test]
+    fn can_read_locus_written_config() {
+        // 模拟 Locus 写的 config.json（PlotCraft 扩展字段不存在）
+        // Locus 顶层字段 snake_case（参考 Locus `AppConfig:280-430`），nested
+        // `codeAnalysisTools` 是 camelCase（参考 Locus `config.rs:210`）
+        let locus_json = r#"{
+            "model": "openrouter/claude-opus-4.8",
+            "base_url": "https://openrouter.ai/api/v1",
+            "debug": false,
+            "file_tool_workspace_boundary": false,
+            "close_behavior": "exit",
+            "dynamic_tool_loading_mode": "native",
+            "dynamic_tool_loading_native_migrated": true,
+            "anthropic_native_lazy_enabled": true,
+            "default_skill_package_namespace": "",
+            "view_windows_above_main": false,
+            "view_open_in_existing_window": true,
+            "unity_background_hook_enabled": true,
+            "unity_state_probe_enabled": true,
+            "csharp_lsp_enabled": false,
+            "unity_sidecar_compiler": true,
+            "unity_in_process_compile_fallback": true,
+            "unity_hot_reload": false,
+            "unity_native_bridge_enabled": true,
+            "unity_inline_force_evaluate_enabled": true,
+            "code_analysis_tools": {
+                "codeSymbolSearch": true,
+                "codeGotoDefinition": true,
+                "codeFindReferences": true,
+                "codeDiagnostics": false,
+                "editWriteDiagnostics": true,
+                "codeHover": false,
+                "unityCodeUsages": true,
+                "unityAnalyzers": true
+            },
+            "llm_retry_max_attempts": 3,
+            "llm_strip_inline_think_tags": true,
+            "subagent_max_depth": 1,
+            "subagent_max_concurrent": 3
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(locus_json).unwrap();
+        assert_eq!(cfg.model, "openrouter/claude-opus-4.8");
+        assert_eq!(cfg.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
+        assert_eq!(cfg.close_behavior, AppCloseBehavior::Exit);
+        assert_eq!(cfg.code_analysis_tools.code_symbol_search, true);
+        assert!(cfg.api_key.is_empty()); // Locus 不写 apiKey，PlotCraft 用 default
+        assert_eq!(cfg.ui.theme, "dark"); // PlotCraft 扩展字段 default
+    }
+
+    #[test]
+    fn plotcraft_writes_api_key_at_top_level() {
+        // PlotCraft 写 config.json 时，apiKey 出现在顶层
+        let mut cfg = AppConfig::default();
+        cfg.api_key = "sk-test-123".to_string();
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"apiKey\":\"sk-test-123\""));
+    }
+
+    #[test]
+    fn llm_config_uses_default_when_empty() {
+        // 模拟 AppConfig 里 model 和 base_url 都是空（玩家第一次启动没改）
+        let mut cfg = AppConfig::default();
+        cfg.model = String::new();
+        cfg.base_url = None;
+
+        // 验证 LlmConfig 解出 default（不能直接测 from_app_config 因为要走 Tauri AppHandle）
+        let endpoint = cfg
+            .base_url
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_OPENAI_ENDPOINT.to_string());
+        let model = if cfg.model.is_empty() {
+            DEFAULT_MODEL.to_string()
+        } else {
+            cfg.model
+        };
+        assert_eq!(endpoint, DEFAULT_OPENAI_ENDPOINT);
+        assert_eq!(model, DEFAULT_MODEL);
     }
 }

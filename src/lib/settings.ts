@@ -1,39 +1,70 @@
 // PlotCraft v0.1 settings wrapper（前端 Tauri command wrapper）
 //
-// 跟 Locus `Config` 同构思路：providers + modelDefaults + modelCatalog + ui + recentProjects。
-// v0.1 实装：只 `providers.openai` + `modelDefaults.mainModel` + `ui.theme` + `recentProjects`。
-// v0.2+ 加 Claude / Gemini 等 provider 不用动 schema —— 直接加 key。
+// 跟 Locus `AppConfig` 字面兼容（参考 Locus `src-tauri/src/config.rs:280-430`）：
+// - 顶层 24 个 Locus 字段（snake_case）
+// - nested `code_analysis_tools` 字段是 camelCase
+// - PlotCraft 加 3 个扩展字段（`apiKey` / `ui.theme` / `recentProjects`）——
+//   Locus 看到自动忽略，PlotCraft 看到会用到
 //
-// 后端 schema 见 [src-tauri/src/llm/config.rs]（serde camelCase）
+// 后端 schema 见 [src-tauri/src/llm/config.rs]（serde 字符串 key 跟 Locus 一致）
 
 import { invoke } from '@tauri-apps/api/core'
 
-// --- 跟 Rust struct 一一对应 ---
+// --- 跟 Locus AppConfig 字段一一对应（snake_case）---
 
-export interface ProviderConfig {
-  endpoint: string
-  apiKey: string
-  enabled: boolean
+export type AppCloseBehavior = 'exit' | 'minimizeToTray'
+
+// Locus 的 DynamicToolLoadingMode 是 enum；PlotCraft v0.1 不用此字段，透传字符串
+export type DynamicToolLoadingMode = string
+
+export interface CodeAnalysisToolsConfig {
+  codeSymbolSearch: boolean
+  codeGotoDefinition: boolean
+  codeFindReferences: boolean
+  codeDiagnostics: boolean
+  editWriteDiagnostics: boolean
+  codeHover: boolean
+  unityCodeUsages: boolean
+  unityAnalyzers: boolean
 }
 
-export interface ModelDefaults {
-  mainModel: string
-}
-
-export interface ModelCatalog {
-  source: string | null
-  fetchedAt: string | null
-}
+// --- PlotCraft 扩展字段 ---
 
 export interface UiConfig {
   theme: string
 }
 
+// --- 完整 Config ---
+
 export interface Config {
-  version: number
-  providers: Record<string, ProviderConfig>
-  modelDefaults: ModelDefaults
-  modelCatalog: ModelCatalog | null
+  // Locus 字段
+  model: string
+  base_url: string | null
+  debug: boolean
+  file_tool_workspace_boundary: boolean
+  close_behavior: AppCloseBehavior
+  dynamic_tool_loading_mode: DynamicToolLoadingMode
+  dynamic_tool_loading_native_migrated: boolean
+  anthropic_native_lazy_enabled: boolean
+  default_skill_package_namespace: string
+  view_windows_above_main: boolean
+  view_open_in_existing_window: boolean
+  unity_background_hook_enabled: boolean
+  unity_state_probe_enabled: boolean
+  csharp_lsp_enabled: boolean
+  unity_sidecar_compiler: boolean
+  unity_in_process_compile_fallback: boolean
+  unity_hot_reload: boolean
+  unity_native_bridge_enabled: boolean
+  unity_inline_force_evaluate_enabled: boolean
+  code_analysis_tools: CodeAnalysisToolsConfig
+  llm_retry_max_attempts: number
+  llm_strip_inline_think_tags: boolean
+  subagent_max_depth: number
+  subagent_max_concurrent: number
+
+  // PlotCraft 扩展字段
+  apiKey: string
   ui: UiConfig
   recentProjects: string[]
 }
@@ -48,19 +79,48 @@ export async function saveConfig(config: Config): Promise<void> {
   await invoke('save_config', { config })
 }
 
-// --- default config（v0.1 单 provider openai，hardcoded）---
+// --- default config（v0.1 单 provider openai-compatible，hardcoded）---
+
+const DEFAULT_CODE_ANALYSIS_TOOLS: CodeAnalysisToolsConfig = {
+  codeSymbolSearch: true,
+  codeGotoDefinition: true,
+  codeFindReferences: true,
+  codeDiagnostics: false,
+  editWriteDiagnostics: true,
+  codeHover: false,
+  unityCodeUsages: true,
+  unityAnalyzers: true,
+}
 
 export const DEFAULT_CONFIG: Config = {
-  version: 1,
-  providers: {
-    openai: {
-      endpoint: 'https://api.openai.com/v1',
-      apiKey: '',
-      enabled: true,
-    },
-  },
-  modelDefaults: { mainModel: 'gpt-4o-mini' },
-  modelCatalog: null,
+  // Locus 字段 default
+  model: 'gpt-4o-mini',
+  base_url: 'https://api.openai.com/v1',
+  debug: false,
+  file_tool_workspace_boundary: false,
+  close_behavior: 'exit',
+  dynamic_tool_loading_mode: '',
+  dynamic_tool_loading_native_migrated: true,
+  anthropic_native_lazy_enabled: true,
+  default_skill_package_namespace: '',
+  view_windows_above_main: false,
+  view_open_in_existing_window: true,
+  unity_background_hook_enabled: true,
+  unity_state_probe_enabled: true,
+  csharp_lsp_enabled: false,
+  unity_sidecar_compiler: true,
+  unity_in_process_compile_fallback: true,
+  unity_hot_reload: false,
+  unity_native_bridge_enabled: true,
+  unity_inline_force_evaluate_enabled: true,
+  code_analysis_tools: { ...DEFAULT_CODE_ANALYSIS_TOOLS },
+  llm_retry_max_attempts: 3,
+  llm_strip_inline_think_tags: true,
+  subagent_max_depth: 1,
+  subagent_max_concurrent: 3,
+
+  // PlotCraft 扩展字段 default
+  apiKey: '',
   ui: { theme: 'dark' },
   recentProjects: [],
 }

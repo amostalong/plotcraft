@@ -1,33 +1,29 @@
 <script setup lang="ts">
-// Model Defaults panel（v0.1 Locus-shape subset + built-in catalog）
+// Model Defaults panel（v0.1 Locus-shape subset）
 //
-// 跟 Locus 差别：
-// - Locus `ModelDefaults` 拉远端 catalog + 处理 subagent / plan model / workspace override
-// - PlotCraft v0.1 用本地静态 `BUILTIN_MODELS`（OpenAI 兼容子集），HTML <datalist> 给
-//   玩家自动补全 —— 选/手填都行。v0.2+ 走远端 fetch + snapshot 缓存时改 `modelCatalog` 字段
+// 字段位置：Locus `AppConfig.model` 顶层 string —— PlotCraft 这边绑 `model` prop
+// （Locus 那边的 `ModelDefaults` 包含 mainModel / planModel / subagentModels，
+// PlotCraft v0.1 只用 mainModel = `AppConfig.model`）
 //
 // 交互：
-// - input + datalist：打字有下拉建议，鼠标选也行；输入框可写任何 model id
-// - 下方显示当前 model 的 context window + note（lookup from catalog，找不到显示 "custom"）
-// - "重置为默认" 按钮：把 mainModel 设回 BUILTIN_MODELS 里 isDefault 那个
+// - input + datalist：打字有自动补全建议，鼠标选也行
+// - 下方显示当前 model 的 context window + note（找不到 = "custom"）
+// - "重置为默认" 按钮：model 设回 BUILTIN_MODELS 里 isDefault 那个（gpt-4o-mini）
 
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { Cpu, RotateCcw, AlertCircle } from 'lucide-vue-next'
-import type { ModelDefaults } from '@/lib/settings'
 import { BUILTIN_MODELS, DEFAULT_MAIN_MODEL, findModel, formatContextWindow } from '@/lib/modelCatalog'
 
-const props = defineProps<{
-  modelDefaults: ModelDefaults
-}>()
+// v-model:model 双向绑定（Vue 3.4+ defineModel）
+const model = defineModel<string>('model', { required: true })
 
 const DATALIST_ID = 'plotcraft-builtin-models'
 
-// 当前 mainModel 在 catalog 里吗？找不到 → 显示 "custom" 提示
-const currentModel = computed(() => findModel(props.modelDefaults.mainModel))
-const isCustom = computed(() => !currentModel.value && props.modelDefaults.mainModel.length > 0)
+const currentModel = computed(() => findModel(model.value))
+const isCustom = computed(() => !currentModel.value && model.value.length > 0)
 
 function onResetToDefault() {
-  props.modelDefaults.mainModel = DEFAULT_MAIN_MODEL
+  model.value = DEFAULT_MAIN_MODEL
 }
 </script>
 
@@ -35,8 +31,9 @@ function onResetToDefault() {
   <div class="model-defaults">
     <h2>Model Defaults</h2>
     <p class="hint">
-      玩家可选内置 model 或手填任意 model id（v0.1 用 HTML <code>&lt;datalist&gt;</code> 自动补全）。
-      v0.2+ 改走远端 fetch + snapshot 缓存 —— schema 留了 <code>modelCatalog</code> 字段。
+      PlotCraft <code>config.json</code> 顶层 <code>model</code> 字段（跟 Locus
+      <code>AppConfig.model</code> 同位）。v0.1 走玩家自填 / 内置 catalog 二选一。
+      v0.2+ 加 Locus-style 远端 catalog + subagent / plan model 再说。
     </p>
 
     <div class="section">
@@ -51,23 +48,18 @@ function onResetToDefault() {
       <label>
         <span class="label-text">Model ID（选 / 打字都行）</span>
         <input
-          v-model="modelDefaults.mainModel"
+          v-model="model"
           type="text"
           :list="DATALIST_ID"
           placeholder="gpt-4o-mini"
         />
         <datalist :id="DATALIST_ID">
-          <option
-            v-for="m in BUILTIN_MODELS"
-            :key="m.id"
-            :value="m.id"
-          >
+          <option v-for="m in BUILTIN_MODELS" :key="m.id" :value="m.id">
             {{ m.name }} — {{ formatContextWindow(m.contextWindow) }}{{ m.isDefault ? ' (默认)' : '' }}
           </option>
         </datalist>
       </label>
 
-      <!-- 当前 model 信息：context window + note（找不到 = custom） -->
       <div v-if="currentModel" class="model-info">
         <span class="model-name">{{ currentModel.name }}</span>
         <span class="model-ctx">context: {{ formatContextWindow(currentModel.contextWindow) }}</span>
@@ -83,7 +75,11 @@ function onResetToDefault() {
       </div>
 
       <div class="actions">
-        <button @click="onResetToDefault" class="reset" :disabled="modelDefaults.mainModel === DEFAULT_MAIN_MODEL">
+        <button
+          @click="onResetToDefault"
+          class="reset"
+          :disabled="model === DEFAULT_MAIN_MODEL"
+        >
           <RotateCcw :size="12" />
           <span>重置为默认（{{ DEFAULT_MAIN_MODEL }}）</span>
         </button>
