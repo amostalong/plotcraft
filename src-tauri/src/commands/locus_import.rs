@@ -274,4 +274,126 @@ mod tests {
         // 没 enabled 字段 → default None
         assert!(file.providers[1].enabled.is_none());
     }
+
+    /// 模拟用户实际 Locus 数据 shape（UUID id / `openrouter/...` model / null base_url / null enabled）
+    #[test]
+    fn parse_real_world_locus_data_shape() {
+        // 类似用户在 Locus 的实际数据（2026-07-28 抓的）
+        let config_json = r#"{
+            "model": "openrouter/claude-sonnet-4.6",
+            "base_url": null,
+            "debug": false,
+            "close_behavior": "exit",
+            "dynamic_tool_loading_mode": "native"
+        }"#;
+        let cfg: LocusConfigSubset = serde_json::from_str(config_json).unwrap();
+        assert_eq!(cfg.model.as_deref(), Some("openrouter/claude-sonnet-4.6"));
+        // base_url: null → None（PlotCraft 不会覆盖）
+        assert!(cfg.base_url.is_none());
+
+        // base_url: null 推断 apiFormat → OpenaiChat（default fallback）
+        assert_eq!(infer_api_format(""), ApiFormat::OpenaiChat);
+        // 实际 base_url null 时根本不调用 infer_api_format
+        // （applyImport 检查 if (locusData.value.baseUrl)）
+
+        // UUID-style ids + mixed apiFormats + null enabled
+        let custom_json = r#"{
+            "version": 2,
+            "providers": [
+                {
+                    "id": "610e7222-42ca-4b3e-90bf-a2fd9c11c73c",
+                    "name": "winky-claude-sonnet-5",
+                    "endpoint": "https://lumos.diandian.info/winky/claude/v1",
+                    "apiFormat": "anthropic_messages",
+                    "enabled": null,
+                    "models": [{"id": "claude-sonnet-5-20250929"}]
+                },
+                {
+                    "id": "28fad8e1-847f-4fea-952b-abc753914984",
+                    "name": "winky-kimi-3",
+                    "endpoint": "https://lumos.diandian.info/winky/kimi/v1",
+                    "apiFormat": "openai_chat",
+                    "enabled": null,
+                    "models": [{"id": "kimi-3"}]
+                },
+                {
+                    "id": "be2712b9-e4cd-498d-a448-37fc72bdf981",
+                    "name": "winky-gpt-5.6-terra",
+                    "endpoint": "https://lumos.diandian.info/winky/openai/v1",
+                    "apiFormat": "openai_responses",
+                    "enabled": null,
+                    "models": [{"id": "gpt-5.6-terra"}]
+                },
+                {
+                    "id": "32275581-23e7-4d52-83ee-c14cc5b7f588",
+                    "name": "deepseek",
+                    "endpoint": "https://api.deepseek.com/anthropic",
+                    "apiFormat": "anthropic_messages",
+                    "models": [
+                        {"id": "deepseek-chat"},
+                        {"id": "deepseek-reasoner"}
+                    ]
+                },
+                {
+                    "id": "29d1331a-b785-4c6b-84a9-a532f0a59082",
+                    "name": "MiniMax",
+                    "endpoint": "https://api.minimaxi.com/v1",
+                    "apiFormat": "openai_responses",
+                    "enabled": null,
+                    "models": [{"id": "MiniMax-Text-01"}]
+                },
+                {
+                    "id": "af814760-953a-4bbe-b2c4-1bbd97886964",
+                    "name": "winky-glm",
+                    "endpoint": "https://lumos.diandian.info/winky/glm/v1",
+                    "apiFormat": "openai_chat",
+                    "enabled": null,
+                    "models": [{"id": "glm-4.6"}]
+                }
+            ]
+        }"#;
+        let file: LocusCustomProvidersFile = serde_json::from_str(custom_json).unwrap();
+        assert_eq!(file.version, 2);
+        assert_eq!(file.providers.len(), 6);
+
+        // UUID id
+        assert_eq!(
+            file.providers[0].id,
+            "610e7222-42ca-4b3e-90bf-a2fd9c11c73c"
+        );
+        // 3 种 apiFormat 都解得到
+        assert_eq!(file.providers[0].api_format, "anthropic_messages");
+        assert_eq!(file.providers[1].api_format, "openai_chat");
+        assert_eq!(file.providers[2].api_format, "openai_responses");
+
+        // null enabled → None
+        assert!(file.providers[0].enabled.is_none());
+        // 没 enabled 字段（deepseek 那条）→ None
+        assert!(file.providers[3].enabled.is_none());
+
+        // 各种 model count
+        assert_eq!(file.providers[0].models.len(), 1);
+        assert_eq!(file.providers[3].models.len(), 2);
+
+        // 模拟 import：所有 provider 都能成功 parse
+        for p in &file.providers {
+            let _ = LocusProviderImport {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                endpoint: p.endpoint.clone(),
+                api_format: parse_locus_api_format(&p.api_format),
+                model_count: p.models.len(),
+                enabled: p.enabled.unwrap_or(true),
+            };
+            // 不 panic → ok
+        }
+    }
+
+    /// 验证 model 字段含特殊字符（openrouter 路由风格 `provider/model`）能正常通过
+    #[test]
+    fn model_field_handles_openrouter_routing_style() {
+        let cfg: LocusConfigSubset =
+            serde_json::from_str(r#"{"model": "openrouter/claude-sonnet-4.6"}"#).unwrap();
+        assert_eq!(cfg.model.as_deref(), Some("openrouter/claude-sonnet-4.6"));
+    }
 }

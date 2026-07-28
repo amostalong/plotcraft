@@ -24,6 +24,7 @@ import { Plus, Trash2, Check, AlertTriangle, Power, PowerOff, Pencil, X, Save, D
 import type { CustomProvider, ApiFormat } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
 import { importFromLocus, type LocusImportData } from '@/lib/locusImport'
+import { useSettingsStore } from '@/stores/settings'
 
 const props = defineProps<{
   baseUrl: string | null
@@ -214,9 +215,11 @@ function applyImport() {
 
   // 2. 覆盖 active connection（玩家勾选时）
   if (importApplyActive.value) {
+    // model 字段在 settings.config.model，ProvidersPanel 没绑 v-model
+    // （ModelDefaultsPanel 管它）—— 直接通过 store 改
     if (locusData.value.model) {
-      // 注意：active connection 的 model 不在 ProviderPanel 管理，是 ModelDefaults 管的
-      // 这里我们只设 model / baseUrl / apiFormat，顶层 model 字段在 ModelDefaults
+      const settings = useSettingsStore()
+      settings.config.model = locusData.value.model
     }
     if (locusData.value.baseUrl) {
       baseUrl.value = locusData.value.baseUrl
