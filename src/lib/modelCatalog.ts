@@ -206,6 +206,50 @@ export function getDefaultEffort(model: BuiltinModel | undefined): EffortLevel {
   return model?.defaultEffort ?? 'none'
 }
 
+// === Grouping for Locus-style ModelEffortSelector ===
+//
+// Locus 那边 model 下拉按 provider 分组（OpenRouter / Anthropic / Claude Code / OpenAI Codex / Custom）。
+// PlotCraft v0.1 简化为 2 组：
+// - `openai` 组（含 8 个 OpenAI 兼容模型 + sub-providers 不分）
+// - `anthropic` 组（4 个 Claude）
+// 段头用 provider label 展示，跟 Locus `ModelSelector` 同位
+
+export const PROVIDER_LABELS: Record<BuiltinModel['provider'], string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  google: 'Google',
+  custom: 'Custom',
+}
+
+/** Selector 用的 model group（参考 Locus `ModelSelectorGroup`） */
+export interface ModelSelectorGroup {
+  key: string
+  label: string
+  provider: BuiltinModel['provider']
+  models: BuiltinModel[]
+}
+
+/** 把 builtin models 按 provider 分组（保留 provider 出现顺序） */
+export function groupModelsForSelector(
+  models: readonly BuiltinModel[],
+): ModelSelectorGroup[] {
+  const seen: BuiltinModel['provider'][] = []
+  const grouped = new Map<BuiltinModel['provider'], BuiltinModel[]>()
+  for (const m of models) {
+    if (!grouped.has(m.provider)) {
+      seen.push(m.provider)
+      grouped.set(m.provider, [])
+    }
+    grouped.get(m.provider)!.push(m)
+  }
+  return seen.map((p) => ({
+    key: p,
+    label: PROVIDER_LABELS[p] ?? p,
+    provider: p,
+    models: grouped.get(p)!,
+  }))
+}
+
 /** 格式化 context window 展示（"128000" → "128K"） */
 export function formatContextWindow(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`

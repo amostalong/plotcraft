@@ -1,23 +1,20 @@
 <script setup lang="ts">
 // SessionView —— chat tab 主 UI
 //
-// v0.1+ 加 model + effort 选择器（toolbar 下面，transcript 上面）：
-// - Model：input + datalist（跟 ModelDefaults 同源 BUILTIN_MODELS）
-// - Effort：根据当前 model.supportedEfforts 动态列出（永远有 `none` 在第一位）
-//   - 跟 Locus `selectedModel` / `thinkingLevel` 同位（参考 Locus `types.ts:528`）
-// - 切 apiFormat 时建议列表自动重过滤（跟 ModelDefaults 一致）
-// - 切走再切回 chat session，selectedModel/selectedEffort 保留（不重置）
+// v0.1+ model + effort 选择器改用 Locus 同款 `ModelEffortSelector` 组件
+// （嵌在 chat composer 左下，trigger 按钮 + 双 panel 下拉）
+// - 位置：composer footer-start（跟 Locus ChatComposer 同位）
+// - 切 apiFormat → selector 自动重过滤建议列表
+// - 切走再切回 chat session 保留 selectedModel / selectedEffort（不重置）
 //   跟 Locus 行为对齐 —— 切 session tab 不丢玩家当前对话上下文
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   AlertCircle,
   Bot,
-  Cpu,
   FolderOpen,
   Plus,
   Send,
-  Sparkles,
   Square,
   User as UserIcon,
   X,
@@ -27,15 +24,9 @@ import { useChatStore } from '@/stores/chat'
 import { useSettingsStore } from '@/stores/settings'
 import { useProjectStore } from '@/stores/project'
 import { renderMarkdown } from '@/lib/markdown'
-import { EFFORT_LABELS, type ApiFormat, type EffortLevel } from '@/lib/settings'
-import {
-  BUILTIN_MODELS,
-  findModel,
-  formatContextWindow,
-  getDefaultEffort,
-  getSupportedEfforts,
-  type BuiltinModel,
-} from '@/lib/modelCatalog'
+import { BUILTIN_MODELS, findModel, getDefaultEffort, getSupportedEfforts } from '@/lib/modelCatalog'
+import type { EffortLevel } from '@/lib/settings'
+import ModelEffortSelector from '@/components/chat/ModelEffortSelector.vue'
 
 const chat = useChatStore()
 const settings = useSettingsStore()
@@ -50,13 +41,8 @@ const status = computed(() => chat.state.status)
 const error = computed(() => chat.state.error)
 const isStreaming = computed(() => status.value === 'streaming')
 
-// === Model + Effort selector (chat session level) ===
-const DATALIST_ID = 'plotcraft-chat-models'
-
-const currentModel = computed(() => findModel(chat.selectedModel))
-
-/** 按 active apiFormat 过滤的 model 建议（datalist） */
-const suggestedModels = computed<BuiltinModel[]>(() => {
+/** 按 active apiFormat 过滤的 model 建议（ModelEffortSelector 用） */
+const suggestedModels = computed(() => {
   const fmt = settings.config.apiFormat
   switch (fmt) {
     case 'anthropic_messages':
@@ -68,37 +54,29 @@ const suggestedModels = computed<BuiltinModel[]>(() => {
   }
 })
 
-/** 当前 model 支持的 effort 列表（永远含 `none`） */
-const availableEfforts = computed<EffortLevel[]>(() =>
-  getSupportedEfforts(currentModel.value),
-)
-
-/** 当前 model 的 note / context window（info 行用） */
-const modelInfoText = computed(() => {
-  const m = currentModel.value
+/** 当前 model 是否支持 effort（找不到 / 不支持 → false，selector 隐藏右 panel） */
+const effortSupported = computed(() => {
+  const m = findModel(chat.selectedModel)
   if (!m) {
-    return chat.selectedModel
-      ? `自定义 model（${chat.selectedModel}）`
-      : '未选择 model —— 去 Settings 填或在下面输'
+    // 自定义 model → 默认显示 effort panel（best-effort）
+    return true
   }
-  return `${m.name} · ${formatContextWindow(m.contextWindow)}${m.note ? ' · ' + m.note : ''}`
+  const supported = getSupportedEfforts(m)
+  return supported.length > 1 || (supported.length === 1 && supported[0] !== 'none')
 })
 
-function onModelChange() {
+function onSelectModel(id: string) {
+  chat.selectedModel = id
   // 切换 model 时，如果当前 effort 不在新 model 的支持列表里 → 重置为该 model 的 default
-  const m = findModel(chat.selectedModel)
+  const m = findModel(id)
   const supported = getSupportedEfforts(m)
   if (!supported.includes(chat.selectedEffort)) {
     chat.selectedEffort = getDefaultEffort(m)
   }
 }
 
-function onEffortChange(effort: EffortLevel) {
-  chat.selectedEffort = effort
-}
-
-function effortLabel(effort: EffortLevel): string {
-  return EFFORT_LABELS[effort]
+function onSelectEffort(level: EffortLevel) {
+  chat.selectedEffort = level
 }
 
 function renderMd(md: string): string {
@@ -150,19 +128,6 @@ watch(
   },
   { deep: true },
 )
-
-// settings.apiFormat 改时，如果 chat 当前 model 不在新 provider 列表里 → 给个 hint（不强制改）
-watch(
-  () => settings.config.apiFormat,
-  (newFmt) => {
-    const m = findModel(chat.selectedModel)
-    if (m && m.provider === 'openai' && newFmt === 'anthropic_messages') {
-      // 不动 selectedModel，玩家自己改；只是 hint
-    } else if (m && m.provider === 'anthropic' && newFmt !== 'anthropic_messages') {
-      // 同上
-    }
-  },
-)
 </script>
 
 <template>
@@ -184,48 +149,6 @@ watch(
           <X :size="14" />
         </button>
       </div>
-    </div>
-
-    <!-- Model + Effort selector bar (chat session level, 跟 Locus selectedModel/thinkingLevel 同位) -->
-    <div v-if="settings.config" class="model-bar">
-      <div class="model-bar-row">
-        <label class="model-bar-field">
-          <span class="model-bar-label">
-            <Cpu :size="12" />
-            <span>Model</span>
-          </span>
-          <input
-            v-model="chat.selectedModel"
-            @change="onModelChange"
-            type="text"
-            :list="DATALIST_ID"
-            placeholder="gpt-4o-mini"
-            :disabled="isStreaming"
-            spellcheck="false"
-          />
-          <datalist :id="DATALIST_ID">
-            <option v-for="m in suggestedModels" :key="m.id" :value="m.id">
-              {{ m.name }} — {{ formatContextWindow(m.contextWindow) }}{{ m.isDefault ? ' (默认)' : '' }}
-            </option>
-          </datalist>
-        </label>
-        <label class="model-bar-field effort">
-          <span class="model-bar-label">
-            <Sparkles :size="12" />
-            <span>Effort</span>
-          </span>
-          <select
-            :value="chat.selectedEffort"
-            @change="(e) => onEffortChange((e.target as HTMLSelectElement).value as EffortLevel)"
-            :disabled="isStreaming"
-          >
-            <option v-for="eff in availableEfforts" :key="eff" :value="eff">
-              {{ effortLabel(eff) }}
-            </option>
-          </select>
-        </label>
-      </div>
-      <div class="model-bar-info">{{ modelInfoText }}</div>
     </div>
 
     <div ref="transcriptEl" class="transcript">
@@ -265,13 +188,24 @@ watch(
     </div>
 
     <form class="composer" @submit.prevent="send">
+      <!-- footer-start: Locus 同款 ModelEffortSelector（嵌在 composer 左下角） -->
+      <ModelEffortSelector
+        :models="suggestedModels"
+        :selected-id="chat.selectedModel"
+        :effort="chat.selectedEffort"
+        :effort-supported="effortSupported"
+        align="start"
+        :disabled="isStreaming"
+        @select-model="onSelectModel"
+        @select-effort="onSelectEffort"
+      />
       <textarea
         v-model="input"
         placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
         :disabled="isStreaming"
         @keydown.enter.exact.prevent="send"
       />
-      <button v-if="!isStreaming" type="submit" :disabled="!input.trim()">
+      <button v-if="!isStreaming" type="submit" :disabled="!input.trim() || !chat.selectedModel.trim()">
         <Send :size="16" />
         <span>发送</span>
       </button>
@@ -510,6 +444,7 @@ watch(
   padding: 12px 20px;
   border-top: 1px solid var(--border);
   background: var(--bg-elev);
+  align-items: flex-end; /* Locus 风格：selector 跟 textarea 底对齐 */
 }
 .composer textarea {
   flex: 1;
@@ -540,73 +475,5 @@ watch(
 .composer button.stop {
   background: var(--error);
   color: white;
-}
-
-/* === Model + Effort selector bar === */
-.model-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 20px;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.model-bar-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
-}
-.model-bar-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.model-bar-field.effort {
-  flex: 0 0 160px;
-}
-.model-bar-label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 500;
-}
-.model-bar-field input,
-.model-bar-field select {
-  padding: 4px 8px;
-  font-size: 12px;
-  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-.model-bar-field input:focus,
-.model-bar-field select:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.model-bar-field input:disabled,
-.model-bar-field select:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.model-bar-field select {
-  font-family: inherit;
-  cursor: pointer;
-}
-.model-bar-info {
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 </style>
