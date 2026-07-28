@@ -77,14 +77,18 @@ export const EFFORT_ORDER: readonly EffortLevel[] = [
   'max',
 ] as const
 
-/** Effort 人类可读 label（UI dropdown 用） */
+/** Effort 人类可读 label（UI dropdown / trigger chip 用，跟 Locus `defs[].label` 一字一致）
+ *
+ *  Locus: `None` / `Low` / `Med`（缩写）/ `High` / `XHigh`（CamelCase）/ `Max`
+ *  PlotCraft v0.1 跟 Locus 对齐 —— trigger 跟 dropdown 都用这套 label
+ */
 export const EFFORT_LABELS: Record<EffortLevel, string> = {
-  none: 'none (off)',
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  xhigh: 'xhigh',
-  max: 'max',
+  none: 'None',
+  low: 'Low',
+  medium: 'Med',
+  high: 'High',
+  xhigh: 'XHigh',
+  max: 'Max',
 }
 
 /** ApiFormat 的人类可读 label（UI dropdown 用） */

@@ -93,11 +93,15 @@ const levels = computed<EffortLevel[]>(() => {
   return getSupportedEfforts(selectedModel.value ?? undefined)
 })
 
-/** 当前选中的 effort 在 levels 里的下标（用于 trigger label 展示） */
+/** 当前选中的 effort 在 trigger 里的显示 label（CamelCase 跟 Locus 同款）
+ *
+ *  effort = 'none' → 不显示（避免 trigger 太乱；玩家想关 effort 就当不显示）
+ *  其他 → 显示 EFFORT_LABELS[effort]（如 "XHigh" / "Max" / "Med"）
+ */
 const currentLevelLabel = computed<string | null>(() => {
   if (!props.effortSupported) return null
-  if (props.effort === 'none') return null // 触发器不显示 "None" 字样（避免 clutter）
-  return props.effort
+  if (props.effort === 'none') return null
+  return EFFORT_LABELS[props.effort]
 })
 
 /** grouped models（左 panel） */
@@ -305,8 +309,9 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
 }
 .model-effort-level {
   flex-shrink: 0;
-  font-weight: 500;
-  text-transform: lowercase;
+  font-weight: 600; /* 比 trigger 其他文字粗，让 effort 标签更显眼 */
+  letter-spacing: 0.2px;
+  /* 不强制 text-transform：EFFORT_LABELS 已经是 CamelCase（"XHigh" / "Max"） */
 }
 .model-effort-chevron {
   flex-shrink: 0;
@@ -412,8 +417,9 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
 .model-effort-option-tag {
   flex-shrink: 0;
   font-size: 11px;
-  text-transform: lowercase;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  /* 不强制 text-transform：EFFORT_LABELS 已经是 CamelCase */
 }
 
 /* === Dropdown transition === */
