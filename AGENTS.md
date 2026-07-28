@@ -134,7 +134,9 @@ Locus 实测 4 个卡顿源 → 4 个反制。**学架构思想，不照搬代�
 
 ## 7. 硬规则（改之前先想）
 
-1. **不**重用 Locus 代码。Locus 是 `C:\Users\dd\Documents\QxLocusProject\Locus` 的 reference，可以读，但 import / 复制粘贴都禁止。
+1. **结构对齐 Locus，代码 PlotCraft 自写**。Locus 是 `C:\Users\dd\Documents\QxLocusProject\Locus` 的 reference —— 读 Locus 的 schema / 架构 / 设计模式对齐，**不**直接 import / 复制粘贴 Locus 的代码文件到 PlotCraft 仓库。
+   - 例外（用户 2026-07-28 决策）：LLM 存储 schema 走 Locus 同构（`providers + modelDefaults + modelCatalog`），但代码仍 PlotCraft 自写，不引 Locus crate / 文件
+   - 底线：Locus 那一坨 1290 行 config.rs + 22 个 Settings 子组件，**不**整块搬过来——按 PlotCraft v0.1 scope（单 provider / 手填 model / 无 OAuth / 无 subagent）写 Locus-shaped 的轻量实现
 2. **Tauri 版本严格 pin**。改 `Cargo.toml` 的 tauri 版本必须**同步**改 `package.json` 的 `@tauri-apps/api` 版本（带 `=` 号）。
 3. **reqwest 保持 `default-features = false` + `rustls-tls`**。开了 native-tls 在 Windows 上 link OpenSSL 会爆。
 4. **AppError enum 是**前后端错误传递的唯一类型。`Result<T, AppError>`，前端 `lib/error.ts` 统一收口。**不**返回 String 错误。
