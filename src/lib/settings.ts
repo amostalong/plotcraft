@@ -55,6 +55,38 @@ export type ApiFormat = 'openai_chat' | 'openai_responses' | 'anthropic_messages
 
 export const DEFAULT_API_FORMAT: ApiFormat = 'openai_chat'
 
+/** Reasoning effort / thinking level（跟 Locus `EffortLevel` 一字一致）
+ *
+ *  v0.1 用法：
+ *  - OpenAI Chat / OpenAI Responses：只 `low` / `medium` / `high` 真正下发
+ *    （其他值后端静默忽略，对应 o-series / reasoning 模型的 thinking 控制）
+ *  - Anthropic：除 `none` 全部映射到 `thinking.budget_tokens`（low=1k/medium=4k/high=16k/xhigh=32k/max=64k）
+ *  - Chat UI / Settings UI 都用这个枚举（跟 Locus `ModelOption.supportedEfforts` 同位）
+ */
+export type EffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+export const DEFAULT_EFFORT: EffortLevel = 'none'
+
+/** Effort 顺序（用于 UI 排序 + 推断默认） */
+export const EFFORT_ORDER: readonly EffortLevel[] = [
+  'none',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
+/** Effort 人类可读 label（UI dropdown 用） */
+export const EFFORT_LABELS: Record<EffortLevel, string> = {
+  none: 'none (off)',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'max',
+}
+
 /** ApiFormat 的人类可读 label（UI dropdown 用） */
 export const API_FORMAT_LABELS: Record<ApiFormat, string> = {
   openai_chat: 'OpenAI Chat Completions',

@@ -3,6 +3,7 @@
 //
 // 布局：
 // - Section 1: 当前激活的连接（model / baseUrl / apiKey / apiFormat 顶层字段）
+//   + Test Connection 按钮：非流式 ping 一次验证 endpoint+apiKey+model
 // - Section 2: 已保存的第三方 provider 库（customProviders[]）
 //
 // 跟 Locus 差别：
@@ -20,10 +21,26 @@
 // 玩家挑要导入哪些 provider（API key 不带 —— Locus 存 keychain）。
 
 import { ref, computed } from 'vue'
-import { Plus, Trash2, Check, AlertTriangle, Power, PowerOff, Pencil, X, Save, Download } from 'lucide-vue-next'
+import {
+  Plus,
+  Trash2,
+  Check,
+  AlertTriangle,
+  Power,
+  PowerOff,
+  Pencil,
+  X,
+  Save,
+  Download,
+  Zap,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+} from 'lucide-vue-next'
 import type { CustomProvider, ApiFormat } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
 import { importFromLocus, type LocusImportData } from '@/lib/locusImport'
+import { testProvider, type TestProviderResult } from '@/lib/llm'
 import { useSettingsStore } from '@/stores/settings'
 
 const props = defineProps<{
@@ -231,6 +248,67 @@ function applyImport() {
 
   closeImportModal()
 }
+
+// === Test Connection ===
+// 用 Rust `test_provider` command 非流式 ping 一次当前激活的连接
+// 三种 apiFormat 都支持；用 model 字段从 settings 顶层读（不是 local state）
+const testRunning = ref(false)
+const testResult = ref<TestProviderResult | null>(null)
+
+async function onTestConnection() {
+  testRunning.value = true
+  testResult.value = null
+  try {
+    const settings = useSettingsStore()
+    const model = settings.config.model || ''
+    if (!baseUrl.value) {
+      testResult.value = {
+        ok: false,
+        error: 'Endpoint 为空',
+        endpoint: '',
+        model,
+        apiFormat: apiFormat.value,
+      }
+      return
+    }
+    if (!apiKey.value && !baseUrl.value.includes('localhost')) {
+      testResult.value = {
+        ok: false,
+        error: 'API Key 为空（非 localhost endpoint 必须填 key）',
+        endpoint: baseUrl.value,
+        model,
+        apiFormat: apiFormat.value,
+      }
+      return
+    }
+    if (!model) {
+      testResult.value = {
+        ok: false,
+        error: 'Model 为空 —— 先去 Model Defaults 填一个',
+        endpoint: baseUrl.value,
+        model: '',
+        apiFormat: apiFormat.value,
+      }
+      return
+    }
+    testResult.value = await testProvider({
+      endpoint: baseUrl.value,
+      apiKey: apiKey.value,
+      apiFormat: apiFormat.value,
+      model,
+    })
+  } catch (e) {
+    testResult.value = {
+      ok: false,
+      error: String(e),
+      endpoint: baseUrl.value ?? '',
+      model: '',
+      apiFormat: apiFormat.value,
+    }
+  } finally {
+    testRunning.value = false
+  }
+}
 </script>
 
 <template>
@@ -291,6 +369,41 @@ function applyImport() {
           v0.1 裸存在本地 <code>config.json</code>（自用风险可接受；v0.2 升 OS keyring）
         </span>
       </label>
+
+      <!-- Test Connection -->
+      <div class="test-conn">
+        <button
+          @click="onTestConnection"
+          :disabled="testRunning"
+          class="test-btn"
+        >
+          <Loader2 v-if="testRunning" :size="14" class="spin" />
+          <Zap v-else :size="14" />
+          <span>{{ testRunning ? 'Testing...' : 'Test Connection' }}</span>
+        </button>
+        <div v-if="testResult" class="test-result" :class="{ ok: testResult.ok, fail: !testResult.ok }">
+          <CheckCircle2 v-if="testResult.ok" :size="14" />
+          <XCircle v-else :size="14" />
+          <div class="test-result-text">
+            <div v-if="testResult.ok" class="test-result-line">
+              <strong>连接成功</strong>
+              <span v-if="testResult.status">（HTTP {{ testResult.status }}）</span>
+            </div>
+            <div v-else class="test-result-line">
+              <strong>连接失败</strong>
+              <span v-if="testResult.status">（HTTP {{ testResult.status }}）</span>
+            </div>
+            <div v-if="testResult.response" class="test-response">
+              <span class="test-label">模型返回：</span>
+              <code>{{ testResult.response }}</code>
+            </div>
+            <div v-if="testResult.error" class="test-error">
+              <span class="test-label">错误：</span>
+              <code>{{ testResult.error }}</code>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Section 2: Saved library -->
@@ -659,6 +772,89 @@ label input:focus {
   color: var(--text-muted);
   margin-top: 4px;
   line-height: 1.4;
+}
+
+/* Test Connection */
+.test-conn {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.test-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+}
+.test-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.test-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.test-btn .spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.test-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.test-result.ok {
+  background: rgba(80, 200, 120, 0.10);
+  border: 1px solid var(--success);
+  color: var(--success);
+}
+.test-result.fail {
+  background: rgba(232, 90, 90, 0.10);
+  border: 1px solid var(--error);
+  color: var(--error);
+}
+.test-result-text {
+  flex: 1;
+  min-width: 0;
+}
+.test-result-line {
+  font-weight: 500;
+}
+.test-response,
+.test-error {
+  margin-top: 4px;
+  color: var(--text);
+  word-break: break-word;
+}
+.test-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-right: 4px;
+}
+.test-response code,
+.test-error code {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  word-break: break-all;
 }
 
 /* Form (Add / Edit) */

@@ -75,7 +75,12 @@ pub async fn stream_chat_openai_responses(
         RESPONSES_PATH
     );
     let (instructions, input_messages) = split_system_messages(&messages);
-    let body = build_openai_responses_body(&config.model, instructions.as_deref(), &input_messages);
+    let body = build_openai_responses_body(
+        config.effective_model(),
+        instructions.as_deref(),
+        &input_messages,
+        config.effort,
+    );
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
 
@@ -247,6 +252,7 @@ fn build_openai_responses_body(
     model: &str,
     instructions: Option<&str>,
     messages: &[ChatMessage],
+    effort: Option<super::config::EffortLevel>,
 ) -> serde_json::Value {
     let input: Vec<serde_json::Value> = messages
         .iter()
@@ -270,12 +276,19 @@ fn build_openai_responses_body(
     if let Some(ins) = instructions {
         body["instructions"] = serde_json::Value::String(ins.to_string());
     }
+    // v0.1+ reasoning: Responses API 用嵌套对象 {effort: "low|medium|high"}
+    if let Some(effort_val) = effort.and_then(|e| e.to_openai_effort()) {
+        body["reasoning"] = serde_json::json!({
+            "effort": effort_val,
+        });
+    }
     body
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::config::EffortLevel;
 
     #[test]
     fn parse_responses_sse_extracts_text_deltas() {
@@ -329,5 +342,50 @@ mod tests {
         buf.push_str("data: {\"type\":\"something_else\",\"delta\":\"x\"}\n\n");
         let deltas = parse_responses_sse_buffer(&mut buf);
         assert!(deltas.is_empty());
+    }
+
+    #[test]
+    fn build_responses_body_no_effort_omits_reasoning() {
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        let body = build_openai_responses_body("o1", Some("sys"), &msgs, None);
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(!json.contains("reasoning"));
+    }
+
+    #[test]
+    fn build_responses_body_includes_nested_reasoning_effort() {
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        for (effort, expected) in [
+            (EffortLevel::Low, "\"reasoning\":{\"effort\":\"low\"}"),
+            (EffortLevel::Medium, "\"reasoning\":{\"effort\":\"medium\"}"),
+            (EffortLevel::High, "\"reasoning\":{\"effort\":\"high\"}"),
+        ] {
+            let body = build_openai_responses_body("o1", None, &msgs, Some(effort));
+            let json = serde_json::to_string(&body).unwrap();
+            assert!(json.contains(expected), "expected {} in {}", expected, json);
+        }
+    }
+
+    #[test]
+    fn build_responses_body_skips_unsupported_effort() {
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        for effort in [
+            EffortLevel::None,
+            EffortLevel::Xhigh,
+            EffortLevel::Max,
+        ] {
+            let body = build_openai_responses_body("o1", None, &msgs, Some(effort));
+            let json = serde_json::to_string(&body).unwrap();
+            assert!(!json.contains("reasoning"));
+        }
     }
 }

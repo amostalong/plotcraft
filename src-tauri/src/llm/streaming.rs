@@ -24,7 +24,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::config::{ApiFormat, LlmConfig};
+use super::config::{ApiFormat, EffortLevel, LlmConfig};
 use super::streaming_anthropic::stream_chat_anthropic;
 use super::streaming_openai_responses::stream_chat_openai_responses;
 use super::types::{ChatMessage, MessageRole};
@@ -101,7 +101,7 @@ pub async fn stream_chat_openai_chat(
         config.endpoint.trim_end_matches('/'),
         CHAT_COMPLETIONS_PATH
     );
-    let body = build_openai_request_body(&config.model, &messages);
+    let body = build_openai_request_body(config.effective_model(), &messages, config.effort);
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
 
@@ -290,7 +290,11 @@ pub(crate) fn parse_openai_sse_buffer(buffer: &mut String) -> Vec<String> {
     deltas
 }
 
-fn build_openai_request_body(model: &str, messages: &[ChatMessage]) -> serde_json::Value {
+fn build_openai_request_body(
+    model: &str,
+    messages: &[ChatMessage],
+    effort: Option<EffortLevel>,
+) -> serde_json::Value {
     let api_messages: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
@@ -304,10 +308,69 @@ fn build_openai_request_body(model: &str, messages: &[ChatMessage]) -> serde_jso
             })
         })
         .collect();
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": api_messages,
         "stream": true,
         "stream_options": { "include_usage": true }
-    })
+    });
+    // v0.1+ reasoning_effort：仅 low/medium/high 真实下发
+    if let Some(effort_val) = effort.and_then(|e| e.to_openai_effort()) {
+        body["reasoning_effort"] = serde_json::Value::String(effort_val.to_string());
+    }
+    body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::types::{ChatMessage, MessageRole};
+
+    #[test]
+    fn build_openai_request_body_no_effort_omits_field() {
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        let body = build_openai_request_body("gpt-4o-mini", &msgs, None);
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(!json.contains("reasoning_effort"));
+        assert!(json.contains("\"stream\":true"));
+        assert!(json.contains("\"model\":\"gpt-4o-mini\""));
+    }
+
+    #[test]
+    fn build_openai_request_body_includes_supported_effort() {
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        for (effort, expected) in [
+            (Some(EffortLevel::Low), "\"reasoning_effort\":\"low\""),
+            (Some(EffortLevel::Medium), "\"reasoning_effort\":\"medium\""),
+            (Some(EffortLevel::High), "\"reasoning_effort\":\"high\""),
+        ] {
+            let body = build_openai_request_body("o1", &msgs, effort);
+            let json = serde_json::to_string(&body).unwrap();
+            assert!(json.contains(expected), "expected {} in {}", expected, json);
+        }
+    }
+
+    #[test]
+    fn build_openai_request_body_skips_unsupported_effort() {
+        // None / Xhigh / Max → OpenAI 不支持，field 不下发
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        for effort in [
+            Some(EffortLevel::None),
+            Some(EffortLevel::Xhigh),
+            Some(EffortLevel::Max),
+        ] {
+            let body = build_openai_request_body("o1", &msgs, effort);
+            let json = serde_json::to_string(&body).unwrap();
+            assert!(!json.contains("reasoning_effort"));
+        }
+    }
 }

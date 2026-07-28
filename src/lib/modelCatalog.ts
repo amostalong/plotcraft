@@ -10,6 +10,8 @@
 //
 // 数据本身是公开模型名 + context window（厂商公开），不 import Locus 文件（AGENTS.md 硬规则）
 
+import type { EffortLevel } from './settings'
+
 export interface BuiltinModel {
   /** model id，发送给 LLM API（如 `"gpt-4o-mini"`） */
   id: string
@@ -23,6 +25,11 @@ export interface BuiltinModel {
   isDefault?: boolean
   /** 备注（给玩家看的下拉 hint） */
   note?: string
+  /** 该模型支持的 reasoning effort 列表（空 = 不支持 thinking 控制）
+   *  跟 Locus `ModelOption.supportedEfforts` 同位（参考 Locus `types.ts:543`） */
+  supportedEfforts?: EffortLevel[]
+  /** 该模型默认的 effort（玩家没改时使用） */
+  defaultEffort?: EffortLevel
 }
 
 /**
@@ -71,6 +78,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'openai',
     contextWindow: 200_000,
     note: '200K context · 推理强',
+    supportedEfforts: ['low', 'medium', 'high'],
+    defaultEffort: 'medium',
   },
   {
     id: 'o1-mini',
@@ -78,6 +87,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'openai',
     contextWindow: 128_000,
     note: '128K context · 推理性价比',
+    supportedEfforts: ['low', 'medium', 'high'],
+    defaultEffort: 'medium',
   },
   {
     id: 'o3-mini',
@@ -85,6 +96,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'openai',
     contextWindow: 200_000,
     note: '200K context · 最新推理',
+    supportedEfforts: ['none', 'low', 'medium', 'high'],
+    defaultEffort: 'medium',
   },
   // --- OpenAI 兼容（自建 endpoint / proxy）---
   {
@@ -100,6 +113,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'openai',
     contextWindow: 64_000,
     note: '64K · 推理模型 · 慢',
+    supportedEfforts: ['none', 'low', 'medium', 'high'],
+    defaultEffort: 'medium',
   },
   {
     id: 'qwen-plus',
@@ -122,6 +137,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'anthropic',
     contextWindow: 200_000,
     note: '200K context · Anthropic 旗舰',
+    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'medium',
   },
   {
     id: 'claude-sonnet-4-5',
@@ -129,6 +146,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'anthropic',
     contextWindow: 200_000,
     note: '200K context · 性价比',
+    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'medium',
   },
   {
     id: 'claude-3-5-sonnet-latest',
@@ -136,6 +155,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'anthropic',
     contextWindow: 200_000,
     note: '200K context · 老款旗舰',
+    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'medium',
   },
   {
     id: 'claude-3-5-haiku-latest',
@@ -143,6 +164,8 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'anthropic',
     contextWindow: 200_000,
     note: '200K context · 便宜快',
+    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'medium',
   },
 ]
 
@@ -158,6 +181,29 @@ export function findModel(id: string): BuiltinModel | undefined {
 /** 按 provider 过滤（v0.1 全是 openai，留接口给 v0.2+） */
 export function modelsByProvider(provider: BuiltinModel['provider']): BuiltinModel[] {
   return BUILTIN_MODELS.filter((m) => m.provider === provider)
+}
+
+/** 拿一个 model 的 supported efforts（强制 `none` 永远在第一位）
+ *
+ *  玩家手填 / 不在 BUILTIN_MODELS 列表的 model → 返回 6 个全 effort（让玩家自己选，
+ *  后端对不支持的 model 静默 no-op，不会报错）。
+ */
+export function getSupportedEfforts(model: BuiltinModel | undefined): EffortLevel[] {
+  const all: EffortLevel[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+  if (!model || !model.supportedEfforts || model.supportedEfforts.length === 0) {
+    return all
+  }
+  // 确保 `none` 永远在第一位（即便 model.supportedEfforts 没显式列）
+  const supported = new Set<EffortLevel>(model.supportedEfforts)
+  if (!supported.has('none')) {
+    return ['none', ...model.supportedEfforts]
+  }
+  return model.supportedEfforts
+}
+
+/** 拿一个 model 的默认 effort（找不到 / 自定义 → `none`） */
+export function getDefaultEffort(model: BuiltinModel | undefined): EffortLevel {
+  return model?.defaultEffort ?? 'none'
 }
 
 /** 格式化 context window 展示（"128000" → "128K"） */

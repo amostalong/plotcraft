@@ -121,6 +121,61 @@ pub enum ApiFormat {
     AnthropicMessages,
 }
 
+/// Reasoning effort / thinking level（跟 Locus `EffortLevel` 一字一致）
+///
+/// v0.1+ 跟 Locus 对齐，TS 端用同名 enum，Rust 这边镜像一份。
+///
+/// JSON 序列化用小写字符串（`"none"` / `"low"` / `"medium"` / `"high"` / `"xhigh"` / `"max"`），
+/// 跟 Locus `EffortLevel` JSON 形状一致。
+///
+/// 各 API 实际下发规则（v0.1）：
+/// - OpenAI Chat / Responses：`none` → 不下发；`low|medium|high` → `reasoning_effort` /
+///   `reasoning: {effort}`；`xhigh|max` → 静默忽略（OpenAI 不支持）
+/// - Anthropic Messages：`none` → 不下发；其他 → `thinking: {type:"enabled", budget_tokens:N}`
+///   其中 N 按 effort 映射（low=1k/medium=4k/high=16k/xhigh=32k/max=64k）
+/// - 不支持的 model：下发时静默忽略（reasoning 控制是 best-effort）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EffortLevel {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl EffortLevel {
+    /// OpenAI Chat Completions / Responses API 下发值
+    /// - `None` → `None`（不发送 reasoning 字段）
+    /// - `Low|Medium|High` → 字符串原样返回
+    /// - `Xhigh|Max` → `None`（OpenAI 不支持，静默忽略）
+    pub fn to_openai_effort(self) -> Option<&'static str> {
+        match self {
+            EffortLevel::None => None,
+            EffortLevel::Low => Some("low"),
+            EffortLevel::Medium => Some("medium"),
+            EffortLevel::High => Some("high"),
+            EffortLevel::Xhigh | EffortLevel::Max => None,
+        }
+    }
+
+    /// Anthropic Messages API `thinking.budget_tokens` 下发值
+    /// - `None` → `None`（不发送 thinking 字段）
+    /// - `Low|Medium|High|Xhigh|Max` → 按比例映射到 token 数
+    pub fn to_anthropic_budget(self) -> Option<u32> {
+        match self {
+            EffortLevel::None => None,
+            EffortLevel::Low => Some(1024),
+            EffortLevel::Medium => Some(4096),
+            EffortLevel::High => Some(16384),
+            EffortLevel::Xhigh => Some(32768),
+            EffortLevel::Max => Some(65536),
+        }
+    }
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
@@ -284,12 +339,21 @@ impl AppConfig {
 ///
 /// v0.1：从 `AppConfig` 顶层 `model` / `base_url` / `api_key` / `api_format` 解出
 /// v0.2+：多 provider 时再加 `provider` 字段
+///
+/// v0.1+ 扩展（per-run override）：
+/// - `model_override`：start_chat 临时覆盖（不写回 config.json）
+/// - `effort`：reasoning effort / thinking level（per run）
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub endpoint: String,
     pub api_key: String,
+    /// config.json 里存的主 model（来自 `AppConfig.model`）
     pub model: String,
     pub api_format: ApiFormat,
+    /// per-run model 覆盖（来自 start_chat 的 `ChatRunOptions.model`）
+    pub model_override: Option<String>,
+    /// per-run effort（来自 start_chat 的 `ChatRunOptions.effort`）
+    pub effort: Option<EffortLevel>,
 }
 
 impl LlmConfig {
@@ -314,7 +378,17 @@ impl LlmConfig {
             api_key: cfg.api_key,
             model,
             api_format: cfg.api_format,
+            model_override: None,
+            effort: None,
         })
+    }
+
+    /// 实际发请求用的 model（model_override 优先）
+    pub fn effective_model(&self) -> &str {
+        self.model_override
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.model)
     }
 }
 
@@ -428,6 +502,72 @@ mod tests {
         };
         assert_eq!(endpoint, DEFAULT_OPENAI_ENDPOINT);
         assert_eq!(model, DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn llm_config_effective_model_prefers_override() {
+        let cfg = LlmConfig {
+            endpoint: "https://api.openai.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_format: ApiFormat::OpenaiChat,
+            model_override: Some("o1".to_string()),
+            effort: Some(EffortLevel::High),
+        };
+        assert_eq!(cfg.effective_model(), "o1");
+
+        // 空 override → 回退主 model
+        let cfg2 = LlmConfig {
+            model_override: Some(String::new()),
+            ..cfg.clone()
+        };
+        assert_eq!(cfg2.effective_model(), "gpt-4o-mini");
+
+        // None override → 回退主 model
+        let cfg3 = LlmConfig {
+            model_override: None,
+            ..cfg
+        };
+        assert_eq!(cfg3.effective_model(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn effort_level_openai_mapping() {
+        assert_eq!(EffortLevel::None.to_openai_effort(), None);
+        assert_eq!(EffortLevel::Low.to_openai_effort(), Some("low"));
+        assert_eq!(EffortLevel::Medium.to_openai_effort(), Some("medium"));
+        assert_eq!(EffortLevel::High.to_openai_effort(), Some("high"));
+        // Xhigh / Max → OpenAI 不支持，静默忽略
+        assert_eq!(EffortLevel::Xhigh.to_openai_effort(), None);
+        assert_eq!(EffortLevel::Max.to_openai_effort(), None);
+    }
+
+    #[test]
+    fn effort_level_anthropic_budget_mapping() {
+        assert_eq!(EffortLevel::None.to_anthropic_budget(), None);
+        assert_eq!(EffortLevel::Low.to_anthropic_budget(), Some(1024));
+        assert_eq!(EffortLevel::Medium.to_anthropic_budget(), Some(4096));
+        assert_eq!(EffortLevel::High.to_anthropic_budget(), Some(16384));
+        assert_eq!(EffortLevel::Xhigh.to_anthropic_budget(), Some(32768));
+        assert_eq!(EffortLevel::Max.to_anthropic_budget(), Some(65536));
+    }
+
+    #[test]
+    fn effort_level_json_roundtrip() {
+        // 跟 Locus EffortLevel 字符串一致（小写）
+        for (e, expected) in [
+            (EffortLevel::None, "\"none\""),
+            (EffortLevel::Low, "\"low\""),
+            (EffortLevel::Medium, "\"medium\""),
+            (EffortLevel::High, "\"high\""),
+            (EffortLevel::Xhigh, "\"xhigh\""),
+            (EffortLevel::Max, "\"max\""),
+        ] {
+            let json = serde_json::to_string(&e).unwrap();
+            assert_eq!(json, expected);
+            let back: EffortLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, e);
+        }
     }
 
     #[test]

@@ -104,7 +104,12 @@ pub async fn stream_chat_anthropic(
         MESSAGES_PATH
     );
     let (system_text, api_messages) = split_system_messages(&messages);
-    let body = build_anthropic_request_body(&config.model, system_text.as_deref(), &api_messages);
+    let body = build_anthropic_request_body(
+        config.effective_model(),
+        system_text.as_deref(),
+        &api_messages,
+        config.effort,
+    );
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
 
@@ -297,6 +302,7 @@ fn build_anthropic_request_body(
     model: &str,
     system: Option<&str>,
     messages: &[ChatMessage],
+    effort: Option<super::config::EffortLevel>,
 ) -> serde_json::Value {
     let api_messages: Vec<serde_json::Value> = messages
         .iter()
@@ -320,6 +326,13 @@ fn build_anthropic_request_body(
     });
     if let Some(sys) = system {
         body["system"] = serde_json::Value::String(sys.to_string());
+    }
+    // v0.1+ thinking: effort != None → 加 thinking 块（带 budget_tokens）
+    if let Some(budget) = effort.and_then(|e| e.to_anthropic_budget()) {
+        body["thinking"] = serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": budget,
+        });
     }
     body
 }
@@ -403,5 +416,53 @@ mod tests {
         assert_eq!(rest.len(), 2);
         assert!(matches!(rest[0].role, MessageRole::User));
         assert!(matches!(rest[1].role, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn build_anthropic_body_no_effort_omits_thinking() {
+        use super::super::config::EffortLevel;
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        let body = build_anthropic_request_body(
+            "claude-sonnet-4-5",
+            Some("sys"),
+            &msgs,
+            Some(EffortLevel::None),
+        );
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(!json.contains("thinking"), "no thinking field expected: {}", json);
+    }
+
+    #[test]
+    fn build_anthropic_body_includes_thinking_with_budget() {
+        use super::super::config::EffortLevel;
+        let msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hi".to_string(),
+        }];
+        for (effort, expected_budget) in [
+            (EffortLevel::Low, 1024),
+            (EffortLevel::Medium, 4096),
+            (EffortLevel::High, 16384),
+            (EffortLevel::Xhigh, 32768),
+            (EffortLevel::Max, 65536),
+        ] {
+            let body = build_anthropic_request_body(
+                "claude-sonnet-4-5",
+                None,
+                &msgs,
+                Some(effort),
+            );
+            let json = serde_json::to_string(&body).unwrap();
+            assert!(json.contains("\"type\":\"enabled\""), "missing type enabled: {}", json);
+            assert!(
+                json.contains(&format!("\"budget_tokens\":{}", expected_budget)),
+                "missing budget {} in: {}",
+                expected_budget,
+                json
+            );
+        }
     }
 }

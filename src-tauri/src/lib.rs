@@ -34,6 +34,7 @@ pub fn run() {
             plotcraft_version,
             commands::llm::start_chat,
             commands::llm::cancel_chat,
+            commands::llm::test_provider,
             commands::project::create_project,
             commands::project::list_projects,
             commands::settings::load_config,
