@@ -12,13 +12,17 @@ interface Tab {
   icon: typeof Home
 }
 
+// Tab 顺序：会话置首（参考 Locus：chat 是默认落地页）
+// - 路由层 `path: '/'` → `redirect: '/session'` 已经把默认页设到 chat
+// - 这里把 tab bar 顺序也跟上来，开窗即见 chat
+// - 5 个 placeholder 保留可见（v0.2 实装信号）
 const tabs: readonly Tab[] = [
+  { name: '会话', path: '/session', icon: MessageSquare },
   { name: '概览', path: '/overview', icon: Home },
   { name: '世界', path: '/world', icon: Globe },
   { name: '人物', path: '/characters', icon: Users },
   { name: '剧情', path: '/plot', icon: BookOpen },
   { name: '设定图', path: '/art', icon: ImageIcon },
-  { name: '会话', path: '/session', icon: MessageSquare },
   { name: '设置', path: '/settings', icon: SettingsIcon },
 ] as const
 
