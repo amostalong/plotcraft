@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 mod commands;
 mod error;
 mod llm;
+mod project;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -35,6 +36,8 @@ pub fn run() {
             plotcraft_version,
             commands::llm::start_chat,
             commands::llm::cancel_chat,
+            commands::project::create_project,
+            commands::project::list_projects,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

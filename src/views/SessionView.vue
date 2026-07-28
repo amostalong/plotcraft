@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AlertCircle, Bot, Send, Square, User as UserIcon } from 'lucide-vue-next'
+import { AlertCircle, Bot, FolderOpen, Plus, Send, Square, User as UserIcon, X } from 'lucide-vue-next'
 
 import { useChatStore } from '@/stores/chat'
+import { useProjectStore } from '@/stores/project'
 import { renderMarkdown } from '@/lib/markdown'
 
 const chat = useChatStore()
+const project = useProjectStore()
 
 const input = ref('')
 const transcriptEl = ref<HTMLElement | null>(null)
@@ -16,7 +18,6 @@ const status = computed(() => chat.state.status)
 const error = computed(() => chat.state.error)
 const isStreaming = computed(() => status.value === 'streaming')
 
-// markdown 渲染（assistant 消息 + streaming）
 function renderMd(md: string): string {
   return renderMarkdown(md)
 }
@@ -39,6 +40,16 @@ async function stop() {
   await chat.stopCurrent()
 }
 
+async function onCreate() {
+  await project.createNew()
+}
+async function onOpen() {
+  await project.openExisting()
+}
+function onCloseProject() {
+  project.close()
+}
+
 // 自动滚到底部（streaming 时持续滚）
 watch(
   [messages, currentText],
@@ -54,11 +65,31 @@ watch(
 
 <template>
   <div class="session">
+    <div class="toolbar">
+      <button v-if="!project.current" @click="onCreate" class="primary">
+        <Plus :size="14" />
+        <span>新建项目</span>
+      </button>
+      <button v-if="!project.current" @click="onOpen">
+        <FolderOpen :size="14" />
+        <span>打开项目</span>
+      </button>
+      <div v-if="project.current" class="current-project">
+        <FolderOpen :size="14" />
+        <span class="name">{{ project.current.name }}</span>
+        <span class="path">{{ project.current.folder }}</span>
+        <button @click="onCloseProject" class="close" title="关闭项目">
+          <X :size="14" />
+        </button>
+      </div>
+    </div>
+
     <div ref="transcriptEl" class="transcript">
       <div v-if="messages.length === 0 && !currentText" class="empty">
         <Bot :size="48" :stroke-width="1.5" />
         <h2>开始新对话</h2>
         <p>跟 AI 聊你的 RPG / VN 设定 —— 我会给 3-5 个备选让你挑 + 改</p>
+        <p v-if="!project.current" class="hint">建议先点顶部"新建项目"或"打开项目"</p>
       </div>
 
       <div
@@ -115,6 +146,65 @@ watch(
   height: 100%;
   background: var(--bg);
 }
+.toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  align-items: center;
+  flex-shrink: 0;
+}
+.toolbar button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.toolbar button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.toolbar button.primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.toolbar button.primary:hover {
+  background: var(--accent);
+  color: var(--bg);
+  opacity: 0.85;
+}
+.current-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.current-project .name {
+  color: var(--accent);
+  font-weight: 500;
+}
+.current-project .path {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+.current-project .close {
+  padding: 2px;
+  border: none;
+  background: transparent;
+}
 .transcript {
   flex: 1;
   overflow-y: auto;
@@ -122,6 +212,7 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 .empty {
   display: flex;
@@ -141,6 +232,11 @@ watch(
   font-size: 13px;
   max-width: 360px;
   text-align: center;
+}
+.empty .hint {
+  margin-top: 8px;
+  color: var(--accent);
+  font-size: 12px;
 }
 .message {
   display: flex;
@@ -170,20 +266,12 @@ watch(
   word-break: break-word;
 }
 .message .content.markdown {
-  white-space: normal; /* markdown 自己的换行处理 */
+  white-space: normal;
 }
 
-/* markdown 内部样式 */
-.markdown :deep(p) {
-  margin: 0 0 8px;
-}
-.markdown :deep(p:last-child) {
-  margin-bottom: 0;
-}
-.markdown :deep(h1),
-.markdown :deep(h2),
-.markdown :deep(h3),
-.markdown :deep(h4) {
+.markdown :deep(p) { margin: 0 0 8px; }
+.markdown :deep(p:last-child) { margin-bottom: 0; }
+.markdown :deep(h1), .markdown :deep(h2), .markdown :deep(h3), .markdown :deep(h4) {
   margin: 12px 0 8px;
   font-weight: 600;
   color: var(--text);
@@ -192,14 +280,11 @@ watch(
 .markdown :deep(h2) { font-size: 16px; }
 .markdown :deep(h3) { font-size: 15px; }
 .markdown :deep(h4) { font-size: 14px; }
-.markdown :deep(ul),
-.markdown :deep(ol) {
+.markdown :deep(ul), .markdown :deep(ol) {
   margin: 0 0 8px;
   padding-left: 20px;
 }
-.markdown :deep(li) {
-  margin-bottom: 2px;
-}
+.markdown :deep(li) { margin-bottom: 2px; }
 .markdown :deep(code) {
   font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
   font-size: 0.9em;
@@ -239,9 +324,7 @@ watch(
   font-weight: 600;
   color: var(--text);
 }
-.markdown :deep(em) {
-  font-style: italic;
-}
+.markdown :deep(em) { font-style: italic; }
 .markdown :deep(hr) {
   border: none;
   border-top: 1px solid var(--border);
