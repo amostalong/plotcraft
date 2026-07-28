@@ -57,6 +57,22 @@ const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
 // === Saved library (v-model) ===
 const customProviders = defineModel<CustomProvider[]>('custom-providers', { required: true })
 
+/** v0.1.2+ 当前 active connection 是否对应某个已 saved 的 custom provider
+ *  匹配规则：baseUrl + apiKey + apiFormat 三者都相等
+ *  用于 Active Connection section 顶部显示 "当前激活：xxx"
+ */
+const activeProvider = computed<CustomProvider | null>(() => {
+  if (!baseUrl.value) return null
+  return (
+    customProviders.value.find(
+      (p) =>
+        p.baseUrl === baseUrl.value &&
+        p.apiKey === apiKey.value &&
+        p.apiFormat === apiFormat.value,
+    ) ?? null
+  )
+})
+
 // === Add / Edit modal (v0.1.2+ 用 ProviderEditModal 替换原 inline form) ===
 const editingProvider = ref<CustomProvider | null>(null)
 const isAdding = ref(false)
@@ -275,54 +291,46 @@ async function onTestConnection() {
       点 <strong>Use</strong> 把 provider 的 endpoint/key 填到当前激活字段。
     </p>
 
-    <!-- Section 1: Active connection -->
+    <!-- Section 1: Active connection（v0.1.2+ readonly display，跟 Locus 同款）
+         v0.1.1 之前这里有 3 个可编辑 input（API Format / Endpoint / API Key）——
+         v0.1.2+ 改用 modal 加 provider + "Use" 切换 active，这边只显示当前状态 + Test 按钮
+    -->
     <section class="section">
       <div class="section-header">
         <span class="section-title">Active Connection</span>
         <span class="section-tag">config.json 顶层</span>
       </div>
 
-      <label>
-        <span class="label-text">API Format</span>
-        <select v-model="apiFormat">
-          <option
-            v-for="(label, fmt) in API_FORMAT_LABELS"
-            :key="fmt"
-            :value="fmt"
-          >
-            {{ label }}
-          </option>
-        </select>
-        <span class="field-hint">
-          当前 LLM 调用的协议 —— 切换后下次发消息生效
-        </span>
-      </label>
+      <div v-if="activeProvider" class="active-provider-badge">
+        <span class="active-provider-label">当前激活：</span>
+        <strong>{{ activeProvider.name }}</strong>
+        <span class="active-provider-id">({{ activeProvider.id }})</span>
+      </div>
+      <p v-else class="active-conn-hint">
+        <AlertTriangle :size="12" />
+        还没激活任何 provider —— 去下方 "Saved Providers" 加一个然后点 "Use"
+      </p>
 
-      <label>
-        <span class="label-text">Endpoint (base_url)</span>
-        <input
-          v-model="baseUrl"
-          type="text"
-          placeholder="https://api.openai.com/v1"
-        />
-        <span class="field-hint">
-          OpenAI / Anthropic 端点 —— 切换 API format 时记得改这里
-        </span>
-      </label>
+      <div class="active-conn-display">
+        <div class="active-conn-row">
+          <span class="label-text">API Format</span>
+          <span class="active-conn-value">{{ formatLabel(apiFormat) }}</span>
+        </div>
+        <div class="active-conn-row">
+          <span class="label-text">Endpoint</span>
+          <code class="active-conn-value mono">{{ baseUrl || '(空)' }}</code>
+        </div>
+        <div class="active-conn-row">
+          <span class="label-text">API Key</span>
+          <code class="active-conn-value mono">
+            {{ apiKey ? '••••' + apiKey.slice(-4) : '(空)' }}
+          </code>
+        </div>
+      </div>
 
-      <label>
-        <span class="label-text">API Key</span>
-        <input
-          v-model="apiKey"
-          type="password"
-          placeholder="sk-..."
-          autocomplete="off"
-        />
-        <span class="field-hint">
-          <AlertTriangle :size="12" />
-          v0.1 裸存在本地 <code>config.json</code>（自用风险可接受；v0.2 升 OS keyring）
-        </span>
-      </label>
+      <p class="active-conn-hint small">
+        v0.1 不支持直接编辑 active connection —— 通过下方 "Add provider" 弹窗加新 provider，然后点 "Use" 复制到 active
+      </p>
 
       <!-- Test Connection -->
       <div class="test-conn">
@@ -672,6 +680,77 @@ label input {
 label input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* === Active Connection readonly display (v0.1.2+) === */
+.active-provider-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.active-provider-label {
+  color: var(--text-muted);
+}
+.active-provider-badge strong {
+  color: var(--accent);
+  font-weight: 500;
+}
+.active-provider-id {
+  color: var(--text-muted);
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 11px;
+}
+
+.active-conn-display {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.active-conn-row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.active-conn-row .label-text {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.active-conn-value {
+  color: var(--text);
+  font-size: 12px;
+  word-break: break-all;
+}
+.active-conn-value.mono {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+}
+
+.active-conn-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+.active-conn-hint.small {
+  margin-top: 4px;
+  margin-bottom: 12px;
+  font-size: 10px;
+  opacity: 0.85;
 }
 .field-hint {
   display: flex;
