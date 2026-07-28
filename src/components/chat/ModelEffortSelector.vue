@@ -55,16 +55,34 @@ const selectedModel = computed<BuiltinModel | null>(
   () => findModel(props.selectedId) ?? null,
 )
 
-/** trigger 按钮显示名（找不到 builtin → 用原 id） */
+/** trigger 按钮显示名（找不到 builtin → 简化原 id）
+ *
+ *  v0.1 处理逻辑（跟 Locus `optionDisplayName` 一致）：
+ *  1. builtin 找到 → 用 `model.name`（例 "GPT-4o mini"）
+ *  2. builtin 找不到但 id 含 `/`（OpenRouter / proxy 风格 `provider/model`）→ 取最后一段
+ *     例 "openrouter/claude-sonnet-4.6" → "claude-sonnet-4.6"
+ *  3. 完全自定义 → 原 id，超过 24 字符截断 + …（避免撑爆 trigger）
+ *  4. 多个 builtin model 同名（不同 provider）→ 加 provider prefix
+ */
+const TRIGGER_MAX_LEN = 24
 const selectedDisplayName = computed(() => {
   const m = selectedModel.value
-  if (!m) return props.selectedId || 'Model'
-  // 重名检测：跟 Locus 行为一致（如果同名 model 来自不同 provider 显示 provider prefix）
-  const duplicated = props.models.some(
-    (other) => other.id !== m.id && other.name === m.name,
-  )
-  if (!duplicated) return m.name
-  return `${providerLabel(m.provider)} / ${m.name}`
+  if (m) {
+    // builtin 找到 + 无重名 → 用 friendly name
+    const duplicated = props.models.some(
+      (other) => other.id !== m.id && other.name === m.name,
+    )
+    if (!duplicated) return m.name
+    return `${providerLabel(m.provider)} / ${m.name}`
+  }
+  // builtin 找不到 → 处理原 id
+  const raw = props.selectedId
+  if (!raw) return 'Model'
+  // OpenRouter 风格 "provider/model" → 取 model 部分
+  const slashIdx = raw.lastIndexOf('/')
+  const cleaned = slashIdx >= 0 ? raw.slice(slashIdx + 1) : raw
+  if (cleaned.length <= TRIGGER_MAX_LEN) return cleaned
+  return cleaned.slice(0, TRIGGER_MAX_LEN - 1) + '…'
 })
 
 /** 当前 model 支持的 effort 列表（按 EFFORT_ORDER 排序） */

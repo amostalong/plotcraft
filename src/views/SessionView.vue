@@ -188,31 +188,37 @@ watch(
     </div>
 
     <form class="composer" @submit.prevent="send">
-      <!-- footer-start: Locus 同款 ModelEffortSelector（嵌在 composer 左下角） -->
-      <ModelEffortSelector
-        :models="suggestedModels"
-        :selected-id="chat.selectedModel"
-        :effort="chat.selectedEffort"
-        :effort-supported="effortSupported"
-        align="start"
-        :disabled="isStreaming"
-        @select-model="onSelectModel"
-        @select-effort="onSelectEffort"
-      />
+      <!-- v0.1+ composer 布局（跟 Locus `ChatComposer` 同位）：
+           - 上：textarea（满宽）
+           - 下：footer 行（ModelEffortSelector 左 + 弹性空间 + 发送按钮 右） -->
       <textarea
         v-model="input"
+        class="composer-input"
         placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
         :disabled="isStreaming"
         @keydown.enter.exact.prevent="send"
       />
-      <button v-if="!isStreaming" type="submit" :disabled="!input.trim() || !chat.selectedModel.trim()">
-        <Send :size="16" />
-        <span>发送</span>
-      </button>
-      <button v-else type="button" class="stop" @click="stop">
-        <Square :size="16" />
-        <span>停止</span>
-      </button>
+      <div class="composer-footer">
+        <ModelEffortSelector
+          :models="suggestedModels"
+          :selected-id="chat.selectedModel"
+          :effort="chat.selectedEffort"
+          :effort-supported="effortSupported"
+          align="start"
+          :disabled="isStreaming"
+          @select-model="onSelectModel"
+          @select-effort="onSelectEffort"
+        />
+        <div class="composer-footer-spacer" />
+        <button v-if="!isStreaming" type="submit" class="composer-send" :disabled="!input.trim() || !chat.selectedModel.trim()">
+          <Send :size="16" />
+          <span>发送</span>
+        </button>
+        <button v-else type="button" class="composer-send stop" @click="stop">
+          <Square :size="16" />
+          <span>停止</span>
+        </button>
+      </div>
     </form>
   </div>
 </template>
@@ -438,41 +444,68 @@ watch(
   font-size: 12px;
   font-style: italic;
 }
+/* === Composer（v0.1+ Locus 风格：textarea 上 + footer 下） === */
 .composer {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 12px 20px;
+  padding: 10px 16px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-elev);
-  align-items: flex-end; /* Locus 风格：selector 跟 textarea 底对齐 */
 }
-.composer textarea {
-  flex: 1;
-  min-height: 40px;
+.composer-input {
+  width: 100%;
+  min-height: 56px;
   max-height: 200px;
   resize: none;
   font-family: inherit;
-  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.12s ease;
 }
-.composer button {
+.composer-input:focus {
+  border-color: var(--accent);
+}
+.composer-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.composer-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.composer-footer-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.composer-send {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: 6px 14px;
   background: var(--accent);
   color: var(--bg);
   border: none;
   border-radius: 6px;
   cursor: pointer;
   font-weight: 500;
+  font-size: 12px;
   font-family: inherit;
+  flex-shrink: 0;
 }
-.composer button:disabled {
+.composer-send:disabled {
   background: var(--border);
   color: var(--text-muted);
   cursor: not-allowed;
 }
-.composer button.stop {
+.composer-send.stop {
   background: var(--error);
   color: white;
 }
