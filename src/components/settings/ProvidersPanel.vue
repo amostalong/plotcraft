@@ -1,10 +1,17 @@
 <script setup lang="ts">
-// Providers panel（v0.1 Locus-shape subset + custom providers 库）
+// Providers panel（v0.1.3+ 只剩 Saved Providers 库 + 顶部 hint）
 //
-// 布局：
-// - Section 1: 当前激活的连接（model / baseUrl / apiKey / apiFormat 顶层字段）
-//   + Test Connection 按钮：非流式 ping 一次验证 endpoint+apiKey+model
-// - Section 2: 已保存的第三方 provider 库（customProviders[]）
+//  v0.1.3 历史：
+//  - v0.1.0 整段 inline 列表 + Add/Edit form
+//  - v0.1.1 改 Locus 同款 custom providers section + import 按钮
+//  - v0.1.2 Active Connection 改 readonly display
+//  - v0.1.3 整段 Active Connection 删除（active 切换完全在 chat tab model selector）
+//
+// 现在的布局：
+// - 顶部 hint：解释 active connection 切换路径
+// - Saved Providers section：每条 provider 一个 card（id / name / baseUrl / apiKey mask
+//   / apiFormat / defaultModel + Use / 启用 / Edit / Delete 按钮）
+// - 顶部按钮：Import from Locus + Add provider（弹 ProviderEditModal）
 //
 // 跟 Locus 差别：
 // - Locus `CustomProvider` 有完整字段 `id/name/endpoint/apiFormat/apiKey/catalogId/models[]`，
@@ -25,22 +32,15 @@ import {
   Plus,
   Trash2,
   Check,
-  AlertTriangle,
   Power,
   PowerOff,
   Pencil,
   X,
   Download,
-  Zap,
-  Loader2,
-  CheckCircle2,
-  XCircle,
 } from 'lucide-vue-next'
 import type { CustomProvider, ApiFormat } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
 import { importFromLocus, type LocusImportData } from '@/lib/locusImport'
-import { testProvider, type TestProviderResult } from '@/lib/llm'
-import { useSettingsStore } from '@/stores/settings'
 import ProviderEditModal from '@/components/settings/ProviderEditModal.vue'
 
 const props = defineProps<{
@@ -49,29 +49,19 @@ const props = defineProps<{
   customProviders: CustomProvider[]
 }>()
 
-// === Active connection (v-model) ===
+// === Active connection (v-model —— settings 顶层字段，player 改不到)
+//
+// v0.1.3+ 这个 panel 不再显示 active connection；
+// 玩家切 active 的唯一路径：
+// 1. chat tab 的 model selector → 选 builtin model 或 custom provider
+// 2. 选 custom provider → SessionView `onSelectModel` 把 baseUrl/apiKey/apiFormat 写到这 3 个 v-model
+// 3. settings 这里保留 v-model 是为了让 "Use" 按钮还能写
 const baseUrl = defineModel<string | null>('base-url', { required: true })
 const apiKey = defineModel<string>('api-key', { required: true })
 const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
 
 // === Saved library (v-model) ===
 const customProviders = defineModel<CustomProvider[]>('custom-providers', { required: true })
-
-/** v0.1.2+ 当前 active connection 是否对应某个已 saved 的 custom provider
- *  匹配规则：baseUrl + apiKey + apiFormat 三者都相等
- *  用于 Active Connection section 顶部显示 "当前激活：xxx"
- */
-const activeProvider = computed<CustomProvider | null>(() => {
-  if (!baseUrl.value) return null
-  return (
-    customProviders.value.find(
-      (p) =>
-        p.baseUrl === baseUrl.value &&
-        p.apiKey === apiKey.value &&
-        p.apiFormat === apiFormat.value,
-    ) ?? null
-  )
-})
 
 // === Add / Edit modal (v0.1.2+ 用 ProviderEditModal 替换原 inline form) ===
 const editingProvider = ref<CustomProvider | null>(null)
@@ -218,155 +208,25 @@ function applyImport() {
 
   closeImportModal()
 }
-
-// === Test Connection ===
-// 用 Rust `test_provider` command 非流式 ping 一次当前激活的连接
-// 三种 apiFormat 都支持；用 model 字段从 settings 顶层读（不是 local state）
-const testRunning = ref(false)
-const testResult = ref<TestProviderResult | null>(null)
-
-async function onTestConnection() {
-  testRunning.value = true
-  testResult.value = null
-  try {
-    const settings = useSettingsStore()
-    const model = settings.config.model || ''
-    if (!baseUrl.value) {
-      testResult.value = {
-        ok: false,
-        error: 'Endpoint 为空',
-        endpoint: '',
-        model,
-        apiFormat: apiFormat.value,
-      }
-      return
-    }
-    if (!apiKey.value && !baseUrl.value.includes('localhost')) {
-      testResult.value = {
-        ok: false,
-        error: 'API Key 为空（非 localhost endpoint 必须填 key）',
-        endpoint: baseUrl.value,
-        model,
-        apiFormat: apiFormat.value,
-      }
-      return
-    }
-    if (!model) {
-      testResult.value = {
-        ok: false,
-        error: 'Model 为空 —— 先去 Model Defaults 填一个',
-        endpoint: baseUrl.value,
-        model: '',
-        apiFormat: apiFormat.value,
-      }
-      return
-    }
-    testResult.value = await testProvider({
-      endpoint: baseUrl.value,
-      apiKey: apiKey.value,
-      apiFormat: apiFormat.value,
-      model,
-    })
-  } catch (e) {
-    testResult.value = {
-      ok: false,
-      error: String(e),
-      endpoint: baseUrl.value ?? '',
-      model: '',
-      apiFormat: apiFormat.value,
-    }
-  } finally {
-    testRunning.value = false
-  }
-}
 </script>
 
 <template>
   <div class="providers-panel">
     <h2>Providers</h2>
     <p class="hint">
-      上面是当前激活的 LLM 连接（顶层的 <code>base_url</code> / <code>apiKey</code>），
-      下面是已保存的第三方 provider 库（顶层 <code>customProviders[]</code>，跟 Locus
+      已保存的第三方 provider 库（顶层 <code>customProviders[]</code>，跟 Locus
       <code>CustomProvider</code> schema 同构，PlotCraft 简化 apiKey 裸存 + 不分 apiFormat）。
-      点 <strong>Use</strong> 把 provider 的 endpoint/key 填到当前激活字段。
+      点 <strong>Use</strong> 把 provider 的 endpoint/key 复制到 active connection（settings 顶层）。
+      active connection 切换现在完全在 <strong>chat tab 的 model selector</strong> 里做。
+    </p>
     </p>
 
-    <!-- Section 1: Active connection（v0.1.2+ readonly display，跟 Locus 同款）
-         v0.1.1 之前这里有 3 个可编辑 input（API Format / Endpoint / API Key）——
-         v0.1.2+ 改用 modal 加 provider + "Use" 切换 active，这边只显示当前状态 + Test 按钮
+    <!-- Section 1: 没了 (v0.1.2+)
+         v0.1.1 之前有 Active Connection section（3 个可编辑 input + Test 按钮）——
+         v0.1.2 改 readonly display，v0.1.3 整段删除。
+         现在 active connection 完全在 chat tab 切（model selector → 选 provider →
+         "Use" 按钮复制到 active），settings 这里只管 Saved Providers 库。
     -->
-    <section class="section">
-      <div class="section-header">
-        <span class="section-title">Active Connection</span>
-        <span class="section-tag">config.json 顶层</span>
-      </div>
-
-      <div v-if="activeProvider" class="active-provider-badge">
-        <span class="active-provider-label">当前激活：</span>
-        <strong>{{ activeProvider.name }}</strong>
-        <span class="active-provider-id">({{ activeProvider.id }})</span>
-      </div>
-      <p v-else class="active-conn-hint">
-        <AlertTriangle :size="12" />
-        还没激活任何 provider —— 去下方 "Saved Providers" 加一个然后点 "Use"
-      </p>
-
-      <div class="active-conn-display">
-        <div class="active-conn-row">
-          <span class="label-text">API Format</span>
-          <span class="active-conn-value">{{ formatLabel(apiFormat) }}</span>
-        </div>
-        <div class="active-conn-row">
-          <span class="label-text">Endpoint</span>
-          <code class="active-conn-value mono">{{ baseUrl || '(空)' }}</code>
-        </div>
-        <div class="active-conn-row">
-          <span class="label-text">API Key</span>
-          <code class="active-conn-value mono">
-            {{ apiKey ? '••••' + apiKey.slice(-4) : '(空)' }}
-          </code>
-        </div>
-      </div>
-
-      <p class="active-conn-hint small">
-        v0.1 不支持直接编辑 active connection —— 通过下方 "Add provider" 弹窗加新 provider，然后点 "Use" 复制到 active
-      </p>
-
-      <!-- Test Connection -->
-      <div class="test-conn">
-        <button
-          @click="onTestConnection"
-          :disabled="testRunning"
-          class="test-btn"
-        >
-          <Loader2 v-if="testRunning" :size="14" class="spin" />
-          <Zap v-else :size="14" />
-          <span>{{ testRunning ? 'Testing...' : 'Test Connection' }}</span>
-        </button>
-        <div v-if="testResult" class="test-result" :class="{ ok: testResult.ok, fail: !testResult.ok }">
-          <CheckCircle2 v-if="testResult.ok" :size="14" />
-          <XCircle v-else :size="14" />
-          <div class="test-result-text">
-            <div v-if="testResult.ok" class="test-result-line">
-              <strong>连接成功</strong>
-              <span v-if="testResult.status">（HTTP {{ testResult.status }}）</span>
-            </div>
-            <div v-else class="test-result-line">
-              <strong>连接失败</strong>
-              <span v-if="testResult.status">（HTTP {{ testResult.status }}）</span>
-            </div>
-            <div v-if="testResult.response" class="test-response">
-              <span class="test-label">模型返回：</span>
-              <code>{{ testResult.response }}</code>
-            </div>
-            <div v-if="testResult.error" class="test-error">
-              <span class="test-label">错误：</span>
-              <code>{{ testResult.error }}</code>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
 
     <!-- Section 2: Saved library -->
     <section class="section">
@@ -680,169 +540,6 @@ label input {
 label input:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-/* === Active Connection readonly display (v0.1.2+) === */
-.active-provider-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-.active-provider-label {
-  color: var(--text-muted);
-}
-.active-provider-badge strong {
-  color: var(--accent);
-  font-weight: 500;
-}
-.active-provider-id {
-  color: var(--text-muted);
-  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
-  font-size: 11px;
-}
-
-.active-conn-display {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  margin-bottom: 8px;
-}
-.active-conn-row {
-  display: grid;
-  grid-template-columns: 80px 1fr;
-  gap: 8px;
-  align-items: center;
-  font-size: 12px;
-}
-.active-conn-row .label-text {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.active-conn-value {
-  color: var(--text);
-  font-size: 12px;
-  word-break: break-all;
-}
-.active-conn-value.mono {
-  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
-}
-
-.active-conn-hint {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: 8px;
-  line-height: 1.4;
-}
-.active-conn-hint.small {
-  margin-top: 4px;
-  margin-bottom: 12px;
-  font-size: 10px;
-  opacity: 0.85;
-}
-.field-hint {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
-  line-height: 1.4;
-}
-
-/* Test Connection */
-.test-conn {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px dashed var(--border);
-}
-.test-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: inherit;
-  font-weight: 500;
-}
-.test-btn:hover:not(:disabled) {
-  background: var(--accent-soft);
-}
-.test-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.test-btn .spin {
-  animation: spin 1s linear infinite;
-}
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-.test-result {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.test-result.ok {
-  background: rgba(80, 200, 120, 0.10);
-  border: 1px solid var(--success);
-  color: var(--success);
-}
-.test-result.fail {
-  background: rgba(232, 90, 90, 0.10);
-  border: 1px solid var(--error);
-  color: var(--error);
-}
-.test-result-text {
-  flex: 1;
-  min-width: 0;
-}
-.test-result-line {
-  font-weight: 500;
-}
-.test-response,
-.test-error {
-  margin-top: 4px;
-  color: var(--text);
-  word-break: break-word;
-}
-.test-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  margin-right: 4px;
-}
-.test-response code,
-.test-error code {
-  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
-  font-size: 11px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 1px 5px;
-  word-break: break-all;
 }
 
 /* Provider list */
