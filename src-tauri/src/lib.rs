@@ -14,8 +14,6 @@ mod project;
 static GLOBAL: MiMalloc = MiMalloc;
 
 /// Chat run 状态：run_id → CancellationToken
-///
-/// 存 Tauri state，前端 cancel_chat 通过 run_id 找到对应 token 触发取消
 type RunMap = Arc<Mutex<HashMap<String, CancellationToken>>>;
 
 /// PlotCraft 版本号
@@ -38,6 +36,8 @@ pub fn run() {
             commands::llm::cancel_chat,
             commands::project::create_project,
             commands::project::list_projects,
+            commands::settings::load_config,
+            commands::settings::save_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
