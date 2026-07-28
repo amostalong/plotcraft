@@ -43,6 +43,11 @@ export interface CustomProvider {
   /** API 协议（跟 Locus `ApiFormat` 同：openai_chat | anthropic_messages）*/
   apiFormat: ApiFormat
   enabled: boolean
+  /** 该 provider 下发请求时用的默认 model id
+   *  v0.1：Locus import 时从 Locus `models[0].id` 取；玩家手动加时自己填
+   *  留空 → 该 provider 不出现在 chat selector（避免发请求时 model 为空）
+   */
+  defaultModel: string
 }
 
 /** LLM API 协议（参考 Locus `ApiFormat` = openai_chat | openai_responses | anthropic_messages）*/

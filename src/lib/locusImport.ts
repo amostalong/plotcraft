@@ -23,6 +23,8 @@ export interface LocusProviderImport {
   /** Locus 该 provider 下挂的 model 数量（前端 UI 展示 "N 个 model"） */
   modelCount: number
   enabled: boolean
+  /** v0.1+ 从 Locus models[0].id 取（PlotCraft 简化 per-provider models[]） */
+  defaultModel: string
 }
 
 /** Locus import 数据汇总 */

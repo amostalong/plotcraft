@@ -76,6 +76,9 @@ pub struct LocusProviderImport {
     pub api_format: ApiFormat,
     pub model_count: usize,
     pub enabled: bool,
+    /// v0.1+ 从 Locus models[0].id 取（PlotCraft 简化 per-provider models[]）
+    #[serde(rename = "defaultModel")]
+    pub default_model: String,
 }
 
 /// Locus 导入数据汇总
@@ -147,13 +150,24 @@ pub async fn import_from_locus() -> AppResult<LocusImportData> {
             .map_err(|e| AppError::Config(format!("parse Locus custom_providers: {}", e)))?;
         file.providers
             .into_iter()
-            .map(|p| LocusProviderImport {
-                id: p.id,
-                name: p.name,
-                endpoint: p.endpoint,
-                api_format: parse_locus_api_format(&p.api_format),
-                model_count: p.models.len(),
-                enabled: p.enabled.unwrap_or(true),
+            .map(|p| {
+                // v0.1+ 从 Locus models[0].id 取 defaultModel（PlotCraft 简化了
+                // per-provider models[]，用单 model id 代替 Locus 的多 model 列表）
+                let default_model = p
+                    .models
+                    .first()
+                    .and_then(|m| m.get("id").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                LocusProviderImport {
+                    id: p.id,
+                    name: p.name,
+                    endpoint: p.endpoint,
+                    api_format: parse_locus_api_format(&p.api_format),
+                    model_count: p.models.len(),
+                    enabled: p.enabled.unwrap_or(true),
+                    default_model,
+                }
             })
             .collect()
     } else {
@@ -375,17 +389,31 @@ mod tests {
         assert_eq!(file.providers[0].models.len(), 1);
         assert_eq!(file.providers[3].models.len(), 2);
 
-        // 模拟 import：所有 provider 都能成功 parse
+        // 模拟 import：所有 provider 都能成功 parse + defaultModel 从 models[0].id 取
         for p in &file.providers {
-            let _ = LocusProviderImport {
+            let default_model = p
+                .models
+                .first()
+                .and_then(|m| m.get("id").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let import = LocusProviderImport {
                 id: p.id.clone(),
                 name: p.name.clone(),
                 endpoint: p.endpoint.clone(),
                 api_format: parse_locus_api_format(&p.api_format),
                 model_count: p.models.len(),
                 enabled: p.enabled.unwrap_or(true),
+                default_model,
             };
-            // 不 panic → ok
+            // winky-claude-sonnet-5 → "claude-sonnet-5-20250929"
+            if p.name == "winky-claude-sonnet-5" {
+                assert_eq!(import.default_model, "claude-sonnet-5-20250929");
+            }
+            // deepseek → "deepseek-chat"（models[0]）
+            if p.name == "deepseek" {
+                assert_eq!(import.default_model, "deepseek-chat");
+            }
         }
     }
 

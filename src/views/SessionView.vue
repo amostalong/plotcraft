@@ -54,6 +54,13 @@ const suggestedModels = computed(() => {
   }
 })
 
+/** v0.1+ 玩家 enabled 且有 defaultModel 的 custom providers（selector Custom 段头用） */
+const customProviderShortcuts = computed(() =>
+  settings.config.customProviders
+    .filter((p) => p.enabled && p.defaultModel && p.defaultModel.trim().length > 0)
+    .map((p) => ({ id: p.id, name: p.name, defaultModel: p.defaultModel })),
+)
+
 /** 当前 model 是否支持 effort（找不到 / 不支持 → false，selector 隐藏右 panel） */
 const effortSupported = computed(() => {
   const m = findModel(chat.selectedModel)
@@ -66,6 +73,19 @@ const effortSupported = computed(() => {
 })
 
 function onSelectModel(id: string) {
+  // 1. 检查是否选的是某个 custom provider 的 defaultModel
+  //    → 切 active connection 到该 provider（跟 ProvidersPanel "Use" 按钮行为一致）
+  const cp = settings.config.customProviders.find(
+    (p) => p.defaultModel === id && p.enabled,
+  )
+  if (cp) {
+    settings.config.base_url = cp.baseUrl
+    settings.config.apiKey = cp.apiKey
+    settings.config.apiFormat = cp.apiFormat
+    // 玩家改了 settings —— 立即存盘（让其他 tab / 下次启动看到新 connection）
+    settings.save().catch((e) => console.error('[onSelectModel] save failed:', e))
+  }
+
   chat.selectedModel = id
   // 切换 model 时，如果当前 effort 不在新 model 的支持列表里 → 重置为该 model 的 default
   const m = findModel(id)
@@ -201,6 +221,7 @@ watch(
       <div class="composer-footer">
         <ModelEffortSelector
           :models="suggestedModels"
+          :custom-provider-shortcuts="customProviderShortcuts"
           :selected-id="chat.selectedModel"
           :effort="chat.selectedEffort"
           :effort-supported="effortSupported"

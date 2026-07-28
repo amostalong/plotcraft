@@ -84,6 +84,10 @@ pub struct UiConfig {
 /// - `api_key`：v0.1 裸存（v0.2 升 keyring）
 /// - `api_format`：API 协议（`openai_chat` / `anthropic_messages`）—— 跟 Locus 同
 /// - `enabled`：是否启用（玩家可以暂时 disable 不删除）
+/// - `default_model`：从该 provider 发请求时用的默认 model id
+///   - v0.1+ Locus import 从 `models[0].id` 取
+///   - 玩家手动加时自己填
+///   - 留空 → 该 provider 不出现在 chat selector（避免发请求时 model 为空）
 ///
 /// JSON 字段 camelCase（跟 Locus `CustomProvider` 内部一致）。
 /// 但 Locus 顶层 `AppConfig` 不带 `custom_providers` 字段 —— PlotCraft 这边
@@ -101,6 +105,8 @@ pub struct CustomProvider {
     pub api_format: ApiFormat,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub default_model: String,
 }
 
 /// LLM API 协议（参考 Locus `ApiFormat` = `"openai_chat" | "openai_responses" | "anthropic_messages"`）
@@ -581,6 +587,7 @@ mod tests {
                 api_key: "sk-deepseek-test".to_string(),
                 api_format: ApiFormat::OpenaiChat,
                 enabled: true,
+                default_model: "deepseek-chat".to_string(),
             },
             CustomProvider {
                 id: "openrouter".to_string(),
@@ -589,6 +596,7 @@ mod tests {
                 api_key: "sk-or-test".to_string(),
                 api_format: ApiFormat::OpenaiChat,
                 enabled: true,
+                default_model: String::new(), // 没填 → 不会出现在 chat selector
             },
             CustomProvider {
                 id: "disabled-one".to_string(),
@@ -597,6 +605,7 @@ mod tests {
                 api_key: "".to_string(),
                 api_format: ApiFormat::OpenaiChat,
                 enabled: false,
+                default_model: String::new(),
             },
         ];
 
@@ -606,6 +615,7 @@ mod tests {
         // CustomProvider 内部字段 camelCase
         assert!(json.contains("\"baseUrl\":"));
         assert!(json.contains("\"apiKey\":"));
+        assert!(json.contains("\"defaultModel\":"));
         assert!(json.contains("\"deepseek\""));
         assert!(json.contains("\"openrouter\""));
         // 顶层 AppConfig 字段是 snake_case（base_url / model），跟 Locus 一致
@@ -624,8 +634,16 @@ mod tests {
             "https://api.deepseek.com/v1"
         );
         assert_eq!(parsed.custom_providers[0].api_key, "sk-deepseek-test");
+        assert_eq!(parsed.custom_providers[0].default_model, "deepseek-chat");
         assert!(parsed.custom_providers[0].enabled);
         assert!(!parsed.custom_providers[2].enabled);
+        // 缺 defaultModel 字段也能 deserialize（向后兼容 v0.1.0 写的 config）
+        let old_json = r#"{
+            "id": "old", "name": "Old", "baseUrl": "https://old.com/v1",
+            "apiKey": "", "apiFormat": "openai_chat", "enabled": true
+        }"#;
+        let old: CustomProvider = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old.default_model, "");
     }
 
     #[test]

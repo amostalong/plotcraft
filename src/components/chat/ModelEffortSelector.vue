@@ -40,6 +40,9 @@ const props = defineProps<{
   /** 弹层对齐：start=左对齐, end=右对齐（默认） */
   align?: 'start' | 'end'
   disabled?: boolean
+  /** v0.1+ 玩家保存的 custom providers（仅 enabled 且有 defaultModel 的会显示在 Custom 段头下）
+   *  TS 端只给名字 + id + defaultModel（不传 apiKey / baseUrl，避免泄露） */
+  customProviderShortcuts?: { id: string; name: string; defaultModel: string }[]
 }>()
 
 const emit = defineEmits<{
@@ -54,6 +57,15 @@ const selectorRef = ref<HTMLElement | null>(null)
 const selectedModel = computed<BuiltinModel | null>(
   () => findModel(props.selectedId) ?? null,
 )
+
+/** 当前选中的 custom provider shortcut（selectedId 匹配某个 custom provider 的 defaultModel） */
+const selectedCustomShortcut = computed(() => {
+  if (selectedModel.value) return null
+  if (!props.customProviderShortcuts) return null
+  return props.customProviderShortcuts.find(
+    (cp) => cp.defaultModel === props.selectedId,
+  ) ?? null
+})
 
 /** trigger 按钮显示名（找不到 builtin → 简化原 id）
  *
@@ -75,15 +87,25 @@ const selectedDisplayName = computed(() => {
     if (!duplicated) return m.name
     return `${providerLabel(m.provider)} / ${m.name}`
   }
-  // builtin 找不到 → 处理原 id
+  // builtin 找不到，但 selectedId 匹配某个 custom provider 的 defaultModel
+  // → 显示 provider 名前缀（"winky-claude / claude-sonnet-5-20250929"）
+  if (selectedCustomShortcut.value) {
+    const cp = selectedCustomShortcut.value
+    return `${cp.name} / ${cleanupModelId(cp.defaultModel)}`
+  }
+  // builtin 找不到 + 不是 custom → 处理原 id
   const raw = props.selectedId
   if (!raw) return 'Model'
-  // OpenRouter 风格 "provider/model" → 取 model 部分
-  const slashIdx = raw.lastIndexOf('/')
-  const cleaned = slashIdx >= 0 ? raw.slice(slashIdx + 1) : raw
+  return cleanupModelId(raw)
+})
+
+/** 处理长 model id（OpenRouter 风格 + 截断） */
+function cleanupModelId(id: string): string {
+  const slashIdx = id.lastIndexOf('/')
+  const cleaned = slashIdx >= 0 ? id.slice(slashIdx + 1) : id
   if (cleaned.length <= TRIGGER_MAX_LEN) return cleaned
   return cleaned.slice(0, TRIGGER_MAX_LEN - 1) + '…'
-})
+}
 
 /** 当前 model 支持的 effort 列表（按 EFFORT_ORDER 排序） */
 const levels = computed<EffortLevel[]>(() => {
@@ -202,14 +224,14 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
         }"
       >
         <div class="model-effort-model-panel">
-          <template v-if="groupedModels.length === 0">
+          <template v-if="groupedModels.length === 0 && (!props.customProviderShortcuts || props.customProviderShortcuts.length === 0)">
             <div class="model-effort-empty">没有可用的 model —— 先在 Settings 填 API key + 选 provider</div>
           </template>
           <template
             v-for="(group, gi) in groupedModels"
             :key="group.key"
           >
-            <div v-if="gi > 0" class="model-effort-divider"></div>
+            <div v-if="gi > 0 || (props.customProviderShortcuts && props.customProviderShortcuts.length > 0)" class="model-effort-divider"></div>
             <div class="model-effort-section-label">{{ group.label }}</div>
             <button
               v-for="model in group.models"
@@ -222,6 +244,31 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
               <span class="model-effort-option-name">{{ model.name }}</span>
               <span
                 v-if="model.id === selectedId && currentLevelLabel"
+                class="model-effort-option-tag"
+                :style="{ color: levelColor(props.effort) }"
+              >
+                {{ currentLevelLabel }}
+              </span>
+            </button>
+          </template>
+
+          <!-- v0.1+ Custom section：玩家保存的 custom provider（仅 enabled 且有 defaultModel） -->
+          <template
+            v-if="props.customProviderShortcuts && props.customProviderShortcuts.length > 0"
+          >
+            <div v-if="groupedModels.length > 0" class="model-effort-divider"></div>
+            <div class="model-effort-section-label">Custom</div>
+            <button
+              v-for="cp in props.customProviderShortcuts"
+              :key="cp.id"
+              type="button"
+              class="model-effort-option"
+              :class="{ active: cp.defaultModel === selectedId }"
+              @click="selectModel(cp.defaultModel)"
+            >
+              <span class="model-effort-option-name">{{ cp.name }} / {{ cleanupModelId(cp.defaultModel) }}</span>
+              <span
+                v-if="cp.defaultModel === selectedId && currentLevelLabel"
                 class="model-effort-option-tag"
                 :style="{ color: levelColor(props.effort) }"
               >
@@ -363,13 +410,13 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
 }
 
 .model-effort-section-label {
-  padding: 4px 12px 2px;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
   color: var(--text-muted);
-  opacity: 0.7;
+  /* 不强制 uppercase —— PROVIDER_LABELS 已经是正常 case（"OpenAI" / "Anthropic" / "Custom"）
+     跟 Locus 段头 "OpenRouter" / "Anthropic" 同款 */
 }
 .model-effort-divider {
   height: 1px;

@@ -68,6 +68,7 @@ const draftBaseUrl = ref('')
 const draftApiKey = ref('')
 const draftApiFormat = ref<ApiFormat>(DEFAULT_API_FORMAT)
 const draftEnabled = ref(true)
+const draftDefaultModel = ref('')
 const formError = ref<string | null>(null)
 
 function startAdd() {
@@ -79,6 +80,7 @@ function startAdd() {
   draftApiKey.value = ''
   draftApiFormat.value = DEFAULT_API_FORMAT
   draftEnabled.value = true
+  draftDefaultModel.value = ''
   formError.value = null
 }
 
@@ -91,6 +93,7 @@ function startEdit(p: CustomProvider) {
   draftApiKey.value = p.apiKey
   draftApiFormat.value = p.apiFormat
   draftEnabled.value = p.enabled
+  draftDefaultModel.value = p.defaultModel ?? ''
   formError.value = null
 }
 
@@ -135,6 +138,7 @@ function saveForm() {
     apiKey: draftApiKey.value.trim(),
     apiFormat: draftApiFormat.value,
     enabled: draftEnabled.value,
+    defaultModel: draftDefaultModel.value.trim(),
   }
 
   if (editingId.value === null) {
@@ -218,6 +222,7 @@ function applyImport() {
         apiKey: '', // Locus 把 key 存 keychain，PlotCraft 玩家手动填
         apiFormat: p.apiFormat,
         enabled: p.enabled,
+        defaultModel: p.defaultModel, // 从 Locus models[0].id 取
       }))
     // 跳过已存在 id（提示玩家手动处理）
     const existing = new Set(customProviders.value.map((p) => p.id))
@@ -473,6 +478,18 @@ async function onTestConnection() {
               </option>
             </select>
           </label>
+          <label class="form-grid-full">
+            <span class="label-text">Default Model（v0.1+ chat 用该 provider 发请求时带的 model id）</span>
+            <input
+              v-model="draftDefaultModel"
+              type="text"
+              placeholder="claude-sonnet-4-5"
+              spellcheck="false"
+            />
+            <span class="field-hint">
+              留空 → 该 provider 不出现在 chat selector（player 去别处填 model 也行）
+            </span>
+          </label>
           <label class="form-grid-full enabled-row">
             <input v-model="draftEnabled" type="checkbox" />
             <span>启用</span>
@@ -538,6 +555,10 @@ async function onTestConnection() {
             <div class="card-row">
               <span class="card-label">apiFormat:</span>
               <code>{{ formatLabel(p.apiFormat) }}</code>
+            </div>
+            <div class="card-row">
+              <span class="card-label">defaultModel:</span>
+              <code>{{ p.defaultModel || '(未填 —— 不会出现在 chat selector)' }}</code>
             </div>
           </div>
         </div>
@@ -629,6 +650,9 @@ async function onTestConnection() {
                         <span class="modal-provider-format">{{ formatLabel(p.apiFormat) }}</span>
                         <span v-if="p.modelCount > 0" class="modal-provider-models">
                           {{ p.modelCount }} 个 model
+                        </span>
+                        <span v-if="p.defaultModel" class="modal-provider-default-model">
+                          default: <code>{{ p.defaultModel }}</code>
                         </span>
                       </div>
                     </div>
