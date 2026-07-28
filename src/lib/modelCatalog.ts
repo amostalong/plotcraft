@@ -79,7 +79,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 200_000,
     note: '200K context · 推理强',
     supportedEfforts: ['low', 'medium', 'high'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
   {
     id: 'o1-mini',
@@ -88,7 +88,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 128_000,
     note: '128K context · 推理性价比',
     supportedEfforts: ['low', 'medium', 'high'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
   {
     id: 'o3-mini',
@@ -97,7 +97,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 200_000,
     note: '200K context · 最新推理',
     supportedEfforts: ['none', 'low', 'medium', 'high'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
   // --- OpenAI 兼容（自建 endpoint / proxy）---
   {
@@ -114,7 +114,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 64_000,
     note: '64K · 推理模型 · 慢',
     supportedEfforts: ['none', 'low', 'medium', 'high'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
   {
     id: 'qwen-plus',
@@ -138,7 +138,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 200_000,
     note: '200K context · Anthropic 旗舰',
     supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
   {
     id: 'claude-sonnet-4-5',
@@ -147,7 +147,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 200_000,
     note: '200K context · 性价比',
     supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
   {
     id: 'claude-3-5-sonnet-latest',
@@ -156,7 +156,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 200_000,
     note: '200K context · 老款旗舰',
     supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
   {
     id: 'claude-3-5-haiku-latest',
@@ -165,7 +165,7 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     contextWindow: 200_000,
     note: '200K context · 便宜快',
     supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'medium',
+    defaultEffort: 'high',
   },
 ]
 
@@ -209,9 +209,11 @@ export function getDefaultEffort(model: BuiltinModel | undefined): EffortLevel {
 // === Grouping for Locus-style ModelEffortSelector ===
 //
 // Locus 那边 model 下拉按 provider 分组（OpenRouter / Anthropic / Claude Code / OpenAI Codex / Custom）。
-// PlotCraft v0.1 简化为 2 组：
-// - `openai` 组（含 8 个 OpenAI 兼容模型 + sub-providers 不分）
-// - `anthropic` 组（4 个 Claude）
+// 每个 custom provider 还是各自一个段头（DEEPSEEK / MINIMAX / WINKY-CLAUDE-SONNET-5 / ...），
+// 不是合并到一个 "Custom" 段头。PlotCraft v0.1+ 跟 Locus 同款：
+// - `openai` builtin 组（11 个 OpenAI 兼容模型）
+// - `anthropic` builtin 组（4 个 Claude）
+// - 每个 enabled custom provider 各自一个组（用 provider.name 作 label）
 // 段头用 provider label 展示，跟 Locus `ModelSelector` 同位
 
 export const PROVIDER_LABELS: Record<BuiltinModel['provider'], string> = {
@@ -225,8 +227,14 @@ export const PROVIDER_LABELS: Record<BuiltinModel['provider'], string> = {
 export interface ModelSelectorGroup {
   key: string
   label: string
-  provider: BuiltinModel['provider']
-  models: BuiltinModel[]
+  /** 段头 lowercase 还是 normal case（v0.1.2+ Locus 风格：custom provider 段头大写 UPPERCASE） */
+  uppercaseLabel: boolean
+  /** builtin provider 才有这个字段；custom provider 没（key 就是 provider id） */
+  provider?: BuiltinModel['provider']
+  /** builtin models 才有这个数组；custom provider 的"model"是 defaultModel 字符串 */
+  models?: BuiltinModel[]
+  /** custom provider 段头：单个 model option（用 provider.defaultModel 当 id） */
+  customProvider?: { id: string; name: string; defaultModel: string }
 }
 
 /** 把 builtin models 按 provider 分组（保留 provider 出现顺序） */
@@ -245,8 +253,22 @@ export function groupModelsForSelector(
   return seen.map((p) => ({
     key: p,
     label: PROVIDER_LABELS[p] ?? p,
+    uppercaseLabel: false,
     provider: p,
     models: grouped.get(p)!,
+  }))
+}
+
+/** v0.1.2+ 玩家 enabled 且有 defaultModel 的 custom provider 各自一个段头
+ *  段头 label = provider.name（Locus 风格，UI 渲染时大写） */
+export function groupCustomProviderShortcuts(
+  customProviders: { id: string; name: string; defaultModel: string }[],
+): ModelSelectorGroup[] {
+  return customProviders.map((cp) => ({
+    key: `custom:${cp.id}`,
+    label: cp.name,
+    uppercaseLabel: true, // Locus DEEPSEEK / WINKY-XXX 大写段头
+    customProvider: cp,
   }))
 }
 

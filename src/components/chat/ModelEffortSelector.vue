@@ -20,9 +20,11 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import {
   groupModelsForSelector,
+  groupCustomProviderShortcuts,
   findModel,
   getSupportedEfforts,
   type BuiltinModel,
+  type ModelSelectorGroup,
 } from '@/lib/modelCatalog'
 import { EFFORT_LABELS, type EffortLevel } from '@/lib/settings'
 
@@ -126,8 +128,12 @@ const currentLevelLabel = computed<string | null>(() => {
   return EFFORT_LABELS[props.effort]
 })
 
-/** grouped models（左 panel） */
-const groupedModels = computed(() => groupModelsForSelector(props.models))
+/** grouped models（左 panel）—— builtin + 每个 custom provider 各自一个段头 */
+const groupedModels = computed<ModelSelectorGroup[]>(() => {
+  const builtin = groupModelsForSelector(props.models)
+  const customs = groupCustomProviderShortcuts(props.customProviderShortcuts ?? [])
+  return [...builtin, ...customs]
+})
 
 /** trigger 整 title（hover tooltip） */
 const triggerTitle = computed(() => {
@@ -224,57 +230,62 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
         }"
       >
         <div class="model-effort-model-panel">
-          <template v-if="groupedModels.length === 0 && (!props.customProviderShortcuts || props.customProviderShortcuts.length === 0)">
+          <template v-if="groupedModels.length === 0">
             <div class="model-effort-empty">没有可用的 model —— 先在 Settings 填 API key + 选 provider</div>
           </template>
           <template
             v-for="(group, gi) in groupedModels"
             :key="group.key"
           >
-            <div v-if="gi > 0 || (props.customProviderShortcuts && props.customProviderShortcuts.length > 0)" class="model-effort-divider"></div>
-            <div class="model-effort-section-label">{{ group.label }}</div>
-            <button
-              v-for="model in group.models"
-              :key="model.id"
-              type="button"
-              class="model-effort-option"
-              :class="{ active: model.id === selectedId }"
-              @click="selectModel(model.id)"
+            <div v-if="gi > 0" class="model-effort-divider"></div>
+            <div
+              class="model-effort-section-label"
+              :class="{ uppercase: group.uppercaseLabel }"
             >
-              <span class="model-effort-option-name">{{ model.name }}</span>
-              <span
-                v-if="model.id === selectedId && currentLevelLabel"
-                class="model-effort-option-tag"
-                :style="{ color: levelColor(props.effort) }"
-              >
-                {{ currentLevelLabel }}
-              </span>
-            </button>
-          </template>
+              {{ group.label }}
+            </div>
 
-          <!-- v0.1+ Custom section：玩家保存的 custom provider（仅 enabled 且有 defaultModel） -->
-          <template
-            v-if="props.customProviderShortcuts && props.customProviderShortcuts.length > 0"
-          >
-            <div v-if="groupedModels.length > 0" class="model-effort-divider"></div>
-            <div class="model-effort-section-label">Custom</div>
-            <button
-              v-for="cp in props.customProviderShortcuts"
-              :key="cp.id"
-              type="button"
-              class="model-effort-option"
-              :class="{ active: cp.defaultModel === selectedId }"
-              @click="selectModel(cp.defaultModel)"
-            >
-              <span class="model-effort-option-name">{{ cp.name }} / {{ cleanupModelId(cp.defaultModel) }}</span>
-              <span
-                v-if="cp.defaultModel === selectedId && currentLevelLabel"
-                class="model-effort-option-tag"
-                :style="{ color: levelColor(props.effort) }"
+            <!-- builtin model 组：多个 model option -->
+            <template v-if="group.models">
+              <button
+                v-for="model in group.models"
+                :key="model.id"
+                type="button"
+                class="model-effort-option"
+                :class="{ active: model.id === selectedId }"
+                @click="selectModel(model.id)"
               >
-                {{ currentLevelLabel }}
-              </span>
-            </button>
+                <span class="model-effort-option-name">{{ model.name }}</span>
+                <span
+                  v-if="model.id === selectedId && currentLevelLabel"
+                  class="model-effort-option-tag"
+                  :style="{ color: levelColor(props.effort) }"
+                >
+                  {{ currentLevelLabel }}
+                </span>
+              </button>
+            </template>
+
+            <!-- custom provider 组：单 model option（用 provider.defaultModel） -->
+            <template v-else-if="group.customProvider">
+              <button
+                type="button"
+                class="model-effort-option"
+                :class="{ active: group.customProvider.defaultModel === selectedId }"
+                @click="selectModel(group.customProvider.defaultModel)"
+              >
+                <span class="model-effort-option-name">
+                  {{ cleanupModelId(group.customProvider.defaultModel) }}
+                </span>
+                <span
+                  v-if="group.customProvider.defaultModel === selectedId && currentLevelLabel"
+                  class="model-effort-option-tag"
+                  :style="{ color: levelColor(props.effort) }"
+                >
+                  {{ currentLevelLabel }}
+                </span>
+              </button>
+            </template>
           </template>
         </div>
 
@@ -415,8 +426,14 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   font-weight: 500;
   letter-spacing: 0.2px;
   color: var(--text-muted);
-  /* 不强制 uppercase —— PROVIDER_LABELS 已经是正常 case（"OpenAI" / "Anthropic" / "Custom"）
-     跟 Locus 段头 "OpenRouter" / "Anthropic" 同款 */
+  /* builtin 段头不强制 uppercase（"OpenAI" / "Anthropic" 正常 case） */
+}
+.model-effort-section-label.uppercase {
+  /* v0.1.2+ Locus 同款：custom provider 段头大写（"DEEPSEEK" / "WINKY-CLAUDE-SONNET-5"） */
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  font-weight: 600;
 }
 .model-effort-divider {
   height: 1px;

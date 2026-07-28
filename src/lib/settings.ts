@@ -146,6 +146,13 @@ export interface Config {
   customProviders: CustomProvider[]
   /** Active connection 用的 API 协议（"Use" provider 时同步）*/
   apiFormat: ApiFormat
+  /**
+   * v0.1+ 全局默认 reasoning effort / thinking level
+   * - 玩家在 chat tab 选了 effort → 写这里 + save
+   * - chat init 没显式选时 → 优先用这个，再回退到 model.defaultEffort
+   * - null / undefined → 没默认，用 model 自己的 defaultEffort
+   */
+  effort: EffortLevel | null
 }
 
 // --- Tauri command wrappers ---
@@ -204,4 +211,5 @@ export const DEFAULT_CONFIG: Config = {
   recentProjects: [],
   customProviders: [],
   apiFormat: DEFAULT_API_FORMAT,
+  effort: null,
 }

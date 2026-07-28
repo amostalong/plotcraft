@@ -265,6 +265,12 @@ pub struct AppConfig {
     /// 玩家点 "Use" 切换 provider 时同步复制
     #[serde(default, rename = "apiFormat")]
     pub api_format: ApiFormat,
+    /// v0.1+ 全局默认 reasoning effort / thinking level（PlotCraft 扩展；Locus 顶层无此字段）
+    /// - chat session 没显式选时 → 用这个（之前 chat store 内存里存，关闭 app 丢）
+    /// - 玩家在 chat tab 选 effort 时 → 同步改这个 + save_config
+    /// - 留 None → 用 model 自己的 defaultEffort
+    #[serde(default, rename = "effort")]
+    pub effort: Option<EffortLevel>,
 }
 
 fn default_true() -> bool {
@@ -312,6 +318,7 @@ impl Default for AppConfig {
             recent_projects: Vec::new(),
             custom_providers: Vec::new(),
             api_format: ApiFormat::default(),
+            effort: None,
         }
     }
 }
@@ -574,6 +581,31 @@ mod tests {
             let back: EffortLevel = serde_json::from_str(&json).unwrap();
             assert_eq!(back, e);
         }
+    }
+
+    #[test]
+    fn app_config_effort_field_roundtrip_and_back_compat() {
+        // v0.1.2 写出的 config（带 effort）能 roundtrip
+        let mut cfg = AppConfig::default();
+        cfg.effort = Some(EffortLevel::High);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"effort\":\"high\""));
+        let parsed: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.effort, Some(EffortLevel::High));
+
+        // 缺 effort 字段（v0.1.1 写出的 config）→ 默认 None
+        let old_json = r#"{
+            "model": "gpt-4o-mini",
+            "base_url": "https://api.openai.com/v1",
+            "apiKey": ""
+        }"#;
+        let parsed: AppConfig = serde_json::from_str(old_json).unwrap();
+        assert_eq!(parsed.effort, None);
+
+        // effort: null → None
+        let null_json = r#"{"model":"x","effort":null}"#;
+        let parsed: AppConfig = serde_json::from_str(null_json).unwrap();
+        assert_eq!(parsed.effort, None);
     }
 
     #[test]
