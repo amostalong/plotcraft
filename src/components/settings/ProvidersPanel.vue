@@ -13,13 +13,17 @@
 //
 // 支持的 API 协议（参考 Locus `ApiFormat`）：
 // - `openai_chat`（OpenAI Chat Completions + SSE）—— v0.1 已实装
+// - `openai_responses`（OpenAI Responses API）—— v0.1 已实装
 // - `anthropic_messages`（Anthropic Messages + SSE）—— v0.1 已实装
-// - `openai_responses`（OpenAI 新版 Responses API）—— v0.2+ 加
+//
+// v0.1+ "Import from Locus"：跨 app 读 Locus config.json + custom_providers.json，
+// 玩家挑要导入哪些 provider（API key 不带 —— Locus 存 keychain）。
 
 import { ref, computed } from 'vue'
-import { Plus, Trash2, Check, AlertTriangle, Power, PowerOff, Pencil, X, Save } from 'lucide-vue-next'
+import { Plus, Trash2, Check, AlertTriangle, Power, PowerOff, Pencil, X, Save, Download } from 'lucide-vue-next'
 import type { CustomProvider, ApiFormat } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
+import { importFromLocus, type LocusImportData } from '@/lib/locusImport'
 
 const props = defineProps<{
   baseUrl: string | null
@@ -132,11 +136,9 @@ function removeProvider(id: string) {
 }
 
 function useProvider(p: CustomProvider) {
-  // 把 provider 的 baseUrl + apiKey + apiFormat 复制到顶层
   baseUrl.value = p.baseUrl
   apiKey.value = p.apiKey
   apiFormat.value = p.apiFormat
-  // model 不动（玩家自己选）
 }
 
 function toggleEnabled(p: CustomProvider) {
@@ -145,9 +147,86 @@ function toggleEnabled(p: CustomProvider) {
   )
 }
 
-// 卡片显示 provider 自己的 apiFormat label
 function formatLabel(fmt: ApiFormat): string {
   return API_FORMAT_LABELS[fmt]
+}
+
+// === Import from Locus ===
+const showImportModal = ref(false)
+const locusData = ref<LocusImportData | null>(null)
+const locusLoading = ref(false)
+const locusError = ref<string | null>(null)
+// 玩家挑要导入的 provider id
+const importSelectedIds = ref<Set<string>>(new Set())
+// 玩家是否要覆盖 active connection
+const importApplyActive = ref(false)
+
+async function openImportModal() {
+  showImportModal.value = true
+  locusLoading.value = true
+  locusError.value = null
+  locusData.value = null
+  importSelectedIds.value = new Set()
+  importApplyActive.value = false
+  try {
+    const data = await importFromLocus()
+    locusData.value = data
+    // 默认勾选所有 provider
+    importSelectedIds.value = new Set(data.providers.map((p) => p.id))
+    // 默认勾选 active connection（如果有 model 或 baseUrl）
+    importApplyActive.value = data.model != null || data.baseUrl != null
+  } catch (e) {
+    locusError.value = String(e)
+  } finally {
+    locusLoading.value = false
+  }
+}
+
+function closeImportModal() {
+  showImportModal.value = false
+}
+
+function applyImport() {
+  if (!locusData.value) return
+
+  // 1. 合并 providers
+  if (locusData.value.providers.length > 0) {
+    const toImport = locusData.value.providers
+      .filter((p) => importSelectedIds.value.has(p.id))
+      .map<CustomProvider>((p) => ({
+        id: p.id,
+        name: p.name,
+        baseUrl: p.endpoint,
+        apiKey: '', // Locus 把 key 存 keychain，PlotCraft 玩家手动填
+        apiFormat: p.apiFormat,
+        enabled: p.enabled,
+      }))
+    // 跳过已存在 id（提示玩家手动处理）
+    const existing = new Set(customProviders.value.map((p) => p.id))
+    const newOnes = toImport.filter((p) => !existing.has(p.id))
+    const skipped = toImport.length - newOnes.length
+    customProviders.value = [...customProviders.value, ...newOnes]
+    if (skipped > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(`[Locus import] 跳过 ${skipped} 个已存在 id 的 provider`)
+    }
+  }
+
+  // 2. 覆盖 active connection（玩家勾选时）
+  if (importApplyActive.value) {
+    if (locusData.value.model) {
+      // 注意：active connection 的 model 不在 ProviderPanel 管理，是 ModelDefaults 管的
+      // 这里我们只设 model / baseUrl / apiFormat，顶层 model 字段在 ModelDefaults
+    }
+    if (locusData.value.baseUrl) {
+      baseUrl.value = locusData.value.baseUrl
+    }
+    if (locusData.value.inferredApiFormat) {
+      apiFormat.value = locusData.value.inferredApiFormat
+    }
+  }
+
+  closeImportModal()
 }
 </script>
 
@@ -216,6 +295,15 @@ function formatLabel(fmt: ApiFormat): string {
       <div class="section-header">
         <span class="section-title">Saved Providers</span>
         <span class="section-tag">{{ customProviders.length }} 个</span>
+        <button
+          v-if="!showForm"
+          @click="openImportModal"
+          class="import-btn"
+          title="从 Locus config 导入（跨 app 读 Locus 的 settings）"
+        >
+          <Download :size="12" />
+          <span>Import from Locus</span>
+        </button>
         <button
           v-if="!showForm"
           @click="startAdd"
@@ -339,6 +427,125 @@ function formatLabel(fmt: ApiFormat): string {
         </div>
       </div>
     </section>
+
+    <!-- Import from Locus modal -->
+    <Teleport to="body">
+      <div v-if="showImportModal" class="modal-backdrop" @click.self="closeImportModal">
+        <div class="modal">
+          <div class="modal-header">
+            <Download :size="16" />
+            <h3>Import from Locus</h3>
+            <button @click="closeImportModal" class="modal-close">
+              <X :size="16" />
+            </button>
+          </div>
+
+          <div class="modal-body">
+            <div v-if="locusLoading" class="modal-status">读取 Locus config 中...</div>
+            <div v-else-if="locusError" class="modal-status error">
+              读取失败：{{ locusError }}
+            </div>
+            <div v-else-if="locusData && !locusData.found" class="modal-status">
+              没找到 Locus config（<code>%APPDATA%/Locus/config.json</code>）
+              —— 确认装过 Locus 吗？
+            </div>
+            <template v-else-if="locusData">
+              <p class="modal-hint">
+                从 Locus config 读到的内容 —— 玩家挑要导入哪些。
+                <strong>API key 不会带过来</strong>（Locus 存 OS keychain，跨 app 读不到），
+                导入后玩家手动填。
+              </p>
+
+              <!-- Active connection section -->
+              <div v-if="locusData.model || locusData.baseUrl" class="modal-section">
+                <label class="modal-section-title">
+                  <input v-model="importApplyActive" type="checkbox" />
+                  覆盖 Active Connection
+                </label>
+                <div class="modal-field-grid">
+                  <div v-if="locusData.model" class="modal-field">
+                    <span class="modal-field-label">model</span>
+                    <code>{{ locusData.model }}</code>
+                    <span class="modal-field-hint">（由 ModelDefaults panel 设置，不在这里）</span>
+                  </div>
+                  <div v-if="locusData.baseUrl" class="modal-field">
+                    <span class="modal-field-label">baseUrl</span>
+                    <code>{{ locusData.baseUrl }}</code>
+                  </div>
+                  <div v-if="locusData.inferredApiFormat" class="modal-field">
+                    <span class="modal-field-label">apiFormat (推断)</span>
+                    <code>{{ formatLabel(locusData.inferredApiFormat) }}</code>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Custom providers section -->
+              <div v-if="locusData.providers.length > 0" class="modal-section">
+                <div class="modal-section-title">
+                  Custom Providers（{{ locusData.providers.length }} 个） —— 勾选要导入的
+                </div>
+                <div class="modal-providers">
+                  <label
+                    v-for="p in locusData.providers"
+                    :key="p.id"
+                    class="modal-provider"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="importSelectedIds.has(p.id)"
+                      @change="(e) => {
+                        if ((e.target as HTMLInputElement).checked) {
+                          importSelectedIds.add(p.id)
+                        } else {
+                          importSelectedIds.delete(p.id)
+                        }
+                        // trigger reactivity
+                        importSelectedIds = new Set(importSelectedIds)
+                      }"
+                    />
+                    <div class="modal-provider-info">
+                      <div class="modal-provider-name">
+                        <span class="modal-provider-id">{{ p.id }}</span>
+                        <span class="modal-provider-display">{{ p.name }}</span>
+                      </div>
+                      <div class="modal-provider-meta">
+                        <code>{{ p.endpoint }}</code>
+                        <span class="modal-provider-format">{{ formatLabel(p.apiFormat) }}</span>
+                        <span v-if="p.modelCount > 0" class="modal-provider-models">
+                          {{ p.modelCount }} 个 model
+                        </span>
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <p class="modal-hint-bottom">
+                路径：
+                <code class="path">{{ locusData.configPath }}</code>
+                <code class="path">{{ locusData.customProvidersPath }}</code>
+              </p>
+            </template>
+          </div>
+
+          <div class="modal-actions" v-if="locusData && locusData.found">
+            <button @click="applyImport" class="primary" :disabled="locusLoading">
+              <Download :size="14" />
+              <span>
+                Import
+                <span v-if="locusData && locusData.providers.length > 0 && importSelectedIds.size > 0">
+                  ({{ importSelectedIds.size }} provider{{ importSelectedIds.size === 1 ? '' : 's' }})
+                </span>
+              </span>
+            </button>
+            <button @click="closeImportModal">取消</button>
+          </div>
+          <div class="modal-actions" v-else>
+            <button @click="closeImportModal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -654,5 +861,287 @@ label input:focus {
   padding: 1px 6px;
   font-size: 11px;
   word-break: break-all;
+}
+
+/* === Import from Locus button === */
+.import-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  margin-right: 6px;
+}
+.import-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--accent);
+}
+.add-btn {
+  margin-left: 0;
+}
+
+/* === Import from Locus modal === */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 640px;
+  width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+}
+.modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.modal-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.modal-body {
+  padding: 14px 18px;
+  overflow-y: auto;
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.modal-status {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.modal-status.error {
+  color: var(--error);
+}
+.modal-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.modal-hint code {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.modal-hint-bottom {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.modal-section {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.modal-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+  margin-bottom: 8px;
+  flex-direction: row;
+}
+.modal-section-title input[type="checkbox"] {
+  margin: 0;
+}
+.modal-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.modal-field-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.modal-field code {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  word-break: break-all;
+}
+.modal-field-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.modal-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal-provider {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  flex-direction: row;
+  margin: 0;
+}
+.modal-provider:hover {
+  border-color: var(--accent);
+}
+.modal-provider input[type="checkbox"] {
+  margin: 2px 0 0 0;
+  flex-shrink: 0;
+}
+.modal-provider-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.modal-provider-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.modal-provider-id {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+.modal-provider-display {
+  font-size: 12px;
+  color: var(--text);
+}
+.modal-provider-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.modal-provider-meta code {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.modal-provider-format {
+  padding: 1px 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 10px;
+}
+.modal-provider-models {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.path {
+  display: inline-block;
+  font-size: 10px;
+  word-break: break-all;
+  margin-right: 6px;
+  margin-top: 2px;
+  background: var(--bg-elev) !important;
+  padding: 2px 6px !important;
+  border: 1px solid var(--border) !important;
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+}
+.modal-actions button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.modal-actions button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.modal-actions button.primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.modal-actions button.primary:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.modal-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 </style>

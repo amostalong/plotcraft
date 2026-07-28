@@ -38,6 +38,7 @@ pub fn run() {
             commands::project::list_projects,
             commands::settings::load_config,
             commands::settings::save_config,
+            commands::locus_import::import_from_locus,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

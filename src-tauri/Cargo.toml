@@ -38,3 +38,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 futures = "0.3"
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4"] }
+
+# commit 8: Locus import —— 跨 app 读 Locus config.json + custom_providers.json
+# dirs 拿 OS config dir（Windows: %APPDATA%, macOS: ~/Library/Application Support, Linux: ~/.config）
+dirs = "5"
