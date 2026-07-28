@@ -221,7 +221,6 @@ function applyImport() {
       点 <strong>Use</strong> 把 provider 的 endpoint/key 复制到 active connection（settings 顶层）。
       active connection 切换现在完全在 <strong>chat tab 的 model selector</strong> 里做。
     </p>
-    </p>
 
     <!-- Section 1: 没了 (v0.1.2+)
          v0.1.1 之前有 Active Connection section（3 个可编辑 input + Test 按钮）——
