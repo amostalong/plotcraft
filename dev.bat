@@ -7,6 +7,12 @@ REM WEBVIEW2 debug port allocation or MCP integration, so a simple .bat
 REM wrapping `bun run tauri dev` is enough. Move to scripts/run-tauri.mjs
 REM in v0.2+ if dev-mcp / dev-release flavors become needed.
 REM
+REM --- reserved port ranges (do NOT collide with Locus) ---
+REM   Locus:    WEBVIEW2 debug = 19222-19246, MCP = (varies)
+REM   PlotCraft: WEBVIEW2 debug = 29222-29246, MCP = 29247-29271
+REM   Default Vite dev = 5173 (Tauri picks free port if taken)
+REM   Default Tauri dev = 1420 (auto-allocates if taken)
+REM
 REM Usage:
 REM   dev.bat             -- start tauri dev (default; cargo incremental build)
 REM   dev.bat build       -- typecheck + cargo check + vite build (lint)
