@@ -1,14 +1,18 @@
-//! LLM 流式管道：spawn_blocking 解析 + mpsc channel + 16ms emit 节流
+//! LLM 流式管道：dispatcher + OpenAI Chat Completions 实现
 //!
-//! 反 Locus 卡顿核心实现（见 [CHAT_LLM_DESIGN.md §3 反制 1]）：
-//! - `tokio::task::spawn_blocking` 隔离 SSE 状态机 + JSON 解析（CPU 密集不占 tokio runtime）
+//! 架构（v0.1）：
+//! - `stream_chat` 是 dispatcher，按 `config.api_format` 路由到不同 streaming 实现
+//! - 当前实现：`stream_chat_openai_chat`（OpenAI Chat Completions + SSE）
+//! - Anthropic Messages API 见 [streaming_anthropic]
+//!
+//! 反 Locus 卡顿核心（CHAT_LLM_DESIGN §3 反制 1）：
+//! - `tokio::task::spawn_blocking` 隔离 SSE 状态机 + JSON 解析
 //! - `tokio::sync::mpsc::channel` 解耦 parse / emit task
-//! - emit 按 16ms rAF 节流 + 256 char batch 上限（避免 1000 token/秒 = 1000 emit/秒）
+//! - emit 按 16ms rAF 节流 + 256 char batch 上限
 //! - `CancellationToken` 支持玩家中途点 Stop
 //!
-//! 与 Locus 关键差异：
-//! - Locus（[src-tauri/src/llm/chat_completions.rs:205-244]）SSE 解析在 tokio runtime 默认线程池
-//! - Locus（[src-tauri/src/llm/chat_completions.rs:50-58]）emit 走 on_text_delta 闭包同步调
+//! 与 Locus 差异：
+//! - Locus SSE 解析在 tokio runtime 默认线程池（CPU 抢线程）
 //! - PlotCraft 拆 3 task（http / parse / emit），每个独立跑不抢资源
 
 use std::time::{Duration, Instant};
@@ -20,7 +24,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::config::LlmConfig;
+use super::config::{ApiFormat, LlmConfig};
+use super::streaming_anthropic::stream_chat_anthropic;
 use super::types::{ChatMessage, MessageRole};
 use crate::error::{AppError, AppResult};
 
@@ -46,9 +51,13 @@ pub struct ChatError {
     pub error: String,
 }
 
-/// 启动 LLM 流式回复
+/// 启动 LLM 流式回复（dispatcher）
 ///
-/// 完成后会 emit `chat:done`（成功）或 `chat:error`（失败）。
+/// 按 `config.api_format` 路由：
+/// - `openai_chat` → [`stream_chat_openai_chat`]（OpenAI Chat Completions + SSE）
+/// - `anthropic_messages` → [`stream_chat_anthropic`]（Anthropic Messages + SSE）
+///
+/// 完成后 emit `chat:done`（成功）或 `chat:error`（失败）。
 /// 不返回完整结果，玩家通过订阅 Tauri event 拿 chunk。
 pub async fn stream_chat(
     app: AppHandle,
@@ -57,13 +66,37 @@ pub async fn stream_chat(
     messages: Vec<ChatMessage>,
     cancel: CancellationToken,
 ) -> AppResult<()> {
-    // 1. 构造 request（CPU 少，async 跑）
+    match config.api_format {
+        ApiFormat::OpenaiChat => {
+            stream_chat_openai_chat(app, run_id, config, messages, cancel).await
+        }
+        ApiFormat::AnthropicMessages => {
+            stream_chat_anthropic(app, run_id, config, messages, cancel).await
+        }
+    }
+}
+
+/// OpenAI Chat Completions API 流式实现
+///
+/// 协议：
+/// - POST `{endpoint}/chat/completions`
+/// - 请求体：`{model, messages, stream: true, stream_options: {include_usage: true}}`
+/// - SSE 格式：`data: {"choices":[{"delta":{"content":"..."}}]}` + `data: [DONE]`
+/// - Header：`Authorization: Bearer <apiKey>`
+pub async fn stream_chat_openai_chat(
+    app: AppHandle,
+    run_id: String,
+    config: LlmConfig,
+    messages: Vec<ChatMessage>,
+    cancel: CancellationToken,
+) -> AppResult<()> {
+    // 1. 构造 request
     let api_url = format!(
         "{}{}",
         config.endpoint.trim_end_matches('/'),
         CHAT_COMPLETIONS_PATH
     );
-    let body = build_request_body(&config.model, &messages);
+    let body = build_openai_request_body(&config.model, &messages);
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
 
@@ -82,7 +115,7 @@ pub async fn stream_chat(
         req = req.header("Authorization", format!("Bearer {}", config.api_key));
     }
 
-    // 2. 拿 stream（async 拿，不阻塞）
+    // 2. 拿 stream
     let response = req
         .send()
         .await
@@ -103,11 +136,10 @@ pub async fn stream_chat(
 
     let mut stream = response.bytes_stream();
 
-    // 3. parse / emit 走 mpsc channel 解耦
+    // 3. parse / emit 走 mpsc channel
     let (tx, mut rx) = mpsc::channel::<String>(64);
     let cancel_parse = cancel.clone();
 
-    // 4. parse task：SSE 解析丢 spawn_blocking
     let parse_handle = tokio::spawn(async move {
         let mut buffer = String::new();
         loop {
@@ -129,7 +161,7 @@ pub async fn stream_chat(
                 let mut buf = buf_clone;
                 let text = String::from_utf8_lossy(&chunk).into_owned();
                 buf.push_str(&text);
-                let deltas = parse_sse_buffer(&mut buf);
+                let deltas = parse_openai_sse_buffer(&mut buf);
                 (deltas, buf)
             })
             .await;
@@ -139,7 +171,7 @@ pub async fn stream_chat(
                     buffer = new_buf;
                     for d in deltas {
                         if tx.send(d).await.is_err() {
-                            return; // emit task 挂了，退出
+                            return;
                         }
                     }
                 }
@@ -151,73 +183,80 @@ pub async fn stream_chat(
         }
     });
 
-    // 5. emit task：16ms rAF 节流 + 256 char batch
+    // 4. emit task
     let app_emit = app.clone();
     let run_id_emit = run_id.clone();
     let emit_handle = tokio::spawn(async move {
-        let mut batch = String::new();
-        let mut last_emit = Instant::now();
-        while let Some(delta) = rx.recv().await {
-            batch.push_str(&delta);
-            if last_emit.elapsed() >= Duration::from_millis(EMIT_INTERVAL_MS)
-                || batch.len() >= EMIT_BATCH_MAX_CHARS
-            {
-                let _ = app_emit.emit(
-                    "chat:chunk",
-                    ChatChunk {
-                        run_id: run_id_emit.clone(),
-                        text: std::mem::take(&mut batch),
-                    },
-                );
-                last_emit = Instant::now();
-            }
-        }
-        // flush 剩余
-        if !batch.is_empty() {
-            let _ = app_emit.emit(
-                "chat:chunk",
-                ChatChunk {
-                    run_id: run_id_emit.clone(),
-                    text: batch,
-                },
-            );
-        }
-        let _ = app_emit.emit(
-            "chat:done",
-            ChatDone {
-                run_id: run_id_emit,
-                usage: None,
-            },
-        );
+        emit_throttled(&app_emit, &run_id_emit, &mut rx).await;
     });
 
-    // 6. 等 parse 完 + 检查 cancel
+    // 5. 等 parse 完 + 检查 cancel
     tokio::select! {
         _ = parse_handle => {}
         _ = cancel.cancelled() => {
-            // 关 reqwest 连接 = drop response
-            let _ = emit_handle;  // 留给 emit 跑完
+            let _ = emit_handle;
             return Err(AppError::Cancelled);
         }
     }
-
-    // 正常完成，emit 跑完就行
     let _ = emit_handle.await;
     Ok(())
 }
 
-/// 解析 SSE buffer，返回 deltas，pop 掉已处理的事件
+/// emit 任务通用实现（OpenAI / Anthropic 共用）
 ///
-/// OpenAI Chat Completions SSE 格式：
-/// ```
+/// 16ms rAF 节流 + 256 char batch 上限。
+/// stream 关闭后 flush 剩余 + emit `chat:done`。
+pub(crate) async fn emit_throttled(
+    app_emit: &AppHandle,
+    run_id_emit: &str,
+    rx: &mut mpsc::Receiver<String>,
+) {
+    let mut batch = String::new();
+    let mut last_emit = Instant::now();
+    while let Some(delta) = rx.recv().await {
+        batch.push_str(&delta);
+        if last_emit.elapsed() >= Duration::from_millis(EMIT_INTERVAL_MS)
+            || batch.len() >= EMIT_BATCH_MAX_CHARS
+        {
+            let _ = app_emit.emit(
+                "chat:chunk",
+                ChatChunk {
+                    run_id: run_id_emit.to_string(),
+                    text: std::mem::take(&mut batch),
+                },
+            );
+            last_emit = Instant::now();
+        }
+    }
+    if !batch.is_empty() {
+        let _ = app_emit.emit(
+            "chat:chunk",
+            ChatChunk {
+                run_id: run_id_emit.to_string(),
+                text: batch,
+            },
+        );
+    }
+    let _ = app_emit.emit(
+        "chat:done",
+        ChatDone {
+            run_id: run_id_emit.to_string(),
+            usage: None,
+        },
+    );
+}
+
+/// 解析 OpenAI Chat Completions SSE buffer
+///
+/// 格式：
+/// ```text
 /// data: {"choices":[{"delta":{"content":"hello"}}]}
 ///
 /// data: {"choices":[{"delta":{"content":" world"}}]}
 ///
 /// data: [DONE]
-///
 /// ```
-fn parse_sse_buffer(buffer: &mut String) -> Vec<String> {
+pub(crate) fn parse_openai_sse_buffer(buffer: &mut String) -> Vec<String> {
     let mut deltas = Vec::new();
     while let Some(end) = buffer.find("\n\n") {
         let event: String = buffer.drain(..end + 2).collect();
@@ -246,7 +285,7 @@ fn parse_sse_buffer(buffer: &mut String) -> Vec<String> {
     deltas
 }
 
-fn build_request_body(model: &str, messages: &[ChatMessage]) -> serde_json::Value {
+fn build_openai_request_body(model: &str, messages: &[ChatMessage]) -> serde_json::Value {
     let api_messages: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {

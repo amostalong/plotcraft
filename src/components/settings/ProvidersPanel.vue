@@ -2,19 +2,24 @@
 // Providers panel（v0.1 Locus-shape subset + custom providers 库）
 //
 // 布局：
-// - Section 1: 当前激活的连接（model / baseUrl / apiKey 顶层字段）—— LLM 真用的
-// - Section 2: 已保存的第三方 provider 库（customProviders[]）—— 玩家可 Add / Use / Delete
+// - Section 1: 当前激活的连接（model / baseUrl / apiKey / apiFormat 顶层字段）
+// - Section 2: 已保存的第三方 provider 库（customProviders[]）
 //
 // 跟 Locus 差别：
 // - Locus `CustomProvider` 有完整字段 `id/name/endpoint/apiFormat/apiKey/catalogId/models[]`，
 //   且 apiKey 走 OS keychain
-// - PlotCraft v0.1 简化：不分 apiFormat、不接 keychain、不按 provider 分 model
-//   （model 走全局 BUILTIN_MODELS datalist，跨 provider 共用）
-// - "Use" provider 时把它的 baseUrl + apiKey 复制到顶层 `base_url` / `apiKey` 字段
+// - PlotCraft v0.1 简化：不分 catalogId / models，apiKey 裸存
+// - "Use" provider 时把 baseUrl + apiKey + apiFormat 复制到顶层
+//
+// 支持的 API 协议（参考 Locus `ApiFormat`）：
+// - `openai_chat`（OpenAI Chat Completions + SSE）—— v0.1 已实装
+// - `anthropic_messages`（Anthropic Messages + SSE）—— v0.1 已实装
+// - `openai_responses`（OpenAI 新版 Responses API）—— v0.2+ 加
 
 import { ref, computed } from 'vue'
 import { Plus, Trash2, Check, AlertTriangle, Power, PowerOff, Pencil, X, Save } from 'lucide-vue-next'
-import type { CustomProvider } from '@/lib/settings'
+import type { CustomProvider, ApiFormat } from '@/lib/settings'
+import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
 
 const props = defineProps<{
   baseUrl: string | null
@@ -25,12 +30,13 @@ const props = defineProps<{
 // === Active connection (v-model) ===
 const baseUrl = defineModel<string | null>('base-url', { required: true })
 const apiKey = defineModel<string>('api-key', { required: true })
+const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
 
 // === Saved library (v-model) ===
 const customProviders = defineModel<CustomProvider[]>('custom-providers', { required: true })
 
-// === Add / Edit modal state ===
-const editingId = ref<string | null>(null)        // null = add new, else edit existing id
+// === Add / Edit form state ===
+const editingId = ref<string | null>(null)
 const showForm = computed(() => editingId.value !== null || addingNew.value)
 const addingNew = ref(false)
 
@@ -38,6 +44,7 @@ const draftId = ref('')
 const draftName = ref('')
 const draftBaseUrl = ref('')
 const draftApiKey = ref('')
+const draftApiFormat = ref<ApiFormat>(DEFAULT_API_FORMAT)
 const draftEnabled = ref(true)
 const formError = ref<string | null>(null)
 
@@ -48,6 +55,7 @@ function startAdd() {
   draftName.value = ''
   draftBaseUrl.value = 'https://'
   draftApiKey.value = ''
+  draftApiFormat.value = DEFAULT_API_FORMAT
   draftEnabled.value = true
   formError.value = null
 }
@@ -59,6 +67,7 @@ function startEdit(p: CustomProvider) {
   draftName.value = p.name
   draftBaseUrl.value = p.baseUrl
   draftApiKey.value = p.apiKey
+  draftApiFormat.value = p.apiFormat
   draftEnabled.value = p.enabled
   formError.value = null
 }
@@ -70,7 +79,6 @@ function cancelForm() {
 }
 
 function saveForm() {
-  // 校验
   if (!draftId.value.trim()) {
     formError.value = 'id 不能为空'
     return
@@ -83,15 +91,12 @@ function saveForm() {
     formError.value = 'baseUrl 必须以 http/https 开头'
     return
   }
-  // id 唯一性
   if (editingId.value === null) {
-    // add: id 不能跟现有重复
     if (customProviders.value.some((p) => p.id === draftId.value)) {
       formError.value = `id "${draftId.value}" 已存在`
       return
     }
   } else {
-    // edit: id 改的话也不能跟其他重复
     if (
       draftId.value !== editingId.value &&
       customProviders.value.some((p) => p.id === draftId.value)
@@ -106,14 +111,13 @@ function saveForm() {
     name: draftName.value.trim(),
     baseUrl: draftBaseUrl.value.trim(),
     apiKey: draftApiKey.value.trim(),
+    apiFormat: draftApiFormat.value,
     enabled: draftEnabled.value,
   }
 
   if (editingId.value === null) {
-    // add
     customProviders.value = [...customProviders.value, newProvider]
   } else {
-    // edit
     customProviders.value = customProviders.value.map((p) =>
       p.id === editingId.value ? newProvider : p,
     )
@@ -128,9 +132,10 @@ function removeProvider(id: string) {
 }
 
 function useProvider(p: CustomProvider) {
-  // 把这个 provider 的 baseUrl + apiKey 复制到顶层
+  // 把 provider 的 baseUrl + apiKey + apiFormat 复制到顶层
   baseUrl.value = p.baseUrl
   apiKey.value = p.apiKey
+  apiFormat.value = p.apiFormat
   // model 不动（玩家自己选）
 }
 
@@ -138,6 +143,11 @@ function toggleEnabled(p: CustomProvider) {
   customProviders.value = customProviders.value.map((x) =>
     x.id === p.id ? { ...x, enabled: !x.enabled } : x,
   )
+}
+
+// 卡片显示 provider 自己的 apiFormat label
+function formatLabel(fmt: ApiFormat): string {
+  return API_FORMAT_LABELS[fmt]
 }
 </script>
 
@@ -159,13 +169,31 @@ function toggleEnabled(p: CustomProvider) {
       </div>
 
       <label>
+        <span class="label-text">API Format</span>
+        <select v-model="apiFormat">
+          <option
+            v-for="(label, fmt) in API_FORMAT_LABELS"
+            :key="fmt"
+            :value="fmt"
+          >
+            {{ label }}
+          </option>
+        </select>
+        <span class="field-hint">
+          当前 LLM 调用的协议 —— 切换后下次发消息生效
+        </span>
+      </label>
+
+      <label>
         <span class="label-text">Endpoint (base_url)</span>
         <input
           v-model="baseUrl"
           type="text"
           placeholder="https://api.openai.com/v1"
         />
-        <span class="field-hint">OpenAI 兼容端点 —— 当前 LLM 调用的目标</span>
+        <span class="field-hint">
+          OpenAI / Anthropic 端点 —— 切换 API format 时记得改这里
+        </span>
       </label>
 
       <label>
@@ -229,6 +257,18 @@ function toggleEnabled(p: CustomProvider) {
               autocomplete="off"
             />
           </label>
+          <label class="form-grid-full">
+            <span class="label-text">apiFormat（API 协议）</span>
+            <select v-model="draftApiFormat">
+              <option
+                v-for="(label, fmt) in API_FORMAT_LABELS"
+                :key="fmt"
+                :value="fmt"
+              >
+                {{ label }}
+              </option>
+            </select>
+          </label>
           <label class="form-grid-full enabled-row">
             <input v-model="draftEnabled" type="checkbox" />
             <span>启用</span>
@@ -290,6 +330,10 @@ function toggleEnabled(p: CustomProvider) {
             <div class="card-row">
               <span class="card-label">apiKey:</span>
               <code>{{ p.apiKey ? '••••••' + p.apiKey.slice(-4) : '(空)' }}</code>
+            </div>
+            <div class="card-row">
+              <span class="card-label">apiFormat:</span>
+              <code>{{ formatLabel(p.apiFormat) }}</code>
             </div>
           </div>
         </div>

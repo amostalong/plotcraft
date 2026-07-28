@@ -77,11 +77,12 @@ pub struct UiConfig {
 ///
 /// Locus 的 `CustomProvider`（参考 Locus `src/types.ts:611`）有完整字段
 /// `id` / `name` / `endpoint` / `apiFormat` / `apiKey` / `catalogId` / `models[]`。
-/// PlotCraft v0.1 简化（不分 apiFormat、不接 keychain、不按 provider 分 model）：
+/// PlotCraft v0.1 简化（不接 keychain、不按 provider 分 model）：
 /// - `id`：唯一 key（小写英文，用于 `providers.openai` 这种 lookup）
 /// - `name`：UI 显示名
 /// - `base_url`：OpenAI 兼容 endpoint
 /// - `api_key`：v0.1 裸存（v0.2 升 keyring）
+/// - `api_format`：API 协议（`openai_chat` / `anthropic_messages`）—— 跟 Locus 同
 /// - `enabled`：是否启用（玩家可以暂时 disable 不删除）
 ///
 /// JSON 字段 camelCase（跟 Locus `CustomProvider` 内部一致）。
@@ -96,8 +97,29 @@ pub struct CustomProvider {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub api_format: ApiFormat,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// LLM API 协议（参考 Locus `ApiFormat` = `"openai_chat" | "openai_responses" | "anthropic_messages"`）
+///
+/// PlotCraft v0.1 实现：
+/// - `openai_chat`：OpenAI Chat Completions API（`/v1/chat/completions` + SSE）
+/// - `anthropic_messages`：Anthropic Messages API（`/v1/messages` + SSE）
+///
+/// 不实现：
+/// - `openai_responses`：OpenAI 新版 Responses API（v0.2+ 加，协议跟 chat 接近）
+///
+/// JSON 序列化用 snake_case（`"openai_chat"` / `"anthropic_messages"`），
+/// 跟 Locus `ApiFormat` 字面一致。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiFormat {
+    #[default]
+    OpenaiChat,
+    AnthropicMessages,
 }
 
 impl Default for UiConfig {
@@ -179,6 +201,10 @@ pub struct AppConfig {
     /// 已保存的第三方 provider 库（PlotCraft 自加；Locus 走 keychain + `provider_key_ids.json`）
     #[serde(default, rename = "customProviders")]
     pub custom_providers: Vec<CustomProvider>,
+    /// Active connection 用的 API 协议（PlotCraft 扩展；Locus 顶层无此字段）
+    /// 玩家点 "Use" 切换 provider 时同步复制
+    #[serde(default, rename = "apiFormat")]
+    pub api_format: ApiFormat,
 }
 
 fn default_true() -> bool {
@@ -225,6 +251,7 @@ impl Default for AppConfig {
             ui: UiConfig::default(),
             recent_projects: Vec::new(),
             custom_providers: Vec::new(),
+            api_format: ApiFormat::default(),
         }
     }
 }
@@ -256,13 +283,14 @@ impl AppConfig {
 
 /// 内部 flat `LlmConfig` —— streaming runtime 用
 ///
-/// v0.1：从 `AppConfig` 顶层 `model` / `base_url` / `api_key` 解出
+/// v0.1：从 `AppConfig` 顶层 `model` / `base_url` / `api_key` / `api_format` 解出
 /// v0.2+：多 provider 时再加 `provider` 字段
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub endpoint: String,
     pub api_key: String,
     pub model: String,
+    pub api_format: ApiFormat,
 }
 
 impl LlmConfig {
@@ -286,6 +314,7 @@ impl LlmConfig {
             endpoint,
             api_key: cfg.api_key,
             model,
+            api_format: cfg.api_format,
         })
     }
 }
@@ -411,6 +440,7 @@ mod tests {
                 name: "DeepSeek".to_string(),
                 base_url: "https://api.deepseek.com/v1".to_string(),
                 api_key: "sk-deepseek-test".to_string(),
+                api_format: ApiFormat::OpenaiChat,
                 enabled: true,
             },
             CustomProvider {
@@ -418,6 +448,7 @@ mod tests {
                 name: "OpenRouter".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
                 api_key: "sk-or-test".to_string(),
+                api_format: ApiFormat::OpenaiChat,
                 enabled: true,
             },
             CustomProvider {
@@ -425,6 +456,7 @@ mod tests {
                 name: "Disabled Provider".to_string(),
                 base_url: "https://example.com/v1".to_string(),
                 api_key: "".to_string(),
+                api_format: ApiFormat::OpenaiChat,
                 enabled: false,
             },
         ];
@@ -504,19 +536,62 @@ mod tests {
                     "name": "DeepSeek",
                     "baseUrl": "https://api.deepseek.com/v1",
                     "apiKey": "sk-deepseek",
+                    "apiFormat": "openai_chat",
+                    "enabled": true
+                },
+                {
+                    "id": "claude",
+                    "name": "Claude (Anthropic)",
+                    "baseUrl": "https://api.anthropic.com",
+                    "apiKey": "sk-ant-test",
+                    "apiFormat": "anthropic_messages",
                     "enabled": true
                 }
-            ]
+            ],
+            "apiFormat": "anthropic_messages"
         }"#;
         let cfg: AppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.model, "gpt-4o-mini");
         assert_eq!(cfg.api_key, "sk-main");
         assert_eq!(cfg.recent_projects, vec!["/path/to/proj1"]);
-        assert_eq!(cfg.custom_providers.len(), 1);
+        assert_eq!(cfg.api_format, ApiFormat::AnthropicMessages);
+        assert_eq!(cfg.custom_providers.len(), 2);
         assert_eq!(cfg.custom_providers[0].id, "deepseek");
-        assert_eq!(
-            cfg.custom_providers[0].base_url,
-            "https://api.deepseek.com/v1"
-        );
+        assert_eq!(cfg.custom_providers[0].api_format, ApiFormat::OpenaiChat);
+        assert_eq!(cfg.custom_providers[1].id, "claude");
+        assert_eq!(cfg.custom_providers[1].api_format, ApiFormat::AnthropicMessages);
+    }
+
+    #[test]
+    fn api_format_roundtrip() {
+        // OpenAI Chat
+        let cfg = AppConfig {
+            api_format: ApiFormat::OpenaiChat,
+            ..AppConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"apiFormat\":\"openai_chat\""));
+
+        // Anthropic Messages
+        let mut cfg = AppConfig::default();
+        cfg.api_format = ApiFormat::AnthropicMessages;
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"apiFormat\":\"anthropic_messages\""));
+
+        // 反向：JSON → struct
+        let parsed: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_format, ApiFormat::AnthropicMessages);
+    }
+
+    #[test]
+    fn missing_api_format_defaults_to_openai_chat() {
+        // 旧 config.json 没 apiFormat 字段 → default to OpenaiChat
+        let json = r#"{
+            "model": "gpt-4o-mini",
+            "base_url": "https://api.openai.com/v1",
+            "apiKey": "sk-test"
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.api_format, ApiFormat::OpenaiChat);
     }
 }

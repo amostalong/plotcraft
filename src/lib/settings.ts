@@ -40,7 +40,26 @@ export interface CustomProvider {
   name: string
   baseUrl: string
   apiKey: string
+  /** API 协议（跟 Locus `ApiFormat` 同：openai_chat | anthropic_messages）*/
+  apiFormat: ApiFormat
   enabled: boolean
+}
+
+/** LLM API 协议（参考 Locus `ApiFormat` = openai_chat | openai_responses | anthropic_messages）*/
+///
+/// PlotCraft v0.1 实现：
+/// - `openai_chat`：OpenAI Chat Completions API
+/// - `anthropic_messages`：Anthropic Messages API（Claude）
+///
+/// v0.2+ 加 `openai_responses`（OpenAI 新版 Responses API）
+export type ApiFormat = 'openai_chat' | 'anthropic_messages'
+
+export const DEFAULT_API_FORMAT: ApiFormat = 'openai_chat'
+
+/** ApiFormat 的人类可读 label（UI dropdown 用） */
+export const API_FORMAT_LABELS: Record<ApiFormat, string> = {
+  openai_chat: 'OpenAI Chat Completions',
+  anthropic_messages: 'Anthropic Messages',
 }
 
 // --- 完整 Config ---
@@ -77,6 +96,8 @@ export interface Config {
   ui: UiConfig
   recentProjects: string[]
   customProviders: CustomProvider[]
+  /** Active connection 用的 API 协议（"Use" provider 时同步）*/
+  apiFormat: ApiFormat
 }
 
 // --- Tauri command wrappers ---
@@ -134,4 +155,5 @@ export const DEFAULT_CONFIG: Config = {
   ui: { theme: 'dark' },
   recentProjects: [],
   customProviders: [],
+  apiFormat: DEFAULT_API_FORMAT,
 }

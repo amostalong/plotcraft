@@ -7,4 +7,5 @@
 
 pub mod config;
 pub mod streaming;
+pub mod streaming_anthropic;
 pub mod types;
