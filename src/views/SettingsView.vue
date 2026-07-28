@@ -10,7 +10,7 @@ import { onMounted, ref, computed } from 'vue'
 import { CheckCircle2, AlertCircle, Save, RotateCcw, Plug, Cpu, SlidersHorizontal } from 'lucide-vue-next'
 
 import { useSettingsStore } from '@/stores/settings'
-import ApiProviders from '@/components/settings/ApiProviders.vue'
+import ProvidersPanel from '@/components/settings/ProvidersPanel.vue'
 import ModelDefaultsPanel from '@/components/settings/ModelDefaults.vue'
 import GeneralSettingsPanel from '@/components/settings/GeneralSettings.vue'
 
@@ -54,7 +54,7 @@ function onReset() {
           @click="activeCategory = 'api'"
         >
           <Plug :size="14" />
-          <span>API Providers</span>
+          <span>Providers</span>
         </button>
         <button
           class="sidebar-item"
@@ -81,11 +81,12 @@ function onReset() {
     <!-- Content: 切换 panel -->
     <main class="settings-content">
       <Transition name="fade" mode="out-in">
-        <ApiProviders
+        <ProvidersPanel
           v-if="activeCategory === 'api'"
           key="api"
           v-model:base-url="settings.config.base_url"
           v-model:api-key="settings.config.apiKey"
+          v-model:custom-providers="settings.config.customProviders"
         />
         <ModelDefaultsPanel
           v-else-if="activeCategory === 'models'"

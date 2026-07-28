@@ -73,6 +73,33 @@ pub struct UiConfig {
     pub theme: String,
 }
 
+/// PlotCraft 扩展：第三方 provider 库（saved library，OpenAI 兼容端点）
+///
+/// Locus 的 `CustomProvider`（参考 Locus `src/types.ts:611`）有完整字段
+/// `id` / `name` / `endpoint` / `apiFormat` / `apiKey` / `catalogId` / `models[]`。
+/// PlotCraft v0.1 简化（不分 apiFormat、不接 keychain、不按 provider 分 model）：
+/// - `id`：唯一 key（小写英文，用于 `providers.openai` 这种 lookup）
+/// - `name`：UI 显示名
+/// - `base_url`：OpenAI 兼容 endpoint
+/// - `api_key`：v0.1 裸存（v0.2 升 keyring）
+/// - `enabled`：是否启用（玩家可以暂时 disable 不删除）
+///
+/// JSON 字段 camelCase（跟 Locus `CustomProvider` 内部一致）。
+/// 但 Locus 顶层 `AppConfig` 不带 `custom_providers` 字段 —— PlotCraft 这边
+/// 在顶层 `AppConfig` 加 `custom_providers: Vec<CustomProvider>`，
+/// Locus 看到会忽略这个 PlotCraft 扩展字段。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProvider {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
@@ -149,6 +176,9 @@ pub struct AppConfig {
     /// 最近打开的项目路径（PlotCraft 自加；Locus 走 session-based tracking）
     #[serde(default, rename = "recentProjects")]
     pub recent_projects: Vec<String>,
+    /// 已保存的第三方 provider 库（PlotCraft 自加；Locus 走 keychain + `provider_key_ids.json`）
+    #[serde(default, rename = "customProviders")]
+    pub custom_providers: Vec<CustomProvider>,
 }
 
 fn default_true() -> bool {
@@ -194,6 +224,7 @@ impl Default for AppConfig {
             api_key: String::new(),
             ui: UiConfig::default(),
             recent_projects: Vec::new(),
+            custom_providers: Vec::new(),
         }
     }
 }
@@ -369,5 +400,123 @@ mod tests {
         };
         assert_eq!(endpoint, DEFAULT_OPENAI_ENDPOINT);
         assert_eq!(model, DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn custom_providers_roundtrip() {
+        let mut cfg = AppConfig::default();
+        cfg.custom_providers = vec![
+            CustomProvider {
+                id: "deepseek".to_string(),
+                name: "DeepSeek".to_string(),
+                base_url: "https://api.deepseek.com/v1".to_string(),
+                api_key: "sk-deepseek-test".to_string(),
+                enabled: true,
+            },
+            CustomProvider {
+                id: "openrouter".to_string(),
+                name: "OpenRouter".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                api_key: "sk-or-test".to_string(),
+                enabled: true,
+            },
+            CustomProvider {
+                id: "disabled-one".to_string(),
+                name: "Disabled Provider".to_string(),
+                base_url: "https://example.com/v1".to_string(),
+                api_key: "".to_string(),
+                enabled: false,
+            },
+        ];
+
+        let json = serde_json::to_string_pretty(&cfg).unwrap();
+        // 验证 camelCase JSON 输出（跟 Locus CustomProvider 内部一致）
+        assert!(json.contains("\"customProviders\""));
+        // CustomProvider 内部字段 camelCase
+        assert!(json.contains("\"baseUrl\":"));
+        assert!(json.contains("\"apiKey\":"));
+        assert!(json.contains("\"deepseek\""));
+        assert!(json.contains("\"openrouter\""));
+        // 顶层 AppConfig 字段是 snake_case（base_url / model），跟 Locus 一致
+        assert!(json.contains("\"base_url\":"));
+        assert!(json.contains("\"model\":"));
+        // 顶层 PlotCraft 扩展（apiKey / customProviders）必须 camelCase
+        assert!(json.contains("\"apiKey\":"));
+        assert!(!json.contains("\"custom_providers\""));
+
+        let parsed: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.custom_providers.len(), 3);
+        assert_eq!(parsed.custom_providers[0].id, "deepseek");
+        assert_eq!(parsed.custom_providers[0].name, "DeepSeek");
+        assert_eq!(
+            parsed.custom_providers[0].base_url,
+            "https://api.deepseek.com/v1"
+        );
+        assert_eq!(parsed.custom_providers[0].api_key, "sk-deepseek-test");
+        assert!(parsed.custom_providers[0].enabled);
+        assert!(!parsed.custom_providers[2].enabled);
+    }
+
+    #[test]
+    fn can_read_config_with_locus_fields_plus_plotcraft_custom_providers() {
+        // Locus 顶层字段 + PlotCraft custom_providers 同时存在
+        // （模拟两个 app 的 config 都跑到同一个文件，或者 migrate 场景）
+        let json = r#"{
+            "model": "gpt-4o-mini",
+            "base_url": "https://api.openai.com/v1",
+            "debug": false,
+            "file_tool_workspace_boundary": false,
+            "close_behavior": "exit",
+            "dynamic_tool_loading_mode": "",
+            "dynamic_tool_loading_native_migrated": true,
+            "anthropic_native_lazy_enabled": true,
+            "default_skill_package_namespace": "",
+            "view_windows_above_main": false,
+            "view_open_in_existing_window": true,
+            "unity_background_hook_enabled": true,
+            "unity_state_probe_enabled": true,
+            "csharp_lsp_enabled": false,
+            "unity_sidecar_compiler": true,
+            "unity_in_process_compile_fallback": true,
+            "unity_hot_reload": false,
+            "unity_native_bridge_enabled": true,
+            "unity_inline_force_evaluate_enabled": true,
+            "code_analysis_tools": {
+                "codeSymbolSearch": true,
+                "codeGotoDefinition": true,
+                "codeFindReferences": true,
+                "codeDiagnostics": false,
+                "editWriteDiagnostics": true,
+                "codeHover": false,
+                "unityCodeUsages": true,
+                "unityAnalyzers": true
+            },
+            "llm_retry_max_attempts": 3,
+            "llm_strip_inline_think_tags": true,
+            "subagent_max_depth": 1,
+            "subagent_max_concurrent": 3,
+            "apiKey": "sk-main",
+            "ui": { "theme": "dark" },
+            "recentProjects": ["/path/to/proj1"],
+            "customProviders": [
+                {
+                    "id": "deepseek",
+                    "name": "DeepSeek",
+                    "baseUrl": "https://api.deepseek.com/v1",
+                    "apiKey": "sk-deepseek",
+                    "enabled": true
+                }
+            ]
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.model, "gpt-4o-mini");
+        assert_eq!(cfg.api_key, "sk-main");
+        assert_eq!(cfg.recent_projects, vec!["/path/to/proj1"]);
+        assert_eq!(cfg.custom_providers.len(), 1);
+        assert_eq!(cfg.custom_providers[0].id, "deepseek");
+        assert_eq!(
+            cfg.custom_providers[0].base_url,
+            "https://api.deepseek.com/v1"
+        );
     }
 }

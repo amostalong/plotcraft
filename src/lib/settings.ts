@@ -34,6 +34,15 @@ export interface UiConfig {
   theme: string
 }
 
+/** 已保存的第三方 provider（OpenAI 兼容端点，saved library） */
+export interface CustomProvider {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  enabled: boolean
+}
+
 // --- 完整 Config ---
 
 export interface Config {
@@ -67,6 +76,7 @@ export interface Config {
   apiKey: string
   ui: UiConfig
   recentProjects: string[]
+  customProviders: CustomProvider[]
 }
 
 // --- Tauri command wrappers ---
@@ -123,4 +133,5 @@ export const DEFAULT_CONFIG: Config = {
   apiKey: '',
   ui: { theme: 'dark' },
   recentProjects: [],
+  customProviders: [],
 }
