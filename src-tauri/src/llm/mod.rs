@@ -8,4 +8,5 @@
 pub mod config;
 pub mod streaming;
 pub mod streaming_anthropic;
+pub mod streaming_openai_responses;
 pub mod types;

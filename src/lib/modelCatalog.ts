@@ -3,7 +3,9 @@
 // v0.1 设计：
 // - 静态列表，玩家选 / 手填都行（UI 用 HTML <datalist>，详见 [ModelDefaults.vue]）
 // - 数据跟 Locus `stores/model.ts` 的 `codexFallbackModels` / `builtinModels` 子集对齐
-//   —— 选取 OpenAI 兼容 endpoint 能用的（v0.1 只实装 `openai` provider）
+// - provider 字段（`openai` / `anthropic`）跟后端 `ApiFormat` 对应：
+//   - `openai` 兼容 `openai_chat` + `openai_responses` 两种 format
+//   - `anthropic` 兼容 `anthropic_messages` 一种 format
 // - v0.2+ 走远端 fetch + snapshot 缓存（schema 留 `modelCatalog: Option<ModelCatalog>`）
 //
 // 数据本身是公开模型名 + context window（厂商公开），不 import Locus 文件（AGENTS.md 硬规则）
@@ -13,7 +15,7 @@ export interface BuiltinModel {
   id: string
   /** UI 显示名（如 `"GPT-4o mini"`） */
   name: string
-  /** provider 分类（v0.1 全是 `openai` 兼容） */
+  /** provider 分类（对应后端 `ApiFormat` 路由） */
   provider: 'openai' | 'anthropic' | 'google' | 'custom'
   /** 上下文窗口 token 数 */
   contextWindow: number
@@ -29,7 +31,8 @@ export interface BuiltinModel {
  * 选取原则：
  * 1. OpenAI 官方主力（gpt-4o / gpt-4o-mini / o1 / o3-mini）—— 真实 OpenAI endpoint 用
  * 2. 主流 OpenAI 兼容模型（DeepSeek / Qwen / Llama）—— 自建 endpoint / proxy 用
- * 3. 暂不放 Locus 的 Claude / Anthropic / openrouter / codex——v0.1 不实装对应 provider
+ * 3. Anthropic 官方主力（claude-opus-4-1 / sonnet-4-5 / 3-5-sonnet）—— Anthropic endpoint 用
+ *    （v0.1+ 支持 anthropic_messages API 格式后才有意义）
  */
 export const BUILTIN_MODELS: readonly BuiltinModel[] = [
   // --- OpenAI 官方 ---
@@ -111,6 +114,35 @@ export const BUILTIN_MODELS: readonly BuiltinModel[] = [
     provider: 'openai',
     contextWindow: 128_000,
     note: '128K · 走 api.groq.com/openai/v1',
+  },
+  // --- Anthropic 官方 ---
+  {
+    id: 'claude-opus-4-1',
+    name: 'Claude Opus 4.1',
+    provider: 'anthropic',
+    contextWindow: 200_000,
+    note: '200K context · Anthropic 旗舰',
+  },
+  {
+    id: 'claude-sonnet-4-5',
+    name: 'Claude Sonnet 4.5',
+    provider: 'anthropic',
+    contextWindow: 200_000,
+    note: '200K context · 性价比',
+  },
+  {
+    id: 'claude-3-5-sonnet-latest',
+    name: 'Claude 3.5 Sonnet (latest)',
+    provider: 'anthropic',
+    contextWindow: 200_000,
+    note: '200K context · 老款旗舰',
+  },
+  {
+    id: 'claude-3-5-haiku-latest',
+    name: 'Claude 3.5 Haiku (latest)',
+    provider: 'anthropic',
+    contextWindow: 200_000,
+    note: '200K context · 便宜快',
   },
 ]
 

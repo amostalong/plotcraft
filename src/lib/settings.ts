@@ -47,19 +47,26 @@ export interface CustomProvider {
 
 /** LLM API 协议（参考 Locus `ApiFormat` = openai_chat | openai_responses | anthropic_messages）*/
 ///
-/// PlotCraft v0.1 实现：
-/// - `openai_chat`：OpenAI Chat Completions API
-/// - `anthropic_messages`：Anthropic Messages API（Claude）
-///
-/// v0.2+ 加 `openai_responses`（OpenAI 新版 Responses API）
-export type ApiFormat = 'openai_chat' | 'anthropic_messages'
+/// PlotCraft 实现（v0.1 全 3 种）：
+/// - `openai_chat`：OpenAI Chat Completions API（`/v1/chat/completions`）
+/// - `openai_responses`：OpenAI Responses API（`/v1/responses`，OpenAI 新版）
+/// - `anthropic_messages`：Anthropic Messages API（`/v1/messages`，Claude）
+export type ApiFormat = 'openai_chat' | 'openai_responses' | 'anthropic_messages'
 
 export const DEFAULT_API_FORMAT: ApiFormat = 'openai_chat'
 
 /** ApiFormat 的人类可读 label（UI dropdown 用） */
 export const API_FORMAT_LABELS: Record<ApiFormat, string> = {
   openai_chat: 'OpenAI Chat Completions',
+  openai_responses: 'OpenAI Responses API',
   anthropic_messages: 'Anthropic Messages',
+}
+
+/** ApiFormat → 默认 base URL（玩家首次切到该 format 时建议填的 endpoint） */
+export const DEFAULT_ENDPOINTS: Record<ApiFormat, string> = {
+  openai_chat: 'https://api.openai.com/v1',
+  openai_responses: 'https://api.openai.com/v1',
+  anthropic_messages: 'https://api.anthropic.com',
 }
 
 // --- 完整 Config ---

@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::config::{ApiFormat, LlmConfig};
 use super::streaming_anthropic::stream_chat_anthropic;
+use super::streaming_openai_responses::stream_chat_openai_responses;
 use super::types::{ChatMessage, MessageRole};
 use crate::error::{AppError, AppResult};
 
@@ -55,6 +56,7 @@ pub struct ChatError {
 ///
 /// 按 `config.api_format` 路由：
 /// - `openai_chat` → [`stream_chat_openai_chat`]（OpenAI Chat Completions + SSE）
+/// - `openai_responses` → [`stream_chat_openai_responses`]（OpenAI Responses + SSE）
 /// - `anthropic_messages` → [`stream_chat_anthropic`]（Anthropic Messages + SSE）
 ///
 /// 完成后 emit `chat:done`（成功）或 `chat:error`（失败）。
@@ -69,6 +71,9 @@ pub async fn stream_chat(
     match config.api_format {
         ApiFormat::OpenaiChat => {
             stream_chat_openai_chat(app, run_id, config, messages, cancel).await
+        }
+        ApiFormat::OpenaiResponses => {
+            stream_chat_openai_responses(app, run_id, config, messages, cancel).await
         }
         ApiFormat::AnthropicMessages => {
             stream_chat_anthropic(app, run_id, config, messages, cancel).await

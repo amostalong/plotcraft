@@ -105,20 +105,19 @@ pub struct CustomProvider {
 
 /// LLM API 协议（参考 Locus `ApiFormat` = `"openai_chat" | "openai_responses" | "anthropic_messages"`）
 ///
-/// PlotCraft v0.1 实现：
+/// PlotCraft 实现：
 /// - `openai_chat`：OpenAI Chat Completions API（`/v1/chat/completions` + SSE）
+/// - `openai_responses`：OpenAI Responses API（`/v1/responses` + SSE）—— OpenAI 新版
 /// - `anthropic_messages`：Anthropic Messages API（`/v1/messages` + SSE）
 ///
-/// 不实现：
-/// - `openai_responses`：OpenAI 新版 Responses API（v0.2+ 加，协议跟 chat 接近）
-///
-/// JSON 序列化用 snake_case（`"openai_chat"` / `"anthropic_messages"`），
+/// JSON 序列化用 snake_case（`"openai_chat"` / `"openai_responses"` / `"anthropic_messages"`），
 /// 跟 Locus `ApiFormat` 字面一致。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiFormat {
     #[default]
     OpenaiChat,
+    OpenaiResponses,
     AnthropicMessages,
 }
 

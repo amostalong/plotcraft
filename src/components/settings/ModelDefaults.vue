@@ -9,18 +9,60 @@
 // - input + datalist：打字有自动补全建议，鼠标选也行
 // - 下方显示当前 model 的 context window + note（找不到 = "custom"）
 // - "重置为默认" 按钮：model 设回 BUILTIN_MODELS 里 isDefault 那个（gpt-4o-mini）
+//
+// v0.1+ 按 active `apiFormat` 过滤建议列表：
+// - `openai_chat` / `openai_responses` → openai provider 模型
+// - `anthropic_messages` → anthropic provider 模型
+// 玩家仍可手填任何 model id（custom 自建 endpoint 时正常）
 
 import { computed } from 'vue'
 import { Cpu, RotateCcw, AlertCircle } from 'lucide-vue-next'
-import { BUILTIN_MODELS, DEFAULT_MAIN_MODEL, findModel, formatContextWindow } from '@/lib/modelCatalog'
+import {
+  BUILTIN_MODELS,
+  DEFAULT_MAIN_MODEL,
+  findModel,
+  formatContextWindow,
+  type BuiltinModel,
+} from '@/lib/modelCatalog'
+import type { ApiFormat } from '@/lib/settings'
 
 // v-model:model 双向绑定（Vue 3.4+ defineModel）
 const model = defineModel<string>('model', { required: true })
+// v-model:api-format 双向绑定（用于过滤建议列表 + 顶部提示）
+const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
 
 const DATALIST_ID = 'plotcraft-builtin-models'
 
 const currentModel = computed(() => findModel(model.value))
 const isCustom = computed(() => !currentModel.value && model.value.length > 0)
+
+/** 按 active apiFormat 过滤建议列表
+ *  - openai_chat / openai_responses → openai provider
+ *  - anthropic_messages → anthropic provider
+ * 玩家手填 model 时仍可用任意 id（不强制 list 内）
+ */
+const suggestedModels = computed<BuiltinModel[]>(() => {
+  switch (apiFormat.value) {
+    case 'anthropic_messages':
+      return BUILTIN_MODELS.filter((m) => m.provider === 'anthropic')
+    case 'openai_chat':
+    case 'openai_responses':
+    default:
+      return BUILTIN_MODELS.filter((m) => m.provider === 'openai')
+  }
+})
+
+const currentApiFormatLabel = computed(() => {
+  switch (apiFormat.value) {
+    case 'anthropic_messages':
+      return 'Anthropic Messages'
+    case 'openai_responses':
+      return 'OpenAI Responses API'
+    case 'openai_chat':
+    default:
+      return 'OpenAI Chat Completions'
+  }
+})
 
 function onResetToDefault() {
   model.value = DEFAULT_MAIN_MODEL
@@ -54,10 +96,13 @@ function onResetToDefault() {
           placeholder="gpt-4o-mini"
         />
         <datalist :id="DATALIST_ID">
-          <option v-for="m in BUILTIN_MODELS" :key="m.id" :value="m.id">
+          <option v-for="m in suggestedModels" :key="m.id" :value="m.id">
             {{ m.name }} — {{ formatContextWindow(m.contextWindow) }}{{ m.isDefault ? ' (默认)' : '' }}
           </option>
         </datalist>
+        <span class="field-hint">
+          当前 active <code>apiFormat</code> = {{ currentApiFormatLabel }} —— 建议按 provider 过滤
+        </span>
       </label>
 
       <div v-if="currentModel" class="model-info">

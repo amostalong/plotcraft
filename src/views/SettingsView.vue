@@ -93,6 +93,7 @@ function onReset() {
           v-else-if="activeCategory === 'models'"
           key="models"
           v-model:model="settings.config.model"
+          v-model:api-format="settings.config.apiFormat"
         />
         <GeneralSettingsPanel
           v-else
