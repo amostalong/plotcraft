@@ -31,3 +31,10 @@ tokio = { version = "1", features = ["full"] }
 # Windows 多线程小对象分配，mimalloc 性能显著优于系统堆
 mimalloc = { version = "0.1", features = ["override"] }
 thiserror = "2"
+
+# commit 2: LLM 流式管道
+# reqwest 用 rustls-tls 避免 Windows OpenSSL 编译问题
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "json"] }
+futures = "0.3"
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4"] }
