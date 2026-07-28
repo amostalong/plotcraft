@@ -1,0 +1,31 @@
+{
+  "name": "plotcraft",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "面向独立 / 业余 RPG / VN 创作者的 AI 协作桌面工具",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "vue": "^3.5.13",
+    "vue-router": "^4.4",
+    "pinia": "^3.0.4",
+    "lucide-vue-next": "^0.460.0",
+    "marked": "^13.0.0",
+    "dompurify": "^3.1.6",
+    "@tauri-apps/api": "=2.11.1",
+    "@tauri-apps/plugin-dialog": "=2.6.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "=2.11.1",
+    "@vitejs/plugin-vue": "^5.1.4",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.10",
+    "vue-tsc": "^2.1.10"
+  }
+}

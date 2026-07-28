@@ -1,0 +1,33 @@
+[package]
+name = "plotcraft"
+version = "0.1.0"
+description = "面向独立 / 业余 RPG / VN 创作者的 AI 协作桌面工具"
+authors = ["amostalong"]
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# `_lib` suffix 避免与 bin name 冲突（Windows 特定问题）
+name = "plotcraft_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# release 用 incremental：v0.1 增量编译比 clean 快很多
+[profile.release]
+incremental = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 严格 pin =2.11.1 —— 必须跟 @tauri-apps/api (npm) 同号，避免版本错配 panic
+tauri = { version = "=2.11.1", features = [] }
+# dialog plugin，跟 @tauri-apps/plugin-dialog (npm) 同号
+tauri-plugin-dialog = "=2.6.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+# Windows 多线程小对象分配，mimalloc 性能显著优于系统堆
+mimalloc = { version = "0.1", features = ["override"] }
+thiserror = "2"

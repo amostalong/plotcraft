@@ -1,0 +1,57 @@
+:root {
+  --bg: #1d1d21;
+  --bg-elev: #25252b;
+  --text: #e8e8ea;
+  --text-muted: #999;
+  --accent: #f0a040;
+  --accent-soft: rgba(240, 160, 64, 0.12);
+  --border: #2e2e35;
+  --hover: rgba(255, 255, 255, 0.05);
+  --error: #e85a5a;
+  --success: #5ae85a;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
