@@ -78,6 +78,7 @@ function startAdd() {
     apiKey: '',
     apiFormat: DEFAULT_API_FORMAT,
     enabled: true,
+    models: [],
     defaultModel: '',
   }
 }
@@ -177,7 +178,8 @@ function applyImport() {
         apiKey: '', // Locus 把 key 存 keychain，PlotCraft 玩家手动填
         apiFormat: p.apiFormat,
         enabled: p.enabled,
-        defaultModel: p.defaultModel, // 从 Locus models[0].id 取
+        models: p.models.map((m) => ({ id: m.id, name: m.name })), // v0.1.3+ 完整 models 列表
+        defaultModel: p.defaultModel, // Locus models[0].id
       }))
     // 跳过已存在 id（提示玩家手动处理）
     const existing = new Set(customProviders.value.map((p) => p.id))
@@ -301,8 +303,10 @@ function applyImport() {
               <code>{{ formatLabel(p.apiFormat) }}</code>
             </div>
             <div class="card-row">
-              <span class="card-label">defaultModel:</span>
-              <code>{{ p.defaultModel || '(未填 —— 不会出现在 chat selector)' }}</code>
+              <span class="card-label">models:</span>
+              <code>
+                {{ p.models.length }} 个{{ p.models.length > 0 ? `（default: ${p.defaultModel || p.models[0]?.id || '—'}）` : '（未填 —— 不会出现在 chat selector）' }}
+              </code>
             </div>
           </div>
         </div>

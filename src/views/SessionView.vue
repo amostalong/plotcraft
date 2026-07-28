@@ -54,11 +54,17 @@ const suggestedModels = computed(() => {
   }
 })
 
-/** v0.1+ 玩家 enabled 且有 defaultModel 的 custom providers（selector Custom 段头用） */
+/** v0.1+ 玩家 enabled 的 custom provider（selector Custom 段头用）
+ *  v0.1.3+ effective default：defaultModel || models[0].id
+ */
 const customProviderShortcuts = computed(() =>
   settings.config.customProviders
-    .filter((p) => p.enabled && p.defaultModel && p.defaultModel.trim().length > 0)
-    .map((p) => ({ id: p.id, name: p.name, defaultModel: p.defaultModel })),
+    .filter((p) => p.enabled)
+    .map((p) => {
+      const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+      return { id: p.id, name: p.name, defaultModel: effective }
+    })
+    .filter((p) => p.defaultModel.length > 0),
 )
 
 /** 当前 model 是否支持 effort（找不到 / 不支持 → false，selector 隐藏右 panel） */
@@ -75,9 +81,12 @@ const effortSupported = computed(() => {
 function onSelectModel(id: string) {
   // 1. 检查是否选的是某个 custom provider 的 defaultModel
   //    → 切 active connection 到该 provider（跟 ProvidersPanel "Use" 按钮行为一致）
-  const cp = settings.config.customProviders.find(
-    (p) => p.defaultModel === id && p.enabled,
-  )
+  //    v0.1.3+ effective default：defaultModel || models[0].id
+  const cp = settings.config.customProviders.find((p) => {
+    if (!p.enabled) return false
+    const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+    return effective === id
+  })
   if (cp) {
     settings.config.base_url = cp.baseUrl
     settings.config.apiKey = cp.apiKey

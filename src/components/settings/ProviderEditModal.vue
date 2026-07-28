@@ -16,17 +16,21 @@
 
 import { computed, ref, watch } from 'vue'
 import {
+  BookOpen,
   CheckCircle2,
   Loader2,
+  Plus,
   Save,
+  Star,
   Trash2,
   X,
   XCircle,
   Zap,
 } from 'lucide-vue-next'
 
-import type { CustomProvider, ApiFormat } from '@/lib/settings'
+import type { CustomProvider, ApiFormat, ProviderModel } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
+import { BUILTIN_MODELS, findModel, getDefaultEffort, getSupportedEfforts } from '@/lib/modelCatalog'
 import { testProvider, type TestProviderResult } from '@/lib/llm'
 
 const props = defineProps<{
@@ -50,7 +54,16 @@ const draftEndpoint = ref('')
 const draftApiKey = ref('')
 const draftApiFormat = ref<ApiFormat>(DEFAULT_API_FORMAT)
 const draftEnabled = ref(true)
+const draftModels = ref<ProviderModel[]>([])
 const draftDefaultModel = ref('')
+
+// 「从模型库添加」dropdown state
+const showCatalogPicker = ref(false)
+// 「手动添加」inline form state
+const showManualForm = ref(false)
+const manualId = ref('')
+const manualName = ref('')
+const manualError = ref<string | null>(null)
 
 // === UI state ===
 const localError = ref<string | null>(null)
@@ -69,12 +82,18 @@ watch(
       draftApiKey.value = p.apiKey
       draftApiFormat.value = p.apiFormat
       draftEnabled.value = p.enabled
+      draftModels.value = p.models ? p.models.map((m) => ({ ...m })) : []
       draftDefaultModel.value = p.defaultModel
     }
     localError.value = null
     testResult.value = null
     testRunning.value = false
     saving.value = false
+    showCatalogPicker.value = false
+    showManualForm.value = false
+    manualId.value = ''
+    manualName.value = ''
+    manualError.value = null
   },
   { immediate: true },
 )
@@ -110,10 +129,21 @@ function validate(): boolean {
       return false
     }
   }
-  if (!draftDefaultModel.value.trim()) {
-    // v0.1 不强 block，但 warning 一下
-    localError.value = 'Default Model 留空 → 该 provider 不会出现在 chat selector（建议填一个）'
-    return false
+  // v0.1.3+ models 列表可以为空（玩家还没加 model 时也能保存，
+  // 但该 provider 不会出现在 chat selector）
+  // 不强 warning，简化 UX
+  if (draftModels.value.length === 0) {
+    // 不报错，只是不显示该 provider 在 chat selector
+  }
+  // 校验 defaultModel 必须是 models 列表里的 id
+  if (draftDefaultModel.value.trim()) {
+    const exists = draftModels.value.some(
+      (m) => m.id === draftDefaultModel.value.trim(),
+    )
+    if (!exists) {
+      localError.value = `Default Model "${draftDefaultModel.value}" 不在 models 列表里`
+      return false
+    }
   }
   localError.value = null
   return true
@@ -129,19 +159,118 @@ function onSave() {
     apiKey: draftApiKey.value.trim(),
     apiFormat: draftApiFormat.value,
     enabled: draftEnabled.value,
+    models: draftModels.value.map((m) => ({ id: m.id.trim(), name: m.name.trim() || m.id.trim() })),
     defaultModel: draftDefaultModel.value.trim(),
   }
   emit('save', newProvider)
   saving.value = false
 }
 
+// === v0.1.3+ models 列表增删 ===
+
+/** 「从模型库添加」open/close */
+function openCatalogPicker() {
+  showCatalogPicker.value = true
+  showManualForm.value = false
+  manualError.value = null
+}
+function closeCatalogPicker() {
+  showCatalogPicker.value = false
+}
+
+/** BUILTIN_MODELS 里还没加进 draftModels 的 model（按 apiFormat 过滤） */
+const catalogCandidates = computed(() => {
+  const existingIds = new Set(draftModels.value.map((m) => m.id))
+  return BUILTIN_MODELS.filter(
+    (m) =>
+      !existingIds.has(m.id) &&
+      // 按 active apiFormat 过滤建议（跟 chat selector 一致）
+      (draftApiFormat.value === 'anthropic_messages'
+        ? m.provider === 'anthropic'
+        : m.provider === 'openai'),
+  )
+})
+
+function addFromCatalog(m: { id: string; name: string }) {
+  // 避免重复
+  if (draftModels.value.some((x) => x.id === m.id)) return
+  draftModels.value = [...draftModels.value, { id: m.id, name: m.name || m.id }]
+  // 如果没设 defaultModel → 设成刚加的这个
+  if (!draftDefaultModel.value.trim()) {
+    draftDefaultModel.value = m.id
+  }
+}
+
+/** 「手动添加」open/close */
+function openManualForm() {
+  showManualForm.value = true
+  showCatalogPicker.value = false
+  manualError.value = null
+  manualId.value = ''
+  manualName.value = ''
+}
+function closeManualForm() {
+  showManualForm.value = false
+  manualId.value = ''
+  manualName.value = ''
+  manualError.value = null
+}
+
+function submitManualAdd() {
+  const id = manualId.value.trim()
+  const name = manualName.value.trim() || id
+  if (!id) {
+    manualError.value = 'Model id 不能为空'
+    return
+  }
+  if (draftModels.value.some((m) => m.id === id)) {
+    manualError.value = `Model id "${id}" 已存在`
+    return
+  }
+  draftModels.value = [...draftModels.value, { id, name }]
+  if (!draftDefaultModel.value.trim()) {
+    draftDefaultModel.value = id
+  }
+  closeManualForm()
+}
+
+function removeModel(id: string) {
+  draftModels.value = draftModels.value.filter((m) => m.id !== id)
+  // 如果删的是 defaultModel → fallback 到 models[0]
+  if (draftDefaultModel.value === id) {
+    draftDefaultModel.value = draftModels.value[0]?.id ?? ''
+  }
+}
+
+function setAsDefault(id: string) {
+  draftDefaultModel.value = id
+}
+
+/** model card 上下文：查 builtin 拿 context window 显示 */
+function lookupBuiltinContext(id: string): string | null {
+  const m = findModel(id)
+  if (!m) return null
+  if (m.contextWindow >= 1_000_000) return `${(m.contextWindow / 1_000_000).toFixed(1)}M ctx`
+  if (m.contextWindow >= 1_000) return `${Math.round(m.contextWindow / 1_000)}K ctx`
+  return `${m.contextWindow} ctx`
+}
+
+function lookupBuiltinEffort(id: string): string | null {
+  const m = findModel(id)
+  if (!m) return null
+  return getDefaultEffort(m) || null
+}
+
 async function onTest() {
-  if (!draftEndpoint.value.trim() || !draftApiFormat.value || !draftDefaultModel.value.trim()) {
+  // v0.1.3+ 用 effective default model（defaultModel || models[0].id）
+  const testModel =
+    draftDefaultModel.value.trim() || draftModels.value[0]?.id?.trim() || ''
+  if (!draftEndpoint.value.trim() || !draftApiFormat.value || !testModel) {
     testResult.value = {
       ok: false,
-      error: 'Endpoint + API Format + Default Model 三个都得填',
+      error: 'Endpoint + API Format + 至少 1 个 model 三个都得填',
       endpoint: draftEndpoint.value,
-      model: draftDefaultModel.value,
+      model: testModel,
       apiFormat: draftApiFormat.value,
     }
     return
@@ -153,14 +282,14 @@ async function onTest() {
       endpoint: draftEndpoint.value,
       apiKey: draftApiKey.value,
       apiFormat: draftApiFormat.value,
-      model: draftDefaultModel.value,
+      model: testModel,
     })
   } catch (e) {
     testResult.value = {
       ok: false,
       error: String(e),
       endpoint: draftEndpoint.value,
-      model: draftDefaultModel.value,
+      model: testModel,
       apiFormat: draftApiFormat.value,
     }
   } finally {
@@ -170,10 +299,6 @@ async function onTest() {
 
 function onClose() {
   emit('close')
-}
-
-function onDeleteDefaultModel() {
-  draftDefaultModel.value = ''
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -271,20 +396,6 @@ function onKeydown(e: KeyboardEvent) {
               </select>
             </div>
 
-            <div class="config-field">
-              <label class="config-label">Default Model（chat 默认用）</label>
-              <input
-                v-model="draftDefaultModel"
-                class="config-input"
-                :class="{ invalid: localError && localError.includes('Default Model') }"
-                type="text"
-                :disabled="saving"
-                placeholder="claude-sonnet-4-5"
-                spellcheck="false"
-              />
-              <span class="field-hint">留空 → 该 provider 不出现在 chat selector</span>
-            </div>
-
             <div v-if="!isNew" class="config-field enabled-row">
               <input
                 v-model="draftEnabled"
@@ -296,37 +407,149 @@ function onKeydown(e: KeyboardEvent) {
             </div>
           </aside>
 
-          <!-- Right: model list (v0.1 简化：单 model card) -->
+          <!-- Right: model list (v0.1.3+ 跟 Locus 同款多 model) -->
           <section class="config-main">
             <div class="models-header">
               <span class="models-title">Model</span>
-              <span v-if="draftDefaultModel" class="models-count">已添加 1 个</span>
+              <span v-if="draftModels.length > 0" class="models-count">
+                已添加 {{ draftModels.length }} 个
+              </span>
               <span v-else class="models-count empty">未添加</span>
+              <div class="models-actions">
+                <button
+                  class="add-model-btn"
+                  type="button"
+                  :disabled="saving"
+                  @click="openCatalogPicker"
+                >
+                  <BookOpen :size="11" />
+                  <span>从模型库添加</span>
+                </button>
+                <button
+                  class="add-model-btn"
+                  type="button"
+                  :disabled="saving"
+                  @click="openManualForm"
+                >
+                  <Plus :size="11" />
+                  <span>手动添加</span>
+                </button>
+              </div>
             </div>
-            <div v-if="draftDefaultModel" class="model-card">
-              <div class="model-info">
-                <div class="model-name-row">
-                  <span class="model-name">{{ draftDefaultModel }}</span>
-                  <code class="model-meta">128K ctx</code>
-                </div>
-                <div class="model-actions">
-                  <button
-                    class="icon-btn"
-                    type="button"
-                    title="删除 default model"
-                    :disabled="saving"
-                    @click="onDeleteDefaultModel"
-                  >
-                    <Trash2 :size="12" />
-                  </button>
+
+            <!-- 从模型库添加 dropdown -->
+            <div v-if="showCatalogPicker" class="catalog-picker">
+              <div class="catalog-picker-header">
+                <span>从 BUILTIN_MODELS 选（{{ catalogCandidates.length }} 个候选）</span>
+                <button class="icon-btn" @click="closeCatalogPicker" type="button">
+                  <X :size="11" />
+                </button>
+              </div>
+              <div v-if="catalogCandidates.length === 0" class="catalog-empty">
+                候选都用完了
+              </div>
+              <div v-else class="catalog-list">
+                <button
+                  v-for="m in catalogCandidates"
+                  :key="m.id"
+                  type="button"
+                  class="catalog-option"
+                  @click="addFromCatalog(m)"
+                >
+                  <span class="catalog-option-name">{{ m.name }}</span>
+                  <code class="catalog-option-id">{{ m.id }}</code>
+                </button>
+              </div>
+            </div>
+
+            <!-- 手动添加 inline form -->
+            <div v-if="showManualForm" class="manual-form">
+              <div class="manual-form-grid">
+                <input
+                  v-model="manualId"
+                  class="config-input"
+                  type="text"
+                  placeholder="model id（如 deepseek-coder）"
+                  spellcheck="false"
+                />
+                <input
+                  v-model="manualName"
+                  class="config-input"
+                  type="text"
+                  placeholder="display name（可选）"
+                  spellcheck="false"
+                />
+              </div>
+              <div v-if="manualError" class="manual-form-error">{{ manualError }}</div>
+              <div class="manual-form-actions">
+                <button class="btn primary" type="button" @click="submitManualAdd">
+                  添加
+                </button>
+                <button class="btn" type="button" @click="closeManualForm">
+                  取消
+                </button>
+              </div>
+            </div>
+
+            <!-- Model list -->
+            <div v-if="draftModels.length > 0" class="models-list">
+              <div
+                v-for="m in draftModels"
+                :key="m.id"
+                class="model-card"
+                :class="{ 'is-default': m.id === draftDefaultModel }"
+              >
+                <div class="model-info">
+                  <div class="model-name-row">
+                    <span class="model-name">{{ m.name || m.id }}</span>
+                    <code v-if="lookupBuiltinContext(m.id)" class="model-meta">
+                      {{ lookupBuiltinContext(m.id) }}
+                    </code>
+                    <code v-else class="model-meta">custom</code>
+                    <span v-if="m.id === draftDefaultModel" class="default-tag">
+                      default
+                    </span>
+                  </div>
+                  <div class="model-actions">
+                    <button
+                      v-if="m.id !== draftDefaultModel"
+                      class="icon-btn"
+                      type="button"
+                      title="设为 default"
+                      :disabled="saving"
+                      @click="setAsDefault(m.id)"
+                    >
+                      <Star :size="12" />
+                    </button>
+                    <button
+                      class="icon-btn danger"
+                      type="button"
+                      title="删除 model"
+                      :disabled="saving"
+                      @click="removeModel(m.id)"
+                    >
+                      <Trash2 :size="12" />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-            <div v-else class="models-empty">
-              <p>还没有 default model —— 左边填一个</p>
+            <div v-else-if="!showCatalogPicker && !showManualForm" class="models-empty">
+              <p>还没有 model —— 右上点 "从模型库添加" 或 "手动添加"</p>
               <p class="hint">
-                PlotCraft v0.1 简化：每个 provider 1 个 default model（Locus 那个多 model 增删 v0.2+ 再加）
+                PlotCraft v0.1 简化：每个 model 只需 id + display name（context window 自动从 BUILTIN_MODELS lookup）
               </p>
+            </div>
+
+            <!-- Default Model 选择（在 models 列表下方） -->
+            <div v-if="draftModels.length > 0" class="default-model-picker">
+              <label class="config-label">Default Model（chat 选该 provider 时用）</label>
+              <select v-model="draftDefaultModel" class="config-input" :disabled="saving">
+                <option value="">— 未设置（fallback 到 models[0]）—</option>
+                <option v-for="m in draftModels" :key="m.id" :value="m.id">
+                  {{ m.name || m.id }} ({{ m.id }})
+                </option>
+              </select>
             </div>
           </section>
         </div>
@@ -552,6 +775,132 @@ function onKeydown(e: KeyboardEvent) {
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.models-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.add-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.add-model-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.add-model-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.catalog-picker {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.catalog-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+}
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.catalog-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px 0;
+}
+.catalog-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  font-size: 12px;
+}
+.catalog-option:hover {
+  background: var(--hover);
+}
+.catalog-option-name {
+  flex: 1;
+  font-weight: 500;
+}
+.catalog-option-id {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.manual-form {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.manual-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.manual-form-error {
+  font-size: 11px;
+  color: var(--error);
+  margin-bottom: 6px;
+}
+.manual-form-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.manual-form-actions .btn {
+  padding: 4px 12px;
+  font-size: 11px;
+}
+.models-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.default-model-picker {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .models-title {
   font-size: 14px;
@@ -575,6 +924,27 @@ function onKeydown(e: KeyboardEvent) {
   border-radius: 8px;
   padding: 10px 12px;
   margin-bottom: 8px;
+}
+.model-card.is-default {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.default-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+}
+.icon-btn.danger {
+  color: var(--text-muted);
+}
+.icon-btn.danger:hover:not(:disabled) {
+  background: rgba(232, 90, 90, 0.10);
+  color: var(--error);
 }
 .model-info {
   display: flex;

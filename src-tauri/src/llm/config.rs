@@ -73,21 +73,43 @@ pub struct UiConfig {
     pub theme: String,
 }
 
+/// PlotCraft 扩展：单个 model 条目（per-provider 列表里的元素）
+///
+/// 简化版（vs Locus `CustomProviderModel` 12 字段）：
+/// - `id`：model id（即发给 LLM 的 `model` 字段值，如 `"claude-sonnet-4-5"`）
+/// - `name`：UI 显示名（可选，缺省 = id）
+///
+/// 其他字段（contextLength / supportedEfforts / reasoningParamFormat）从
+/// `BUILTIN_MODELS` lookup 拿（id 匹配时）；不匹配显示 "?" 或用 provider 自己的。
+///
+/// 跟 Locus 同款 1:1 镜像 —— Locus 那边 `{id, apiModel, name, ...}` 字段多，
+/// PlotCraft 简化只取 id + name，camelCase JSON。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModel {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
 /// PlotCraft 扩展：第三方 provider 库（saved library，OpenAI 兼容端点）
 ///
 /// Locus 的 `CustomProvider`（参考 Locus `src/types.ts:611`）有完整字段
 /// `id` / `name` / `endpoint` / `apiFormat` / `apiKey` / `catalogId` / `models[]`。
-/// PlotCraft v0.1 简化（不接 keychain、不按 provider 分 model）：
+/// PlotCraft v0.1.3+ 简化（不接 keychain、不分 catalogId）：
 /// - `id`：唯一 key（小写英文，用于 `providers.openai` 这种 lookup）
 /// - `name`：UI 显示名
 /// - `base_url`：OpenAI 兼容 endpoint
 /// - `api_key`：v0.1 裸存（v0.2 升 keyring）
 /// - `api_format`：API 协议（`openai_chat` / `anthropic_messages`）—— 跟 Locus 同
 /// - `enabled`：是否启用（玩家可以暂时 disable 不删除）
+/// - `models`：该 provider 下的 model 列表（v0.1.3+ 跟 Locus 同款多 model）
+///   - v0.1 简化：每个 model 只需 `id`（model name）+ `name`（display）
+///   - 加 model 两个入口：「从模型库添加」（从 BUILTIN_MODELS 选）
+///   /「手动添加」（玩家输 id + name）
 /// - `default_model`：从该 provider 发请求时用的默认 model id
-///   - v0.1+ Locus import 从 `models[0].id` 取
-///   - 玩家手动加时自己填
-///   - 留空 → 该 provider 不出现在 chat selector（避免发请求时 model 为空）
+///   - 必须是 `models[]` 里某个的 id；空 → 玩家没设（fallback 到 models[0]）
+///   - chat selector 选 custom provider 时用这个
 ///
 /// JSON 字段 camelCase（跟 Locus `CustomProvider` 内部一致）。
 /// 但 Locus 顶层 `AppConfig` 不带 `custom_providers` 字段 —— PlotCraft 这边
@@ -105,6 +127,8 @@ pub struct CustomProvider {
     pub api_format: ApiFormat,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub models: Vec<ProviderModel>,
     #[serde(default)]
     pub default_model: String,
 }
@@ -405,6 +429,19 @@ impl LlmConfig {
     }
 }
 
+impl CustomProvider {
+    /// v0.1.3+ 该 provider 发请求时实际用的 model id：
+    /// 1. `default_model` 显式设了（且非空）→ 用它
+    /// 2. 否则用 `models[0].id`
+    /// 3. 否则空串（前端应该 prompt 玩家去加 model）
+    pub fn effective_default_model(&self) -> &str {
+        if !self.default_model.is_empty() {
+            return &self.default_model;
+        }
+        self.models.first().map(|m| m.id.as_str()).unwrap_or("")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,6 +656,16 @@ mod tests {
                 api_key: "sk-deepseek-test".to_string(),
                 api_format: ApiFormat::OpenaiChat,
                 enabled: true,
+                models: vec![
+                    ProviderModel {
+                        id: "deepseek-chat".to_string(),
+                        name: "DeepSeek V3".to_string(),
+                    },
+                    ProviderModel {
+                        id: "deepseek-reasoner".to_string(),
+                        name: "DeepSeek R1".to_string(),
+                    },
+                ],
                 default_model: "deepseek-chat".to_string(),
             },
             CustomProvider {
@@ -628,6 +675,7 @@ mod tests {
                 api_key: "sk-or-test".to_string(),
                 api_format: ApiFormat::OpenaiChat,
                 enabled: true,
+                models: vec![],
                 default_model: String::new(), // 没填 → 不会出现在 chat selector
             },
             CustomProvider {
@@ -637,6 +685,7 @@ mod tests {
                 api_key: "".to_string(),
                 api_format: ApiFormat::OpenaiChat,
                 enabled: false,
+                models: vec![],
                 default_model: String::new(),
             },
         ];
@@ -648,6 +697,7 @@ mod tests {
         assert!(json.contains("\"baseUrl\":"));
         assert!(json.contains("\"apiKey\":"));
         assert!(json.contains("\"defaultModel\":"));
+        assert!(json.contains("\"models\":"));
         assert!(json.contains("\"deepseek\""));
         assert!(json.contains("\"openrouter\""));
         // 顶层 AppConfig 字段是 snake_case（base_url / model），跟 Locus 一致
@@ -667,15 +717,47 @@ mod tests {
         );
         assert_eq!(parsed.custom_providers[0].api_key, "sk-deepseek-test");
         assert_eq!(parsed.custom_providers[0].default_model, "deepseek-chat");
+        assert_eq!(parsed.custom_providers[0].models.len(), 2);
         assert!(parsed.custom_providers[0].enabled);
         assert!(!parsed.custom_providers[2].enabled);
-        // 缺 defaultModel 字段也能 deserialize（向后兼容 v0.1.0 写的 config）
+        // 缺 models / defaultModel 字段也能 deserialize（向后兼容 v0.1.2 写的 config）
         let old_json = r#"{
             "id": "old", "name": "Old", "baseUrl": "https://old.com/v1",
             "apiKey": "", "apiFormat": "openai_chat", "enabled": true
         }"#;
         let old: CustomProvider = serde_json::from_str(old_json).unwrap();
         assert_eq!(old.default_model, "");
+        assert_eq!(old.models.len(), 0);
+    }
+
+    #[test]
+    fn custom_provider_effective_default_model() {
+        // 1. 显式设 default_model → 用它
+        let p = CustomProvider {
+            id: "x".to_string(),
+            name: "X".to_string(),
+            base_url: String::new(),
+            models: vec![
+                ProviderModel { id: "first".to_string(), name: "F".to_string() },
+                ProviderModel { id: "second".to_string(), name: "S".to_string() },
+            ],
+            default_model: "second".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(p.effective_default_model(), "second");
+
+        // 2. 没设 default_model → fallback 到 models[0]
+        let p2 = CustomProvider {
+            models: vec![
+                ProviderModel { id: "first".to_string(), name: "F".to_string() },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(p2.effective_default_model(), "first");
+
+        // 3. 没 model 没 default → 空串
+        let p3 = CustomProvider::default();
+        assert_eq!(p3.effective_default_model(), "");
     }
 
     #[test]

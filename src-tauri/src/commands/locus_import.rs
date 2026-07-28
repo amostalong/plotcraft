@@ -76,9 +76,19 @@ pub struct LocusProviderImport {
     pub api_format: ApiFormat,
     pub model_count: usize,
     pub enabled: bool,
-    /// v0.1+ 从 Locus models[0].id 取（PlotCraft 简化 per-provider models[]）
+    /// v0.1.3+ 从 Locus models[0].id 取（PlotCraft 简化 per-provider models[]）
     #[serde(rename = "defaultModel")]
     pub default_model: String,
+    /// v0.1.3+ Locus models 完整导入（每条 {id, name}）
+    #[serde(rename = "models")]
+    pub models: Vec<LocusProviderModelImport>,
+}
+
+/// Locus model 条目（v0.1.3+ 完整导入 models 列表）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocusProviderModelImport {
+    pub id: String,
+    pub name: String,
 }
 
 /// Locus 导入数据汇总
@@ -151,22 +161,36 @@ pub async fn import_from_locus() -> AppResult<LocusImportData> {
         file.providers
             .into_iter()
             .map(|p| {
-                // v0.1+ 从 Locus models[0].id 取 defaultModel（PlotCraft 简化了
-                // per-provider models[]，用单 model id 代替 Locus 的多 model 列表）
-                let default_model = p
+                // v0.1.3+ 把 Locus 的 models[] 完整导入（简化成 {id, name}）
+                // - id 来自 Locus models[].id
+                // - name 来自 Locus models[].name（如果有），否则用 id
+                let models: Vec<LocusProviderModelImport> = p
                     .models
+                    .iter()
+                    .filter_map(|m| {
+                        let id = m.get("id").and_then(|v| v.as_str())?.to_string();
+                        let name = m
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&id)
+                            .to_string();
+                        Some(LocusProviderModelImport { id, name })
+                    })
+                    .collect();
+                // defaultModel 取 models 第一个的 id（如果没 model 就空串）
+                let default_model = models
                     .first()
-                    .and_then(|m| m.get("id").and_then(|v| v.as_str()))
-                    .unwrap_or("")
-                    .to_string();
+                    .map(|m| m.id.clone())
+                    .unwrap_or_default();
                 LocusProviderImport {
                     id: p.id,
                     name: p.name,
                     endpoint: p.endpoint,
                     api_format: parse_locus_api_format(&p.api_format),
-                    model_count: p.models.len(),
+                    model_count: models.len(),
                     enabled: p.enabled.unwrap_or(true),
                     default_model,
+                    models,
                 }
             })
             .collect()
@@ -397,6 +421,20 @@ mod tests {
                 .and_then(|m| m.get("id").and_then(|v| v.as_str()))
                 .unwrap_or("")
                 .to_string();
+            // v0.1.3+ 完整 models 列表（id + name from Locus models[].{id, name}）
+            let models: Vec<LocusProviderModelImport> = p
+                .models
+                .iter()
+                .filter_map(|m| {
+                    let id = m.get("id").and_then(|v| v.as_str())?.to_string();
+                    let name = m
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&id)
+                        .to_string();
+                    Some(LocusProviderModelImport { id, name })
+                })
+                .collect();
             let import = LocusProviderImport {
                 id: p.id.clone(),
                 name: p.name.clone(),
@@ -405,14 +443,20 @@ mod tests {
                 model_count: p.models.len(),
                 enabled: p.enabled.unwrap_or(true),
                 default_model,
+                models,
             };
             // winky-claude-sonnet-5 → "claude-sonnet-5-20250929"
             if p.name == "winky-claude-sonnet-5" {
                 assert_eq!(import.default_model, "claude-sonnet-5-20250929");
+                assert_eq!(import.models.len(), 1);
+                assert_eq!(import.models[0].id, "claude-sonnet-5-20250929");
             }
-            // deepseek → "deepseek-chat"（models[0]）
+            // deepseek → "deepseek-chat"（models[0]） + 2 models
             if p.name == "deepseek" {
                 assert_eq!(import.default_model, "deepseek-chat");
+                assert_eq!(import.models.len(), 2);
+                assert_eq!(import.models[0].id, "deepseek-chat");
+                assert_eq!(import.models[1].id, "deepseek-reasoner");
             }
         }
     }

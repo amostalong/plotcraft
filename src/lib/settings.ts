@@ -34,6 +34,19 @@ export interface UiConfig {
   theme: string
 }
 
+/** 单个 model 条目（per-provider 列表里的元素）v0.1.3+
+ *
+ *  vs Locus `CustomProviderModel` 12 字段 —— PlotCraft v0.1 简化只取：
+ * - `id`：model id（发给 LLM API 的 `model` 字段值）
+ * - `name`：UI 显示名（缺省 = id）
+ *
+ *  contextLength / supportedEfforts 从 BUILTIN_MODELS lookup（id 匹配时）
+ */
+export interface ProviderModel {
+  id: string
+  name: string
+}
+
 /** 已保存的第三方 provider（OpenAI 兼容端点，saved library） */
 export interface CustomProvider {
   id: string
@@ -43,9 +56,15 @@ export interface CustomProvider {
   /** API 协议（跟 Locus `ApiFormat` 同：openai_chat | anthropic_messages）*/
   apiFormat: ApiFormat
   enabled: boolean
-  /** 该 provider 下发请求时用的默认 model id
-   *  v0.1：Locus import 时从 Locus `models[0].id` 取；玩家手动加时自己填
-   *  留空 → 该 provider 不出现在 chat selector（避免发请求时 model 为空）
+  /** v0.1.3+ 该 provider 下的 model 列表
+   *  - 通过 modal 的「从模型库添加」/「手动添加」按钮增删
+   *  - chat selector 选该 provider 时用 `defaultModel`（fallback 到 `models[0].id`）
+   *  - v0.1.1/v0.1.2 旧 config 没这个字段 → 自动空数组
+   */
+  models: ProviderModel[]
+  /** 该 provider 发请求时用的默认 model id
+   *  必须是 `models[]` 里某个的 id；空 → 玩家没设（fallback 到 models[0]）
+   *  chat selector 选该 provider 时用这个
    */
   defaultModel: string
 }

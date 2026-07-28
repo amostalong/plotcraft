@@ -14,6 +14,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { ApiFormat } from '@/lib/settings'
 
+/** 单个 Locus model 条目（v0.1.3+ Locus import 完整带回 models 列表） */
+export interface LocusProviderModelImport {
+  id: string
+  name: string
+}
+
 /** 单个 Locus provider 的 import 数据（前端 UI 展示用） */
 export interface LocusProviderImport {
   id: string
@@ -25,6 +31,8 @@ export interface LocusProviderImport {
   enabled: boolean
   /** v0.1+ 从 Locus models[0].id 取（PlotCraft 简化 per-provider models[]） */
   defaultModel: string
+  /** v0.1.3+ Locus models 完整导入（每条 {id, name}） */
+  models: LocusProviderModelImport[]
 }
 
 /** Locus import 数据汇总 */
