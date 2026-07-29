@@ -31,6 +31,15 @@ import {
   type ConsoleSource,
 } from '@/lib/console'
 
+/** v0.2+ 可选 prop —— chat 错误"查看详情"跳转时传入，filter 到该 run_id 相关 entries
+ *  - null/undefined → 不过滤
+ *  - watch 变化时自动设 searchQuery（玩家可手动改覆盖）
+ *  - 跟 module / message 字段做 substring 匹配
+ */
+const props = defineProps<{
+  runIdFilter?: string | null
+}>()
+
 const entries = useConsoleEntries()
 
 // === Filters ===
@@ -38,6 +47,16 @@ const levelFilter = ref<'all' | ConsoleLevel>('all')
 const sourceFilter = ref<'all' | ConsoleSource>('all')
 const searchQuery = ref('')
 const autoScroll = ref(true)
+
+// v0.2+ runIdFilter → 自动设 searchQuery（玩家可手动改）
+watch(
+  () => props.runIdFilter,
+  (v) => {
+    if (v) {
+      searchQuery.value = v
+    }
+  },
+)
 
 const listEl = ref<HTMLElement | null>(null)
 const copiedId = ref<string | null>(null)

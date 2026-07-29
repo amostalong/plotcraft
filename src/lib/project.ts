@@ -9,12 +9,26 @@ export interface ProjectMeta {
   created_at: string
   updated_at: string
   /**
-   * v0.1.5+ PlotCraft 项目标识：含 `world/` 子目录
-   * （v0.1.5 之前用 README.md 判定，git clone 别人的项目会被误认；
-   *  改成 `world/` 更精准 —— 4 个 starter 之一）
+   * v0.2+ PlotCraft 项目标识：项目根有 `plot.cat` 文件
+   * （v0.2 之前用 `world/` 判定，仍会被手建 RPG 目录误认；
+   *  改成显式 `plot.cat` 标记 —— 内容是 ProjectConfig JSON（schema / created_at / created_by））
    * 前端 OpenProjectModal 用这个给玩家视觉提示 + 排序时 PlotCraft 项目排前面
+   * 老项目（v0.2 之前仅有 world/ 的）list_projects 会自动补 plot.cat 迁移
    */
   is_plotcraft_project: boolean
+}
+
+/**
+ * v0.2+ plot.cat 内容 schema —— 跟后端 `templates.rs:ProjectConfig` 一一对应
+ * - `schema` 当前固定 1
+ * - `created_at` ISO 8601
+ * - `created_by` 创建版本标识
+ * v0.3+ 想加什么（default_model / last_active_session / 等）也加这里
+ */
+export interface ProjectConfig {
+  schema: number
+  created_at: string
+  created_by: string
 }
 
 export async function createProject(folder: string, name: string): Promise<ProjectMeta> {

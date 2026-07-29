@@ -379,7 +379,7 @@ D:\Projects\PlotCraft\
 
 1. 上述 6 个 view 各放一个 placeholder（显示 tab 名 + "v0.2 实装"）
 2. `commands/project.rs` 暴露 2 个 Tauri 命令：
-   - `create_project(folder: String, name: String)` → 写入 `README.md` + `world/overview.md` + `characters/protagonist.md` + `plot/main-arc.md` 4 个 starter 文件
+   - `create_project(folder: String, name: String)` → 写入 5 个 starter 文件（v0.2+）：4 个 md (`README.md` + `world/overview.md` + `characters/protagonist.md` + `plot/main-arc.md`) + 1 个 `plot.cat` 标记（ProjectConfig JSON: schema / created_at / created_by，PlotCraft 项目识别）
    - `list_projects(folder: String)` → 扫描子文件夹
 3. `commands/system.rs` 暴露 `plotcraft_version`
 4. `lib.rs` 注册所有命令

@@ -14,24 +14,30 @@ PlotCraft = 给独立 / 业余 RPG / VN 创作者的 **AI 编剧搭档** 桌面�
 
 ---
 
-## 2. v0.1 状态（2026-07-28 启动）
+## 2. v0.2 状态（2026-07-29 启动）
 
 | 维度 | 状态 |
 |------|------|
-| Chat tab（SessionView，驱动 LLM 流式）| ✅ **实装** |
-| Setting tab（SettingsView，API key / endpoint / model）| ✅ **实装** |
-| 6 tab 框架（vue-router，概览/世界/人物/剧情/设定图/会话/设置）| ✅ **实装** |
-| 4 个非 v0.1 tab（概览/世界/人物/剧情/设定图）| 🟡 Placeholder（"v0.2 实装"）|
-| 新建项目流（4 个 starter md）| ✅ **实装** |
-| LLM 客户端（OpenAI 兼容流式）| ✅ **实装** |
-| 反卡顿基础设施（spawn_blocking + mpsc + 16ms emit 节流）| ✅ **实装** |
-| Markdown 渲染（marked + DOMPurify，主线程同步）| ✅ **实装** |
-| 启动分阶段（phase 1 < 500ms）| ✅ **实装** |
+| Chat tab（SessionView，驱动 LLM 流式）| ✅ **实装**（v0.1）|
+| Setting tab（SettingsView，API key / endpoint / model）| ✅ **实装**（v0.1）|
+| 7 tab 框架（vue-router，概览/世界/人物/剧情/设定图/会话/设置）| ✅ **实装**（v0.1）|
+| 新建项目流（4 个 starter md + plot.cat 标记）| ✅ **实装**（v0.2+）|
+| LLM 客户端（OpenAI 兼容流式）| ✅ **实装**（v0.1）|
+| 反卡顿基础设施（spawn_blocking + mpsc + 16ms emit 节流）| ✅ **实装**（v0.1）|
+| Markdown 渲染（marked + DOMPurify，主线程同步）| ✅ **实装**（v0.1）|
+| 启动分阶段（phase 1 < 500ms）| ✅ **实装**（v0.1）|
 | 性能验收 P1-P8 | ✅ **实装**（手动测量，详见 CHECKLIST §1）|
+| **产品级 chat error feedback（8 分类 + 玩家文案 + retry + partial 保留）**| ✅ **实装**（v0.2）|
+| **session schema v2（last_user_message 持久化，retry 跨重启用）**| ✅ **实装**（v0.2）|
+| **OpenAI 兼容 SSE 兼容智谱 GLM reasoning_content**| ✅ **实装**（v0.2）|
+| **3 个 streaming 实现共用 emit_chat_error helper**| ✅ **实装**（v0.2）|
+| **测试 fixtures 加 partial: None + 3 个 session.rs unit test（v2 roundtrip / v1→v2 兼容 / empty serialize）**| ✅ **实装**（v0.2）|
 | AI stub / 假流式 | ❌ 取消（v0.1 直接接真 LLM，用户决策）|
-| 关系图 / 图片生成 / 多 provider | ❌ 推到 v0.2+ |
+| 4 个非 v0.1 tab（概览/世界/人物/剧情/设定图）| 🟡 Placeholder（"v0.3+ 实装"）|
+| 关系图 / 图片生成 / 多 provider | ❌ 推到 v0.3+ |
+| i18n / vitest / CI | ❌ 推到 v0.4+ |
 
-完整路线 → `docs/ROADMAP.md`。设计意图 → `docs/DESIGN.md`。v0.1 启动清单 → `docs/CHECKLIST.md`。
+完整路线 → `docs/ROADMAP.md`。设计意图 → `docs/DESIGN.md`。v0.1 启动清单 → `docs/CHECKLIST.md`。v0.2 错误反馈设计 → `docs/CHAT_LLM_DESIGN.md §8`。
 
 ---
 
@@ -105,7 +111,7 @@ PlotCraft/
         ├── error.rs       ← thiserror + AppError enum
         ├── commands/      ← Tauri command 入口（llm / project / settings）
         ├── llm/           ← LLM client（config / streaming / types）
-        └── project/       ← 项目文件夹 IO + 4 个 starter md 模板
+        └── project/       ← 项目文件夹 IO + 5 个 starter 文件（4 md + plot.cat 标记）
 ```
 
 **前后端 boundary**：
@@ -141,9 +147,10 @@ Locus 实测 4 个卡顿源 → 4 个反制。**学架构思想，不照搬代�
 3. **reqwest 保持 `default-features = false` + `rustls-tls`**。开了 native-tls 在 Windows 上 link OpenSSL 会爆。
 4. **AppError enum 是**前后端错误传递的唯一类型。`Result<T, AppError>`，前端 `lib/error.ts` 统一收口。**不**返回 String 错误。
 5. **配置写入直接覆盖**（文件 ≤ 1KB，无所谓 atomic write）。
-6. **v0.1 不上**：vue-i18n、vitest、CI、macOS/Linux、multi-provider、multiplayer。决策记录在 `CHECKLIST §12`。
-7. **frontmatter `created_at` / `updated_at` 是 `TODO` 占位**（不加 chrono 依赖，玩家手动填）。等上 chrono 时再做 ISO 8601 解析。
-8. **chat store init 绑在 SessionView 生命周期上**。离开 SessionView → `teardown()` 解绑 listener。重新进 → `init()` 重绑。**已知边界**：流中切走 + 切回之间的事件会丢（v0.2+ 改成 app-level init）。
+6. **v0.2+ 不上**：vue-i18n、vitest、CI、macOS/Linux、multi-provider、multiplayer。决策记录在 `CHECKLIST §12` 和 `ROADMAP §决策日志`。
+7. **chrono 已用**（v0.2+ session.rs `updated_at: chrono::Utc::to_rfc3339()`，console.rs `timestamp_millis`）—— v0.1 那条"不加 chrono 依赖"硬规则已废。
+8. **chat store listener 绑在 store 上，不绑 view 生命周期**（v0.2+ 修过）。离开 SessionView 不解绑 listener，切走期间 stream 继续 emit、currentText 继续累积。`init()` 真幂等——首次进 chat tab 触发一次后不再 reload session。`teardown()` 是 no-op，函数签名留给 v0.3+ app-level cleanup（关 app 时清 unlisten + saveTimer）。
+9. **v0.2+ chat error feedback**：所有 stream 抛错路径先 `emit_chat_error(&app, &run_id, &msg)` 再 `return Err`——AGENTS.md 硬规则 #4 的硬实施。前端玩家文案走 `lib/error-messages.ts`（不直接显示 OpenSSL/TLS 错误字符串）。
 
 ---
 
@@ -180,7 +187,8 @@ release 前必跑 11 项 → `docs/CHECKLIST.md §10`。**核心 3 项**：
 | Chat store（init/teardown）| `src/stores/chat.ts` |
 | LLM 系统 prompt | `src/stores/chat.ts` 顶部 `SYSTEM_PROMPT` |
 | 新建项目流 | `src-tauri/src/commands/project.rs` + `src-tauri/src/project/templates.rs` |
-| 4 个 starter md 模板 | `src-tauri/src/project/templates.rs` |
+| 5 个 starter 文件（4 md + plot.cat） | `src-tauri/src/project/templates.rs` |
+| PlotCraft 项目识别规则 | `src-tauri/src/commands/project.rs:check_or_migrate_plot_cat`（plot.cat 存在；老项目 world/ 自动补 plot.cat 迁移）|
 | config.json schema | `src/lib/settings.ts`（前端） + `src-tauri/src/llm/config.rs`（后端）|
 | AppError 枚举 | `src-tauri/src/error.rs` |
 | 性能验收指标 P1-P8 | `docs/CHECKLIST.md §1` + `docs/CHAT_LLM_DESIGN.md §4` |

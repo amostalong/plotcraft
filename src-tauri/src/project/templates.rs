@@ -3,6 +3,7 @@
 //! 项目文件夹结构：
 //! ```text
 //! <project>/
+//! ├── plot.cat             # PlotCraft 项目标记（v0.2+ 显式识别，ProjectConfig JSON）
 //! ├── README.md
 //! ├── world/overview.md
 //! ├── characters/protagonist.md
@@ -16,15 +17,43 @@
 
 use serde::{Deserialize, Serialize};
 
+/// v0.2+ PlotCraft 项目标记文件名（项目根下）
+/// 存在 = 是 PlotCraft 项目；内容是 ProjectConfig JSON（schema / created_at / created_by）
+pub const PLOT_CAT_FILE: &str = "plot.cat";
+
+/// v0.2+ PlotCraft 项目配置 —— 写在 `plot.cat` 里
+/// - `schema` 当前固定 1；v0.3+ 改格式时 v2 走新 schema
+/// - `created_at` ISO 8601（chrono::Utc::to_rfc3339()）
+/// - `created_by` 创建版本标识（"plotcraft-v0.2" 等）
+/// 之后想加什么（default_model / last_active_session / 等）也加这里
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    pub schema: u32,
+    pub created_at: String,
+    pub created_by: String,
+}
+
+/// v0.2+ plot.cat 内容生成 —— 写盘时调这个
+/// - 格式化（pretty JSON，玩家手编辑友好）
+/// - 字段顺序固定（schema / created_at / created_by）
+pub fn plot_cat_content() -> String {
+    let cfg = ProjectConfig {
+        schema: 1,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        created_by: format!("plotcraft-{}", env!("CARGO_PKG_VERSION")),
+    };
+    serde_json::to_string_pretty(&cfg)
+        .unwrap_or_else(|_| r#"{"schema":1}"#.to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectMeta {
     pub name: String,
     pub folder: String,
     pub created_at: String,
     pub updated_at: String,
-    /// v0.1.5+ PlotCraft 项目标识：含 `world/` 子目录
-    /// （v0.1.5 之前用 README.md 判定，git clone 别人的项目会被误认；
-    ///  改成 `world/` 更精准 —— 4 个 starter 之一）。
+    /// v0.2+ PlotCraft 项目标识：项目根有 `plot.cat` 文件
+    /// 之前版本：`README.md` 判定（git clone 别人的项目误认）→ `world/` 判定（仍会被手建 RPG 目录误认）→ `plot.cat`（显式）
     /// 前端 OpenProjectModal 用这个给玩家视觉提示（"看起来是 PlotCraft 项目"标签）
     /// + 排序时 PlotCraft 项目排前面。
     #[serde(default)]
@@ -88,9 +117,11 @@ updated: TODO
 - 合（Resolution）：收束，新世界状态
 "#;
 
-/// 4 个 starter md 文件 (相对路径, 内容)
+/// starter 文件 (相对路径, 内容)
+/// v0.2+：4 个 starter md + 1 个 plot.cat 标记（带 schema / created_at / created_by）
 pub fn starter_files(title: &str) -> Vec<(&'static str, String)> {
     vec![
+        (PLOT_CAT_FILE, plot_cat_content()),
         ("README.md", README_TEMPLATE.replace("{title}", title)),
         ("world/overview.md", WORLD_OVERVIEW_TEMPLATE.to_string()),
         ("characters/protagonist.md", PROTAGONIST_TEMPLATE.to_string()),

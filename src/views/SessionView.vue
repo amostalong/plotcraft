@@ -2,23 +2,30 @@
 // SessionView —— chat tab 主 UI
 //
 // v0.1+ model + effort 选择器改用 Locus 同款 `ModelEffortSelector` 组件
-// （嵌在 chat composer 左下，trigger 按钮 + 双 panel 下拉）
-// - 位置：composer footer-start（跟 Locus ChatComposer 同位）
-// - 切走再切回 chat session 保留 selectedModel / selectedEffort（不重置）
-//   跟 Locus 行为对齐 —— 切 session tab 不丢玩家当前对话上下文
-//
-// v0.1.3+：chat selector 不再自动展示 BUILTIN_MODELS —— 只显示玩家在
-// Settings → Providers 主动 add 的 custom provider 及其 defaultModel。
-// 0 个 provider → trigger "Select model" placeholder + send disabled。
+// v0.1.3+ chat selector 只显示玩家在 Settings → Providers 库加的 custom provider
+// v0.2+ 产品级 chat error feedback：
+//   - composer 顶部错误条：title + description + hint + retry + 详情链接 + X
+//   - transcript 区错误条：同上
+//   - partial response 末尾 "(回复中断)" marker（LLM 流到一半挂的情况保留 currentText）
+//   - 快捷键 Ctrl/Cmd+Shift+R 一键 retry
+//   - "查看详情" 跳 Settings → Console tab，filter by run_id（App.vue / router 配合）
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   AlertCircle,
   Bot,
+  ChevronDown,
+  ChevronUp,
   FolderOpen,
+  MessageSquare,
+  Pencil,
   Plus,
+  RefreshCw,
   Send,
   Square,
+  Terminal,
+  Trash2,
   User as UserIcon,
   X,
 } from 'lucide-vue-next'
@@ -27,15 +34,19 @@ import { useChatStore } from '@/stores/chat'
 import { useSettingsStore } from '@/stores/settings'
 import { useProjectStore } from '@/stores/project'
 import { renderMarkdown } from '@/lib/markdown'
+import { getErrorMessage, type PlayerErrorMessage } from '@/lib/error-messages'
 import type { ProjectMeta } from '@/lib/project'
 import type { EffortLevel } from '@/lib/settings'
 import ModelEffortSelector from '@/components/chat/ModelEffortSelector.vue'
 import NewProjectModal from '@/components/project/NewProjectModal.vue'
 import OpenProjectModal from '@/components/project/OpenProjectModal.vue'
+import type { SessionMeta } from '@/lib/llm'
 
 const chat = useChatStore()
 const settings = useSettingsStore()
 const project = useProjectStore()
+const router = useRouter()
+const route = useRoute()
 
 const input = ref('')
 const transcriptEl = ref<HTMLElement | null>(null)
@@ -43,8 +54,66 @@ const transcriptEl = ref<HTMLElement | null>(null)
 const messages = computed(() => chat.state.messages)
 const currentText = computed(() => chat.state.currentText)
 const status = computed(() => chat.state.status)
-const error = computed(() => chat.state.error)
+const errorRaw = computed(() => chat.state.error)
+const errorKind = computed(() => chat.state.errorKind)
 const isStreaming = computed(() => status.value === 'streaming')
+
+// === v0.2+ chat error feedback：玩家文案 ===
+// - 默认隐藏技术细节（TLS handshake / OpenSSL / reqwest error 字符串）
+// - 点 "查看详情" 才展开 raw error
+const errorMessage = computed<PlayerErrorMessage | null>(() => {
+  if (!errorRaw.value) return null
+  return getErrorMessage(errorKind.value, errorRaw.value)
+})
+const errorDetailsExpanded = ref(false)
+
+function toggleErrorDetails() {
+  errorDetailsExpanded.value = !errorDetailsExpanded.value
+}
+
+/** v0.2+ retry 上次发送的 user message —— 用 chat store 暴露的 retryLast */
+async function onRetry() {
+  if (!errorMessage.value?.canRetry) return
+  errorDetailsExpanded.value = false
+  input.value = '' // retry 不沿用当前 input 草稿（避免混合）
+  try {
+    await chat.retryLast()
+  } catch (e) {
+    // retry 自身失败（比如 API key 空）→ 显示在 composerError
+    // 走 send() 一样的路径（因为 retryLast 内部也是 addUserMessage + start）
+    console.error('[onRetry] failed:', e)
+  }
+}
+
+function onDismissError() {
+  errorDetailsExpanded.value = false
+  chat.dismissError()
+}
+
+/** v0.2+ "查看详情" 跳 Settings → Console tab，filter by run_id
+ *  - App.vue 的 router 接收 query params
+ *  - SettingsView 读到 runId 后传给 ConsoleSettings，filter messages */
+function onShowConsoleDetails() {
+  const runId = chat.state.lastFailedRunId
+  if (!runId) {
+    // 没 runId（极少见，比如 retry 失败时）→ 直接跳 Settings
+    router.push({ path: '/settings', query: { tab: 'console' } })
+    return
+  }
+  router.push({ path: '/settings', query: { tab: 'console', runId } })
+}
+
+/** v0.2+ 快捷键 Ctrl/Cmd+Shift+R → retry
+ *  - 跟 Locus "retry last" 同款
+ *  - 只在 chat 视图有焦点时生效（不跟 system hotkey 冲突） */
+function onKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
+    if (errorMessage.value?.canRetry) {
+      e.preventDefault()
+      onRetry()
+    }
+  }
+}
 
 /** v0.1.3+ chat selector 唯一数据源：玩家 enabled 的 custom provider
  *  effective default：defaultModel || models[0].id
@@ -78,9 +147,6 @@ const unconfiguredProviderCount = computed(
 const effortSupported = computed(() => chat.selectedModel.trim().length > 0)
 
 function onSelectModel(id: string) {
-  // v0.1.3+ 检查是否选的是某个 custom provider 的 defaultModel
-  //   → 切 active connection 到该 provider（跟 ProvidersPanel "Use" 按钮行为一致）
-  //   effective default：defaultModel || models[0].id
   const cp = settings.config.customProviders.find((p) => {
     if (!p.enabled) return false
     const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
@@ -90,12 +156,10 @@ function onSelectModel(id: string) {
     settings.config.base_url = cp.baseUrl
     settings.config.apiKey = cp.apiKey
     settings.config.apiFormat = cp.apiFormat
-    // 玩家改了 settings —— 立即存盘（让其他 tab / 下次启动看到新 connection）
     settings.save().catch((e) => console.error('[onSelectModel] save failed:', e))
   }
 
   chat.selectedModel = id
-  // v0.1.3+ 不再重置 effort：custom model 不知道 default effort，保留玩家上次选的值
 }
 
 function onSelectEffort(level: EffortLevel) {
@@ -108,11 +172,14 @@ function renderMd(md: string): string {
 
 onMounted(async () => {
   await chat.init()
-  // settings 一定要先 init（chat.init() 也会从 settings 拉默认值）
   if (!settings.loaded) await settings.init()
+  // v0.2+ 注册全局快捷键
+  window.addEventListener('keydown', onKeydown)
 })
 onUnmounted(() => {
-  chat.teardown()
+  // v0.2+ chat.teardown() 改 no-op（listener 跟 view 生命周期解耦，避免切 tab 丢 stream）
+  // 这里不再调 teardown；快捷键 listener 仍要清
+  window.removeEventListener('keydown', onKeydown)
 })
 
 async function send() {
@@ -143,7 +210,8 @@ const openProjectScan = ref<{ parentDir: string; entries: ProjectMeta[] } | null
 const creating = ref(false)
 const createError = ref<string | null>(null)
 
-// v0.1.5+ composer 错误提示（替代 send 静默 return + console.error）
+// v0.2+ composer 错误条 —— 同步状态用（start_chat 同步抛错的 case，
+// 比如 API key 空 / model 空）。stream 异步错误走 errorMessage computed。
 const composerError = ref<string | null>(null)
 
 async function onCreate() {
@@ -162,7 +230,7 @@ async function onNewModalCreate(name: string) {
   createError.value = null
   try {
     await project.confirmCreateNew(newProjectParent.value, name)
-    newProjectParent.value = null // 成功后关 modal
+    newProjectParent.value = null
   } catch (e) {
     createError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -193,6 +261,76 @@ function onCloseProject() {
   project.close()
 }
 
+// === v0.2+ session list UI ===
+const renamingId = ref<string | null>(null)
+const renameDraft = ref('')
+const confirmingDeleteId = ref<string | null>(null)
+
+async function onNewSession() {
+  try {
+    await chat.createNewSession('New Chat')
+  } catch (e) {
+    composerError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function onSelectSession(s: SessionMeta) {
+  if (s.id === chat.currentSessionId) return
+  // 切 session 不清 composer 草稿（玩家可能切回去对照）
+  chat.switchSession(s.id).catch((e) => {
+    composerError.value = e instanceof Error ? e.message : String(e)
+  })
+}
+
+function startRename(s: SessionMeta) {
+  renamingId.value = s.id
+  renameDraft.value = s.title
+}
+function commitRename() {
+  const id = renamingId.value
+  if (!id) return
+  const newTitle = renameDraft.value.trim()
+  renamingId.value = null
+  if (!newTitle) return
+  chat.renameSessionById(id, newTitle).catch((e) => {
+    composerError.value = e instanceof Error ? e.message : String(e)
+  })
+}
+function cancelRename() {
+  renamingId.value = null
+  renameDraft.value = ''
+}
+function startConfirmDelete(s: SessionMeta) {
+  confirmingDeleteId.value = s.id
+}
+function cancelDelete() {
+  confirmingDeleteId.value = null
+}
+function commitDelete(s: SessionMeta) {
+  confirmingDeleteId.value = null
+  // v0.2+：删任意 session 都允许，store.deleteSessionById() 兜底
+  // —— 删完没剩余会自动 createNewSession('New Chat')，不会出现"零 session"空状态
+  chat.deleteSessionById(s.id).catch((e) => {
+    composerError.value = e instanceof Error ? e.message : String(e)
+  })
+}
+
+/** 把 ISO 8601 截短成 "HH:MM" 或 "MM-DD"（v0.2 简版，v0.3+ 国际化用 date-fns） */
+function shortTime(iso: string): string {
+  if (!iso) return ''
+  try {
+    const d = new Date(iso)
+    const now = new Date()
+    const sameDay = d.toDateString() === now.toDateString()
+    if (sameDay) {
+      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    }
+    return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  } catch {
+    return ''
+  }
+}
+
 // 自动滚到底部（streaming 时持续滚）
 watch(
   [messages, currentText],
@@ -207,7 +345,73 @@ watch(
 </script>
 
 <template>
-  <div class="session">
+  <div class="session-layout">
+    <!-- v0.2+ 左侧 session list（跟 Locus ChatSessionList 同位） -->
+    <aside class="session-list">
+      <button class="session-list-new" @click="onNewSession" title="新建 session">
+        <Plus :size="14" />
+        <span>新建会话</span>
+      </button>
+      <div v-if="chat.sessionsLoading" class="session-list-empty">加载中…</div>
+      <div v-else-if="chat.sessions.length === 0" class="session-list-empty">还没有 session</div>
+      <div
+        v-for="s in chat.sessions"
+        :key="s.id"
+        :class="['session-item', { active: s.id === chat.currentSessionId }]"
+        @click="onSelectSession(s)"
+      >
+        <MessageSquare :size="13" class="session-item-icon" />
+        <div v-if="renamingId === s.id" class="session-item-rename" @click.stop>
+          <input
+            v-model="renameDraft"
+            @keydown.enter="commitRename"
+            @keydown.escape="cancelRename"
+            @blur="commitRename"
+            class="rename-input"
+            autofocus
+          />
+        </div>
+        <div v-else class="session-item-body">
+          <div class="session-item-title">{{ s.title }}</div>
+          <div class="session-item-meta">
+            <span>{{ s.message_count }} 条</span>
+            <span class="dot">·</span>
+            <span>{{ shortTime(s.updated_at) }}</span>
+          </div>
+        </div>
+        <div v-if="renamingId !== s.id" class="session-item-actions" @click.stop>
+          <button
+            v-if="confirmingDeleteId === s.id"
+            type="button"
+            class="session-item-action confirm-delete"
+            @click="commitDelete(s)"
+            title="确认删除"
+          >
+            <Trash2 :size="11" />
+          </button>
+          <button
+            v-else
+            type="button"
+            class="session-item-action"
+            @click="startConfirmDelete(s)"
+            title="删除"
+          >
+            <Trash2 :size="11" />
+          </button>
+          <button
+            type="button"
+            class="session-item-action"
+            @click="startRename(s)"
+            title="改名"
+          >
+            <Pencil :size="11" />
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右侧 chat main（v0.1 之前的内容） -->
+    <div class="session">
     <div class="toolbar">
       <button v-if="!project.current" @click="onCreate" class="primary">
         <Plus :size="14" />
@@ -228,7 +432,7 @@ watch(
     </div>
 
     <div ref="transcriptEl" class="transcript">
-      <div v-if="messages.length === 0 && !currentText" class="empty">
+      <div v-if="messages.length === 0 && !currentText && !errorMessage" class="empty">
         <Bot :size="48" :stroke-width="1.5" />
         <h2>开始新对话</h2>
         <p>跟 AI 聊你的 RPG / VN 设定 —— 我会给 3-5 个备选让你挑 + 改</p>
@@ -238,7 +442,7 @@ watch(
       <div
         v-for="(msg, i) in messages"
         :key="i"
-        :class="['message', msg.role]"
+        :class="['message', msg.role, msg.partial ? 'partial' : '']"
       >
         <UserIcon v-if="msg.role === 'user'" :size="16" />
         <Bot v-else :size="16" />
@@ -246,8 +450,13 @@ watch(
         <div
           v-else
           class="content markdown"
-          v-html="renderMd(msg.content)"
-        />
+        >
+          <div v-html="renderMd(msg.content)" />
+          <!-- v0.2+ partial marker —— LLM 流到一半挂时显示 "(回复中断)" -->
+          <div v-if="msg.partial" class="partial-marker">
+            <span class="partial-marker-text">…回复中断</span>
+          </div>
+        </div>
       </div>
 
       <div v-if="currentText" class="message assistant streaming">
@@ -255,16 +464,64 @@ watch(
         <div class="content markdown streaming" v-html="renderMd(currentText) + '<span class=\'cursor\'>▍</span>'" />
       </div>
 
-      <div v-if="status === 'error' && error" class="error">
-        <AlertCircle :size="16" />
-        <span>{{ error }}</span>
+      <!-- v0.2+ transcript error block（产品级） -->
+      <div v-if="errorMessage" class="error-block">
+        <div class="error-block-header">
+          <AlertCircle :size="16" />
+          <div class="error-block-text">
+            <div class="error-block-title">{{ errorMessage.title }}</div>
+            <div class="error-block-description">{{ errorMessage.description }}</div>
+            <div class="error-block-hint">
+              <span class="hint-label">建议：</span>{{ errorMessage.hint }}
+            </div>
+          </div>
+        </div>
+        <div class="error-block-actions">
+          <button
+            v-if="errorMessage.canRetry && chat.state.lastUserMessage"
+            type="button"
+            class="error-btn retry"
+            @click="onRetry"
+            title="重发上一条 (Ctrl/Cmd+Shift+R)"
+          >
+            <RefreshCw :size="12" />
+            <span>重试</span>
+          </button>
+          <button
+            type="button"
+            class="error-btn details"
+            @click="onShowConsoleDetails"
+            title="查看 Console 日志详情"
+          >
+            <Terminal :size="12" />
+            <span>查看详情</span>
+          </button>
+          <button
+            type="button"
+            class="error-btn expand"
+            @click="toggleErrorDetails"
+            :title="errorDetailsExpanded ? '收起技术细节' : '展开技术细节'"
+          >
+            <component :is="errorDetailsExpanded ? ChevronUp : ChevronDown" :size="12" />
+          </button>
+          <button
+            type="button"
+            class="error-btn dismiss"
+            @click="onDismissError"
+            title="关闭错误提示"
+          >
+            <X :size="12" />
+          </button>
+        </div>
+        <!-- v0.2+ 技术细节折叠区（默认折叠） -->
+        <pre v-if="errorDetailsExpanded" class="error-block-raw">{{ errorMessage.technicalDetails }}</pre>
       </div>
 
       <div v-if="status === 'cancelled'" class="cancelled">已停止</div>
     </div>
 
     <form class="composer" @submit.prevent="send">
-      <!-- v0.1.5+ composer 顶部 inline 错误（send 失败 / model 空 提示） -->
+      <!-- v0.2+ composer 顶部 inline 错误（v0.1.5 兼容保留：send 同步抛错的 case） -->
       <div v-if="composerError" class="composer-error">
         <AlertCircle :size="12" />
         <span>{{ composerError }}</span>
@@ -273,9 +530,6 @@ watch(
         </button>
       </div>
 
-      <!-- v0.1+ composer 布局（跟 Locus `ChatComposer` 同位）：
-           - 上：textarea（满宽）
-           - 下：footer 行（ModelEffortSelector 左 + 弹性空间 + 发送按钮 右） -->
       <textarea
         v-model="input"
         class="composer-input"
@@ -308,7 +562,6 @@ watch(
       </div>
     </form>
 
-    <!-- v0.1.5+ Project modals (custom PlotCraft 风格，替代 OS system dialog) -->
     <NewProjectModal
       v-if="newProjectParent"
       :parent-dir="newProjectParent"
@@ -324,7 +577,6 @@ watch(
       @pick="onOpenModalPick"
     />
 
-    <!-- v0.1.5+ Project flow error toast (e.g. 创建失败 / list 失败) -->
     <Teleport to="body">
       <div v-if="createError" class="project-error-toast" role="alert">
         <AlertCircle :size="14" />
@@ -334,15 +586,160 @@ watch(
         </button>
       </div>
     </Teleport>
-  </div>
+    </div><!-- /session-main -->
+  </div><!-- /session-layout -->
 </template>
 
 <style scoped>
+/* === v0.2+ session layout: 左侧 list + 右侧 chat === */
+.session-layout {
+  display: flex;
+  height: 100%;
+  background: var(--bg);
+}
+.session-list {
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 4px;
+  overflow-y: auto;
+}
+.session-list-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  transition: all 0.12s;
+  flex-shrink: 0;
+}
+.session-list-new:hover {
+  background: var(--accent-soft);
+}
+.session-list-empty {
+  padding: 16px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+  font-style: italic;
+}
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.1s;
+  position: relative;
+}
+.session-item:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.session-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+.session-item-icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.session-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.session-item-title {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-item-meta {
+  font-size: 10px;
+  opacity: 0.7;
+  display: flex;
+  gap: 4px;
+}
+.session-item-meta .dot {
+  opacity: 0.5;
+}
+.session-item-actions {
+  display: none;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.session-item:hover .session-item-actions,
+.session-item.active .session-item-actions {
+  display: flex;
+}
+.session-item-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  color: inherit;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.session-item-action:hover {
+  background: var(--bg);
+  opacity: 1;
+}
+.session-item-action.confirm-delete {
+  color: var(--error, #e53e3e);
+  opacity: 1;
+  animation: confirm-pulse 1s ease infinite;
+}
+@keyframes confirm-pulse {
+  50% { transform: scale(1.1); }
+}
+.session-item-rename {
+  flex: 1;
+  min-width: 0;
+}
+.rename-input {
+  width: 100%;
+  padding: 2px 4px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: none;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+/* === 右侧 chat main（v0.1 既有 .session 样式，v0.2 wrapper 加了所以改名） === */
 .session {
   display: flex;
   flex-direction: column;
   height: 100%;
   background: var(--bg);
+  flex: 1;
+  min-width: 0;
 }
 .toolbar {
   display: flex;
@@ -457,14 +854,33 @@ watch(
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+/* v0.2+ partial assistant message —— LLM 流到一半挂时给视觉提示 */
+.message.assistant.partial {
+  border-style: dashed;
+  opacity: 0.85;
+}
 .message .content {
   font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+  flex: 1;
+  min-width: 0;
 }
 .message .content.markdown {
   white-space: normal;
+}
+.partial-marker {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  text-align: right;
+}
+.partial-marker-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  letter-spacing: 0.3px;
 }
 
 .markdown :deep(p) { margin: 0 0 8px; }
@@ -538,17 +954,107 @@ watch(
 @keyframes blink {
   50% { opacity: 0; }
 }
-.error {
+
+/* === v0.2+ 产品级 chat error block（替换 v0.1 的 .error 简单红条）=== */
+.error-block {
+  max-width: 800px;
+  padding: 12px 14px;
+  background: rgba(232, 90, 90, 0.08);
+  border: 1px solid var(--error, #e53e3e);
+  border-radius: 8px;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: rgba(232, 90, 90, 0.12);
-  border: 1px solid var(--error);
-  color: var(--error);
-  border-radius: 6px;
-  font-size: 13px;
+  flex-direction: column;
+  gap: 10px;
 }
+.error-block-header {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  color: var(--error, #e53e3e);
+}
+.error-block-header svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.error-block-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.error-block-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.error-block-description {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.error-block-hint {
+  font-size: 12px;
+  color: var(--accent);
+  line-height: 1.5;
+}
+.hint-label {
+  font-weight: 600;
+  margin-right: 2px;
+}
+.error-block-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.error-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  transition: all 0.12s ease;
+}
+.error-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+.error-btn.retry {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.error-btn.retry:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+.error-btn.expand,
+.error-btn.dismiss {
+  padding: 4px 6px;
+}
+.error-block-raw {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
 .cancelled {
   display: flex;
   align-items: center;
@@ -558,7 +1064,7 @@ watch(
   font-size: 12px;
   font-style: italic;
 }
-/* === Composer（v0.1+ Locus 风格：textarea 上 + footer 下） === */
+/* === Composer === */
 .composer {
   display: flex;
   flex-direction: column;
@@ -590,7 +1096,6 @@ watch(
   opacity: 0.5;
   cursor: not-allowed;
 }
-/* v0.1.5+ 没选 model 时 input 红色边框 + placeholder italic 灰字 */
 .composer-input.no-model {
   border-color: var(--error, #e53e3e);
   border-style: dashed;
@@ -601,7 +1106,7 @@ watch(
   opacity: 0.7;
 }
 
-/* v0.1.5+ composer 顶部 inline 错误条 */
+/* composer 顶部 inline 错误条（v0.1.5+ 保留：send 同步抛错的 case）*/
 .composer-error {
   display: flex;
   align-items: center;
@@ -673,7 +1178,7 @@ watch(
   color: white;
 }
 
-/* === v0.1.5+ Project flow error toast (e.g. 创建失败 / list 失败) === */
+/* === v0.1.5+ Project flow error toast === */
 .project-error-toast {
   position: fixed;
   left: 50%;
@@ -689,7 +1194,7 @@ watch(
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
   font-size: 13px;
-  z-index: 1100; /* 高于 OpenProjectModal (1000) */
+  z-index: 1100;
   max-width: min(560px, calc(100vw - 32px));
 }
 .project-error-toast .dismiss-btn {

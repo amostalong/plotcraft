@@ -83,8 +83,9 @@ onUnmounted(() => {
         <div class="modal-body">
           <p class="modal-hint">
             在 <code class="path">{{ parentDir }}</code> 下新建一个项目文件夹，
-            自动落 4 个 starter md（<code>README.md</code> + <code>world/</code> +
-            <code>characters/</code> + <code>plot/</code>）。
+            自动落 5 个 starter 文件（4 个 md + 1 个 <code>plot.cat</code> 标记：
+            <code>README.md</code> + <code>world/</code> + <code>characters/</code> +
+            <code>plot/</code> + <code>plot.cat</code>）。
           </p>
 
           <label class="field">

@@ -1,26 +1,23 @@
 // chat pinia store —— 包装 useStreamReducer + LLM client + Tauri event 订阅
 //
 // v0.1+ 跟 Locus 对齐：session-level model + effort 选择
-// - 启动 init() 时从 settings.config 读 model / effort 作为默认
-// - chat 期间玩家改 selectedModel / selectedEffort → 同步写 settings.config.{model,effort} + save
-//   （v0.1.2 之前只在内存里存，关闭 app 丢 —— 现在持久化）
-// - v0.1.2+：Locus 风格 "Use provider" 切换也走 settings.config.base_url/apiKey/apiFormat 持久化
-//
-// v0.1.3+：chat selector 不再自动展示 BUILTIN_MODELS —— selectedModel 必须从
-// customProviders 解析。init 时的 fallback 规则：
-// 1. config.model 非空 + 匹配某 custom provider 的 effective defaultModel → 用它
-// 2. 否则回退到第一个 enabled + 有 effective defaultModel 的 custom provider
-// 3. 否则空串（0 provider → trigger "Select model" placeholder + send disabled）
-//
-// v0.1.5+：chat session messages 持久化（之前只内存，关闭 app 丢）
-// - 启动 init() 时 load_session 拉历史 messages → reduce loadSession
-// - 玩家 send / 收到 chunk / done / cancel / fail → 触发 messages 变化
-// - watch messages 变化 + debounce 1s → save_session 写盘
-// - debounce 1s：避免流式期间每 chunk 都写（1K token/秒 = 1000 次 emit）
-//   1s 内的所有 chunk 合并成一次写盘
+// v0.1.5+：chat session messages 持久化
+// v0.2+：chat error feedback 产品级（1-5 全做）
+// v0.2+：多 session —— 左侧 session list + 切换 / 创建 / 删除 / 改名
+//   - 后端存 sessions/_index.json + sessions/<id>.json
+//   - 第一次启动时 v0.1 legacy default.json 自动迁移成 id="default" 的 session
+//   - 启动时拉 session 列表 + 玩家上次 active 的 session（localStorage 记）
+//   - 切 session 时 loadSession(id) + replace state.messages + lastUserMessage
+//   - save 时 debounce 1s 写到 active session
+// v0.2+：init / teardown 跟 view 生命周期解耦
+//   - 之前 listener 绑在 SessionView.onMounted/onUnmounted 上，切 tab → teardown 解绑
+//     → 切走期间 stream chunks 全丢 → 切回时 init 又 loadSession 把 currentText 清空
+//   - 修法：teardown() 改 no-op，listener 永久在 store 上；init() 真幂等
+//     （teardown 不再清 initialized），切走期间 stream 继续跑、chunks 继续累积
+//   - 唯一成本：用户切到别的 view 时，chat 仍在累积 currentText，UI 看不到（但 state 是对的）
 
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
 import { createStreamReducer } from '@/composables/useStreamReducer'
@@ -30,8 +27,14 @@ import {
   onChatChunk,
   onChatDone,
   onChatError,
+  listSessions as rpcListSessions,
+  createSession as rpcCreateSession,
+  deleteSession as rpcDeleteSession,
+  renameSession as rpcRenameSession,
   loadSession,
   saveSession,
+  type SessionMeta,
+  type SessionFileV2,
 } from '@/lib/llm'
 import { DEFAULT_EFFORT, type EffortLevel } from '@/lib/settings'
 import type { ChatMessage } from '@/types/chat'
@@ -44,17 +47,25 @@ const SYSTEM_PROMPT =
   '保持项目文件夹结构：world/ characters/ plot/ art/ sessions/。' +
   '输出 markdown 格式，每个文件带 frontmatter 元信息。'
 
+/** v0.2+ 玩家上次 active session id —— 用 localStorage 持久化（重启 app 保留） */
+const ACTIVE_SESSION_KEY = 'plotcraft.chat.activeSessionId'
+
 export const useChatStore = defineStore('chat', () => {
   const { state, reduce, reset } = createStreamReducer()
   const unlistenFns = ref<UnlistenFn[]>([])
   let initialized = false
 
   // === v0.1+ session-level model + effort (跟 Locus `selectedModel` / `thinkingLevel` 同位) ===
-  // 玩家切到 SessionView 时 init() 会从 settings.config 读默认
-  // 切走再切回时仍保留玩家改的值（不重置，符合 chat session 语义）
-  // 改这两个值时同步写 settings.config.{model,effort} + save → 关闭 app 不丢
   const selectedModel = ref<string>('')
   const selectedEffort = ref<EffortLevel>(DEFAULT_EFFORT)
+
+  // === v0.2+ 多 session ===
+  /** 全部 session metadata 列表（按 updated_at 倒序） */
+  const sessions = ref<SessionMeta[]>([])
+  /** 当前 active session id —— chat 状态关联的 session */
+  const currentSessionId = ref<string | null>(null)
+  /** session 列表加载状态（首次 init 还没拉完时为 true） */
+  const sessionsLoading = ref(false)
 
   /** v0.1+ 写 settings 辅助：失败只 console.error，不阻塞 UI */
   async function persistToSettings(model: string, effort: EffortLevel) {
@@ -79,11 +90,9 @@ export const useChatStore = defineStore('chat', () => {
         const settings = useSettingsStore()
         if (!settings.loaded) await settings.init()
 
-        // v0.1.3+ model 解析：必须能匹配一个 custom provider 才用，否则回退
         const customProviders = settings.config.customProviders ?? []
         const persisted = settings.config.model?.trim() || ''
 
-        // 1. config.model 匹配某 provider 的 effective defaultModel → 用它（玩家手动选过的）
         let resolved = ''
         if (persisted) {
           const match = customProviders.find((p) => {
@@ -94,7 +103,6 @@ export const useChatStore = defineStore('chat', () => {
           if (match) resolved = persisted
         }
 
-        // 2. 回退到第一个 enabled + 有 effective defaultModel 的 custom provider
         if (!resolved) {
           const fallback = customProviders.find((p) => {
             if (!p.enabled) return false
@@ -105,31 +113,53 @@ export const useChatStore = defineStore('chat', () => {
           }
         }
 
-        // 3. 0 provider → 空串（trigger 显示 "Select model" placeholder + send disabled）
         selectedModel.value = resolved
 
-        // v0.1.3+ effort 持久化：玩家保存的 effort 直接用，custom model 不知道 default effort，
-        // 回退到 DEFAULT_EFFORT（"none"）让玩家自己选
         selectedEffort.value = settings.config.effort ?? DEFAULT_EFFORT
       } catch (e) {
-        // 读不到 → 留空，让 SessionView UI 自己处理
         console.error('[chat.init] failed to load default model from settings:', e)
       }
     }
 
-    // v0.1.5+ 加载历史 chat session messages
+    // v0.2+ 多 session 初始化：拉 session 列表 + 选/建 active session
+    sessionsLoading.value = true
     try {
-      const history = await loadSession()
-      if (history.length > 0) {
-        reduce({ type: 'loadSession', sessionId: 'default', messages: history })
-        console.log(`[chat.init] loaded ${history.length} messages from session`)
-      }
+      sessions.value = await rpcListSessions()
+      console.log(`[chat.init] loaded ${sessions.value.length} sessions`)
     } catch (e) {
-      console.error('[chat.init] failed to load session:', e)
+      console.error('[chat.init] failed to list sessions:', e)
+    } finally {
+      sessionsLoading.value = false
     }
 
-    // 监听 selectedModel / selectedEffort 变化 → 持久化到 settings.config
-    // （不写回时只在内存里，关闭 app 丢 —— v0.1.2 修复）
+    // 选 active session：优先 localStorage 记忆，否则取 sessions[0]（最新），否则建新
+    const persistedActive = localStorage.getItem(ACTIVE_SESSION_KEY)
+    let activeId: string | null = null
+    if (persistedActive && sessions.value.some((s) => s.id === persistedActive)) {
+      activeId = persistedActive
+    } else if (sessions.value.length > 0) {
+      activeId = sessions.value[0].id
+    } else {
+      // 没有任何 session → 建一个 "New Chat"
+      try {
+        const newSession = await rpcCreateSession('New Chat')
+        sessions.value = [newSession]
+        activeId = newSession.id
+        console.log(`[chat.init] created default session: ${newSession.id}`)
+      } catch (e) {
+        console.error('[chat.init] failed to create default session:', e)
+      }
+    }
+    if (activeId) {
+      await switchSession(activeId)
+      // 持久化 active session id
+      try {
+        localStorage.setItem(ACTIVE_SESSION_KEY, activeId)
+      } catch (e) {
+        console.error('[chat.init] failed to persist activeSessionId:', e)
+      }
+    }
+
     watch(
       [selectedModel, selectedEffort],
       ([m, e]) => {
@@ -140,18 +170,21 @@ export const useChatStore = defineStore('chat', () => {
     )
 
     // v0.1.5+ 监听 messages 变化 → debounce 1s 写盘
-    // （流式期间每 chunk 触发 messages 变化，但只在 done/cancel/fail 时 messages 数组真改；
-    //  这里只 persist"完成态"的 messages，不存中间 chunk）
+    // v0.2+ 升级：saveSession 接 id 参数，写到 currentSessionId 对应文件
     let saveTimer: ReturnType<typeof setTimeout> | null = null
     watch(
-      () => state.value.messages,
-      (msgs) => {
+      [() => state.value.messages, () => state.value.lastUserMessage, currentSessionId],
+      ([msgs, lastUserMsg, sid]) => {
+        if (!sid) return // 没 active session 不写
         if (saveTimer) clearTimeout(saveTimer)
-        // 1s debounce：流式期间 chunk 不持久化（currentText 不在 messages 里），
-        // done / cancel / fail 时 messages 数组真改了 → 等 1s 没新事件才落盘
-        // 防止 streaming 期间快速写盘
         saveTimer = setTimeout(() => {
-          saveSession(msgs).catch((e) => {
+          const payload: SessionFileV2 = {
+            version: 2,
+            updated_at: new Date().toISOString(),
+            messages: msgs,
+            last_user_message: lastUserMsg,
+          }
+          saveSession(sid, payload).catch((e) => {
             console.error('[chat] saveSession failed:', e)
           })
         }, 1000)
@@ -171,40 +204,143 @@ export const useChatStore = defineStore('chat', () => {
     )
     unlistenFns.value.push(
       await onChatError((payload) => {
-        reduce({ type: 'fail', runId: payload.run_id, error: payload.error })
+        reduce({
+          type: 'fail',
+          runId: payload.run_id,
+          error: payload.error,
+          kind: payload.kind,
+        })
       }),
     )
   }
 
   function teardown() {
-    unlistenFns.value.forEach((fn) => fn())
-    unlistenFns.value = []
-    initialized = false
+    // v0.2+：no-op。listener 跟 view 生命周期解绑，永久留在 store 上。
+    // 切走 SessionView 时不解绑 → 切走期间 stream 继续 emit → 切回时看到完整 currentText
+    // 保留函数签名给 v0.3+ app-level teardown 留口（关 app 时再真清理 unlisten + saveTimer）
   }
+
+  // === v0.2+ session 切换/创建/删除/改名 ===
+
+  /** 切到指定 session —— 加载 messages + 更新 activeSessionId + 持久化 */
+  async function switchSession(id: string) {
+    console.log('[chat.switchSession] id:', id)
+    try {
+      const file = await loadSession(id)
+      reduce({
+        type: 'loadSession',
+        sessionId: id,
+        messages: file.messages,
+        lastUserMessage: file.last_user_message,
+      })
+      currentSessionId.value = id
+      try {
+        localStorage.setItem(ACTIVE_SESSION_KEY, id)
+      } catch (e) {
+        console.error('[chat.switchSession] failed to persist:', e)
+      }
+    } catch (e) {
+      console.error('[chat.switchSession] failed:', e)
+      throw e
+    }
+  }
+
+  /** 创建新 session —— 后端写空 session + 切换过去 */
+  async function createNewSession(title: string = 'New Chat'): Promise<SessionMeta> {
+    console.log('[chat.createNewSession] title:', title)
+    const newSession = await rpcCreateSession(title)
+    sessions.value = [newSession, ...sessions.value]
+    await switchSession(newSession.id)
+    return newSession
+  }
+
+  /** 删除 session —— 后端删文件 + 从 sessions 列表移除 + 切到第一个剩余 session */
+  async function deleteSessionById(id: string) {
+    console.log('[chat.deleteSessionById] id:', id)
+    await rpcDeleteSession(id)
+    sessions.value = sessions.value.filter((s) => s.id !== id)
+    if (currentSessionId.value === id) {
+      // 切到列表第一个；如果没剩余，建新 session
+      if (sessions.value.length > 0) {
+        await switchSession(sessions.value[0].id)
+      } else {
+        await createNewSession('New Chat')
+      }
+    }
+  }
+
+  /** 改名 —— 后端改 _index.json + 更新 sessions 列表 */
+  async function renameSessionById(id: string, newTitle: string) {
+    console.log('[chat.renameSessionById] id:', id, 'newTitle:', newTitle)
+    const updated = await rpcRenameSession(id, newTitle)
+    sessions.value = sessions.value.map((s) => (s.id === id ? updated : s))
+  }
+
+  // === sendMessage / retryLast / stopCurrent / dismissError（v0.2+）===
 
   async function sendMessage(content: string) {
     const text = content.trim()
     if (!text) return
+    console.log('[chat.sendMessage] starting, text length:', text.length)
 
-    // 1. user message 入 messages
     const userMsg: ChatMessage = { role: 'user', content: text }
     reduce({ type: 'addUserMessage', message: userMsg })
+    console.log('[chat.sendMessage] addUserMessage done, messages count:', state.value.messages.length)
 
-    // 2. 调 start_chat 拿 run_id（带 model + effort 选项）
     const sessionId = state.value.sessionId ?? 'default'
-    const runId = await rpcStartChat(
-      [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...state.value.messages,
-      ],
-      {
-        model: selectedModel.value || null,
-        effort: selectedEffort.value,
-      },
-    )
+    let runId: string
+    try {
+      console.log('[chat.sendMessage] calling rpcStartChat, model:', selectedModel.value, 'effort:', selectedEffort.value)
+      runId = await rpcStartChat(
+        [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...state.value.messages,
+        ],
+        {
+          model: selectedModel.value || null,
+          effort: selectedEffort.value,
+        },
+      )
+      console.log('[chat.sendMessage] rpcStartChat returned run_id:', runId)
+    } catch (e) {
+      console.error('[chat.sendMessage] rpcStartChat FAILED:', e)
+      throw e
+    }
 
-    // 3. start mutation（启动流式）
     reduce({ type: 'start', sessionId, runId })
+    console.log('[chat.sendMessage] start mutation done, status:', state.value.status, 'currentRunId:', state.value.currentRunId)
+  }
+
+  async function retryLast() {
+    const last = state.value.lastUserMessage
+    if (!last) {
+      console.warn('[chat.retryLast] no lastUserMessage to retry')
+      return
+    }
+    console.log('[chat.retryLast] retrying, content length:', last.content.length)
+    reduce({ type: 'retry', message: last })
+    const sessionId = state.value.sessionId ?? 'default'
+    try {
+      const runId = await rpcStartChat(
+        [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...state.value.messages,
+        ],
+        {
+          model: selectedModel.value || null,
+          effort: selectedEffort.value,
+        },
+      )
+      console.log('[chat.retryLast] rpcStartChat returned run_id:', runId)
+      reduce({ type: 'start', sessionId, runId })
+    } catch (e) {
+      console.error('[chat.retryLast] rpcStartChat FAILED:', e)
+      throw e
+    }
+  }
+
+  function dismissError() {
+    reduce({ type: 'dismissError' })
   }
 
   async function stopCurrent() {
@@ -213,7 +349,6 @@ export const useChatStore = defineStore('chat', () => {
       try {
         await rpcCancelChat(runId)
       } catch (e) {
-        // ignore — cancel 失败也强制本地 cancel
         console.error('cancel_chat failed:', e)
       }
       reduce({ type: 'cancel', runId })
@@ -228,10 +363,19 @@ export const useChatStore = defineStore('chat', () => {
     state,
     selectedModel,
     selectedEffort,
+    sessions,
+    currentSessionId,
+    sessionsLoading,
     init,
     teardown,
     sendMessage,
+    retryLast,
+    dismissError,
     stopCurrent,
     clear,
+    switchSession,
+    createNewSession,
+    deleteSessionById,
+    renameSessionById,
   }
 })

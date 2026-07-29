@@ -42,12 +42,12 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use reqwest::Client;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::config::LlmConfig;
-use super::streaming::{emit_throttled, ChatError};
+use super::streaming::{emit_chat_error, emit_throttled};
 use super::types::{ChatMessage, MessageRole};
 use crate::error::{AppError, AppResult};
 
@@ -130,21 +130,22 @@ pub async fn stream_chat_anthropic(
     }
 
     // 2. 拿 stream
-    let response = req
-        .send()
-        .await
-        .map_err(|e| AppError::Llm(format!("request failed: {}", e)))?;
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            // v0.2+：跟 streaming.rs 对齐 — send 失败先 emit chat:error 让前端
+            // 看到分类错误玩家文案，再 return Err
+            let msg = format!("request failed: {}", e);
+            emit_chat_error(&app, &run_id, &msg);
+            return Err(AppError::Llm(msg));
+        }
+    };
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();
-        let _ = app.emit(
-            "chat:error",
-            ChatError {
-                run_id: run_id.clone(),
-                error: format!("HTTP {}: {}", status, body),
-            },
-        );
+        let err_msg = format!("HTTP {}: {}", status, body);
+        emit_chat_error(&app, &run_id, &err_msg);
         return Err(AppError::LlmHttp { status, body });
     }
 
@@ -153,6 +154,9 @@ pub async fn stream_chat_anthropic(
     // 3. parse / emit 走 mpsc channel
     let (tx, mut rx) = mpsc::channel::<String>(64);
     let cancel_parse = cancel.clone();
+    // v0.2+ 跟 streaming.rs 对齐 — parse 阶段错误 emit chat:error 给前端
+    let app_err = app.clone();
+    let run_id_err = run_id.clone();
 
     let parse_handle = tokio::spawn(async move {
         let mut buffer = String::new();
@@ -163,7 +167,9 @@ pub async fn stream_chat_anthropic(
             let chunk = match stream.next().await {
                 Some(Ok(c)) => c,
                 Some(Err(e)) => {
-                    eprintln!("[anthropic parse] stream error: {}", e);
+                    let msg = format!("[anthropic parse] stream error: {}", e);
+                    eprintln!("{}", msg);
+                    emit_chat_error(&app_err, &run_id_err, &msg);
                     break;
                 }
                 None => break,
@@ -189,7 +195,9 @@ pub async fn stream_chat_anthropic(
                     }
                 }
                 Err(e) => {
-                    eprintln!("[anthropic parse] spawn_blocking join: {}", e);
+                    let msg = format!("[anthropic parse] spawn_blocking join: {}", e);
+                    eprintln!("{}", msg);
+                    emit_chat_error(&app_err, &run_id_err, &msg);
                     break;
                 }
             }
@@ -397,18 +405,22 @@ mod tests {
             ChatMessage {
                 role: MessageRole::System,
                 content: "You are helpful".to_string(),
+                partial: None,
             },
             ChatMessage {
                 role: MessageRole::User,
                 content: "Hi".to_string(),
+                partial: None,
             },
             ChatMessage {
                 role: MessageRole::System,
                 content: "Be concise".to_string(),
+                partial: None,
             },
             ChatMessage {
                 role: MessageRole::Assistant,
                 content: "Hello!".to_string(),
+                partial: None,
             },
         ];
         let (system, rest) = split_system_messages(&messages);
@@ -424,6 +436,7 @@ mod tests {
         let msgs = vec![ChatMessage {
             role: MessageRole::User,
             content: "hi".to_string(),
+            partial: None,
         }];
         let body = build_anthropic_request_body(
             "claude-sonnet-4-5",
@@ -441,6 +454,7 @@ mod tests {
         let msgs = vec![ChatMessage {
             role: MessageRole::User,
             content: "hi".to_string(),
+            partial: None,
         }];
         for (effort, expected_budget) in [
             (EffortLevel::Low, 1024),

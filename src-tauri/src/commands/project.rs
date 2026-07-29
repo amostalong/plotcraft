@@ -1,15 +1,20 @@
 //! 项目文件夹 IO Tauri commands
 //!
 //! v0.1 实现：
-//! - create_project(folder, name) -> 落 4 个 starter md
-//! - list_projects(folder) -> 扫描子文件夹（有 README.md 算项目）
+//! - create_project(folder, name) -> 落 4 个 starter md + plot.cat 标记
+//! - list_projects(folder) -> 扫描子文件夹（有 plot.cat 算 PlotCraft 项目）
+//!
+//! v0.2+ PlotCraft 项目识别规则：
+//! - 显式：项目根有 `plot.cat` 文件（JSON，最小空对象 `{}`）
+//! - 隐式（v0.1 兼容）：仅有 `world/` 子目录但缺 `plot.cat` → 自动补一个空 plot.cat
+//!   老项目迁移在 list_projects 触发（玩家点"打开项目"时静默写盘，无感）
 
 use std::path::PathBuf;
 use tokio::fs;
 
 use crate::console::console_log;
 use crate::error::{AppError, AppResult};
-use crate::project::templates::{starter_files, ProjectMeta};
+use crate::project::templates::{plot_cat_content, starter_files, ProjectMeta, PLOT_CAT_FILE};
 
 /// 玩家新建项目：folder/{name}/ 落 4 个 starter md
 #[tauri::command]
@@ -64,12 +69,13 @@ pub async fn create_project(
     })
 }
 
-/// 扫描 folder 的子文件夹 —— v0.1.5+ 不再 filter README.md，列所有子目录
-/// PlotCraft 标识（`world/` 子目录存在）走 ProjectMeta.is_plotcraft_project，
-/// 让前端 OpenProjectModal 给玩家视觉提示（"看起来是 PlotCraft 项目"标签），
-/// 玩家自己决定选哪个。
+/// 扫描 folder 的子文件夹 —— v0.2+ PlotCraft 标识走 plot.cat 文件存在判断
+/// 老项目（v0.1 仅靠 world/ 识别的）自动补一个空 plot.cat，迁移无感。
 #[tauri::command]
-pub async fn list_projects(folder: String) -> AppResult<Vec<ProjectMeta>> {
+pub async fn list_projects(
+    app: tauri::AppHandle,
+    folder: String,
+) -> AppResult<Vec<ProjectMeta>> {
     let dir = PathBuf::from(&folder);
     if !dir.exists() {
         return Ok(vec![]);
@@ -91,8 +97,9 @@ pub async fn list_projects(folder: String) -> AppResult<Vec<ProjectMeta>> {
         if name.starts_with('.') {
             continue;
         }
-        // v0.1.5+ PlotCraft 标识：含 `world/` 子目录就算（4 个 starter 之一）
-        let is_plotcraft_project = path.join("world").is_dir();
+        // v0.2+ PlotCraft 标识：项目根有 `plot.cat` 文件
+        // 老项目（v0.1.5+ 仅有 world/ 的）静默补 plot.cat 一次性迁移
+        let is_plotcraft_project = check_or_migrate_plot_cat(&app, &path).await?;
         projects.push(ProjectMeta {
             name,
             folder: path.to_string_lossy().to_string(),
@@ -108,4 +115,41 @@ pub async fn list_projects(folder: String) -> AppResult<Vec<ProjectMeta>> {
             .then(a.name.cmp(&b.name))
     });
     Ok(projects)
+}
+
+/// v0.2+ PlotCraft 项目识别 + 老项目迁移
+/// - 有 plot.cat → true
+/// - 仅有 world/（v0.1.5+ 旧项目）→ 写一个空 plot.cat 迁移 → true
+/// - 都没有 → false
+///
+/// 迁移失败：warn log + 返回 false（不影响 OpenProjectModal 列出，标识会错但不阻塞）
+async fn check_or_migrate_plot_cat(
+    app: &tauri::AppHandle,
+    project_dir: &std::path::Path,
+) -> AppResult<bool> {
+    let plot_cat = project_dir.join(PLOT_CAT_FILE);
+    if plot_cat.is_file() {
+        return Ok(true);
+    }
+    if project_dir.join("world").is_dir() {
+        // 一次性迁移：v0.1.5+ 老项目
+        if let Err(e) = fs::write(&plot_cat, plot_cat_content()).await {
+            let err = AppError::Config(format!(
+                "migrate plot.cat at {}: {}",
+                project_dir.display(),
+                e
+            ));
+            console_log(app, "warn", "project", err.to_string());
+            // 迁移失败不阻塞 —— 返回 false，OpenProjectModal 正常列出但不标 PlotCraft
+            return Ok(false);
+        }
+        console_log(
+            app,
+            "info",
+            "project",
+            format!("migrated legacy project: added plot.cat at {}", project_dir.display()),
+        );
+        return Ok(true);
+    }
+    Ok(false)
 }

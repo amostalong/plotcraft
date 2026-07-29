@@ -497,12 +497,119 @@ const routes = [
 
 | Locus 学什么 | Locus 避什么 | PlotCraft 怎么改 |
 |---|---|---|
-| identity-stable array 模式 | 35 字段 state / 35 mutation type | 砍到 8 字段 / 8 mutation |
-| markdown worker（lute） | markdown worker 是 lute，重 | 用 marked + dompurify，轻 |
+| identity-stable array 模式 | 35 字段 state / 35 mutation type | v0.1 砍到 8 字段 / 8 mutation；v0.2 加到 12 字段 / 10 mutation（加 errorKind / partial / retry）|
+| markdown worker（lute） | markdown worker 是 lute，重 | 用 marked + dompurify，轻，主线程同步 |
 | 反卡顿意识 | 没用 spawn_blocking 隔离 LLM 解析 | spawn_blocking 隔离 SSE 解析 |
 | 错误重试 / abort 机制 | 同步 emit 不节流 | 16ms 节流 + channel 解耦 |
-| keyring crate 模式（v0.2+）| v0.1 裸 key | v0.1 裸 key / v0.2 升 keyring |
-| `useStreamReducer` 状态机思想 | 主线程跑整 35k state | v0.1 主线程跑 8 字段；v0.2+ 视情况上 worker |
+| `useStreamReducer` 状态机思想 | 主线程跑整 35k state | 主线程跑 12 字段；v0.2+ 视情况上 worker |
+| 错误反馈"分类 + 玩家文案"哲学 | 把 OpenSSL/TLS 错误直接弹给玩家 | 后端 ChatErrorKind 8 种 + 前端 `lib/error-messages.ts` 玩家文案；技术细节默认折叠 |
+
+---
+
+## 8. v0.2 chat error feedback（2026-07-29）
+
+> **范围重切**：原 v0.2 ROADMAP 写的是"真 AI 集成 + 引导流 + 共创模式"——但这些 v0.1 已经实装。
+> v0.2 重新对齐实际产品级问题：v0.1 收尾撞到 chat 错误反馈对玩家黑盒——按"feature > version limit"原则，1-5 全做。
+
+### 8.1 问题陈述
+
+v0.1 实现的 chat 错误传播：
+- 后端 `stream_chat` 异步抛错只 `eprintln!` 不 emit event → 前端**完全收不到**
+- 前端 chat UI 出错时只显示 transcript 区一行小字红条 + 14px 技术字符串
+- `parse_openai_sse_buffer` 不读智谱 GLM 中转的 `delta.reasoning_content` → 流到一半因为 deltas=0 静默"完成"
+- `useStreamReducer.fail` mutation 把 currentText 直接丢，玩家看不到已收到部分
+- 没重试入口、没 lastUserMessage 持久化、没"查看 Console 日志"链接
+
+玩家视角："输入框清了，user message 出现，30 秒后什么都没发生"。
+
+### 8.2 8 种错误分类（后端 `ChatErrorKind`）
+
+```rust
+#[serde(rename_all = "snake_case")]
+pub enum ChatErrorKind {
+    Network,        // connect / TLS / DNS / refused / 30s timeout
+    Auth,           // HTTP 401 / 403 — API key 错 / 中转代理不认
+    ModelNotFound,  // HTTP 404 — model id 在 endpoint 不存在
+    BadRequest,     // HTTP 400 — body 格式错（endpoint 协议不兼容）
+    RateLimit,      // HTTP 429
+    ServerError,    // HTTP 5xx
+    StreamProtocol, // SSE 解析错 / buffer 解析出 0 deltas 但 stream 关闭
+    Unknown,        // 兜底
+}
+```
+
+`classify_error(&str) -> ChatErrorKind` 按 HTTP status 优先 → 错误文本前缀次之 → Unknown 兜底。
+
+### 8.3 玩家文案 util（`lib/error-messages.ts`）
+
+每种 kind 给 4 个字段：title / description / hint / canRetry。
+- 玩家**默认看不到** OpenSSL/TLS/HTTP body 字符串
+- 点 "查看详情" 才展开 `technicalDetails: rawError`
+- `hint` 字段直接告诉玩家"去 Settings → Providers 库 → 找到这条 provider → 编辑 → 改 API key"——具体到 UI 路径
+
+例：
+```ts
+auth: {
+  title: 'API key 错 / 中转代理不认',
+  description: 'endpoint 回了 HTTP 401 / 403 —— 鉴权失败',
+  hint: '去 Settings → Providers 库 → 找到这条 provider → 编辑 → 改 API key',
+  canRetry: false,  // 改 key 之前重试没意义
+}
+```
+
+### 8.4 chat state 8 → 12 字段 / mutations 8 → 10
+
+新增字段（v0.2+）：
+- `errorKind: ChatErrorKind | null` — 后端给的分类
+- `lastUserMessage: ChatMessage | null` — 给 retryLast() 重发用
+- `lastFailedRunId: string | null` — 关联错误条用
+- `lastErrorAt: number | null` — "X 秒前出错"显示用
+
+新增 mutations（v0.2+）：
+- `retry: { message }` — addUserMessage 的 retry 版（同步入 messages + 更新 lastUserMessage）
+- `dismissError` — 清错误状态，**不**清 lastUserMessage
+
+`fail` mutation 行为改：保留 `currentText` 作为 partial assistant message（`partial: true` 标记），UI 末尾显示 "(回复中断)"。
+
+`cancel` mutation 行为改：跟 fail 对齐，保留 partial，UI 末尾显示 "(已停止)"。
+
+`start` mutation 行为改：清错误状态（玩家点 retry 后重新启动，UI 反馈"重新在跑"）。
+
+### 8.5 后端 + 前端 + 测试 落地
+
+**后端**：
+- `streaming.rs` `ChatError` 加 `kind: ChatErrorKind` 字段 + `classify_error()` 函数 + `emit_chat_error()` helper (pub(crate))
+- 三个 streaming 实现（openai_chat / anthropic / openai_responses）共用 `emit_chat_error` helper，4 个错误路径全 emit
+- `src-tauri/src/llm/types.rs` `ChatMessage.partial: Option<bool>` + `#[serde(default, skip_serializing_if = "Option::is_none")]` 兼容老 v0.1 session
+- `commands/session.rs` schema v1 → v2，加 `last_user_message: Option<ChatMessage>` + 3 个 unit test (roundtrip / v1→v2 兼容 / empty)
+
+**前端**：
+- `types/chat.ts` `ChatErrorPayload.kind` + `ChatMessage.partial` + `ChatErrorKind` 8 选 1 枚举
+- `lib/error-messages.ts` 新文件（8 套玩家文案 + UNKNOWN 兜底）
+- `useStreamReducer.ts` 8→12 字段 / 8→10 mutations + `loadSession` mutation 加 `lastUserMessage` 参数
+- `stores/chat.ts` `retryLast()` + `dismissError()` + `onChatError` handler 接收 kind
+- `lib/llm.ts` `SessionFileV2` 类型 + `loadSession/saveSession` 改 shape
+- `views/SessionView.vue` 错误条全改造（title/description/hint + retry/details/dismiss/expand 4 个按钮 + 技术细节折叠区）+ partial response 渲染（dashed border + "(回复中断)" marker）+ Ctrl+Shift+R 快捷键
+- `views/SettingsView.vue` `route.query.tab` 自动切分类
+- `components/settings/ConsoleSettings.vue` `runIdFilter` prop，自动设 searchQuery
+
+### 8.6 错误传播"职责单一"原则
+
+v0.1 实现里 stream_chat 抛错时只 return Err 不 emit event —— **违反 AGENTS.md 硬规则 #4**（"AppError enum 是前后端错误传递的唯一类型"）。
+
+v0.2 修法：所有抛错路径在 `return Err` 之前先 `emit_chat_error(&app, &run_id, &msg)`。`commands/llm.rs` 的 `start_chat` spawn task catch 只 `console_log`（不再 emit）——避免前端收到两次 event（虽然 reducer 的 fail mutation 是 idempotent，但重复 emit 不干净）。
+
+### 8.7 诊断 log 噪音控制
+
+`streaming.rs` parse loop 加 `[stream] first chunk raw` + `[stream] closed, total_deltas` 两条 console_log 帮 dev 排查 SSE 兼容性问题。**只在 `total_deltas=0` 时打**（异常路径），正常 chat 路径 console 干净。
+
+### 8.8 反 Locus 卡顿 v0.2 适配
+
+- chat state 12 字段仍远小于 Locus 35+ 字段（增加 < 一倍）
+- shallowRef 包 state 保留
+- identity-stable array 保留（appendChunk 只动 currentText 不动 messages 数组）
+- partial response 渲染走 `if (msg.partial) <div class="partial-marker">…回复中断</div>`，不引入新 reactive 字段
+- retry / dismissError 是 mutation type，不是新 store 字段（state 仍 shallowRef 1 个对象）
 
 ---
 

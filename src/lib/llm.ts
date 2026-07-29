@@ -76,7 +76,7 @@ export async function testProvider(opts: {
   apiFormat: ApiFormat
   model: string
 }): Promise<TestProviderResult> {
-  return invoke<TestProviderResult>('test_provider', { opts })
+  return invoke<TestProviderResult>('test_provider', { params: opts })
 }
 
 /** Get the embedded model catalog (slim models.dev snapshot, ~167 providers)
@@ -98,20 +98,69 @@ export async function refreshModelCatalog(): Promise<ModelCatalog> {
 
 // === v0.1.5+ Chat session 持久化 ===
 //
-// 单 session 持久化到 `%APPDATA%/PlotCraft/sessions/default.json`：
-// - load_session: 启动时拉历史 messages（无文件 / 解析失败 → 返回空）
-// - save_session: debounce 1s 写盘（每 chunk 写太频繁）
+// v0.2+ 升级到多 session：
+// - 后端 `sessions/_index.json` 存 SessionMeta 列表（id / title / created_at / updated_at / message_count）
+// - 每个 session 一个文件 `sessions/<id>.json`（SessionFileV2 格式）
+// - v0.1 legacy `default.json` 自动当 id="default" 处理
 //
 // v0.1 简化：单 session 不切换（v0.2+ 多 session + 按项目分组）
 
-/** 拉 chat session 历史 messages —— 无文件 / 损坏 → 返回空（不抛错） */
-export async function loadSession(): Promise<ChatMessage[]> {
-  return invoke<ChatMessage[]>('load_session')
+import type { ChatMessage } from '@/types/chat'
+
+/** v0.2+ session metadata —— 存 _index.json，不存 messages（messages 在 <id>.json） */
+export interface SessionMeta {
+  /** session id（= 文件名 stem，比如 "default" / "abc12345"） */
+  id: string
+  /** 玩家改的显示名 */
+  title: string
+  /** ISO 8601 timestamp */
+  created_at: string
+  /** ISO 8601 timestamp（最后一次 save 时更新） */
+  updated_at: string
+  /** message 数量（UI 显示 "5 messages"） */
+  message_count: number
 }
 
-/** 写 chat session —— atomic write（tmp → rename），错误抛给上层 */
-export async function saveSession(messages: ChatMessage[]): Promise<void> {
-  await invoke('save_session', { messages })
+/** v0.2+ session 文件结构（镜像 Rust 端 `SessionFile` v2，snake_case 跨 boundary）*/
+export interface SessionFileV2 {
+  version: number
+  updated_at: string
+  messages: ChatMessage[]
+  last_user_message: ChatMessage | null
+}
+
+/** 列出所有 session —— v0.2+ 多 session
+ *  第一次启动时如果 legacy default.json 存在 → 自动当 id="default" 处理 */
+export async function listSessions(): Promise<SessionMeta[]> {
+  return invoke<SessionMeta[]>('list_sessions')
+}
+
+/** 创建新 session —— 写空 session 文件 + 加 _index.json entry
+ *  @param title 玩家给的初始标题（后续可改名） */
+export async function createSession(title: string): Promise<SessionMeta> {
+  return invoke<SessionMeta>('create_session', { title })
+}
+
+/** 删除 session —— 删 <id>.json + 从 _index.json 移除（"default" session 不能删） */
+export async function deleteSession(id: string): Promise<void> {
+  await invoke('delete_session', { id })
+}
+
+/** 改名 —— 只改 _index.json */
+export async function renameSession(id: string, newTitle: string): Promise<SessionMeta> {
+  return invoke<SessionMeta>('rename_session', { id, newTitle })
+}
+
+/** 拉 chat session —— 无文件 / 损坏 → 返回空 SessionFileV2（不抛错）
+ *  v0.2+ 接 id 参数（"default" 走 v0.1 legacy 兼容路径） */
+export async function loadSession(id: string): Promise<SessionFileV2> {
+  return invoke<SessionFileV2>('load_session', { id })
+}
+
+/** 写 chat session —— atomic write（tmp → rename），错误抛给上层
+ *  v0.2+ 接 id 参数 + 传整个 SessionFileV2 payload（version 强制 2） */
+export async function saveSession(id: string, payload: SessionFileV2): Promise<void> {
+  await invoke('save_session', { id, payload })
 }
 
 // --- Tauri event subscriptions ---

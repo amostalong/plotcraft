@@ -8,8 +8,13 @@
 // 玩家要点底部"保存"按钮才写 config.json；现在 modal / theme / provider toggle
 // / 删除 / import 等都直接 settings.save()）。底部"保存"按钮已删，
 // 只剩"重置"按钮（显式操作）。
+//
+// v0.2+：route.query.tab 自动切分类（chat 错误详情链接跳过来时用）
+// - query.tab === 'console' → 直接切到控制台分类
+// - query.runId → 透传给 ConsoleSettings 用作 search filter
 
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { AlertCircle, RotateCcw, Plug, SlidersHorizontal, Terminal } from 'lucide-vue-next'
 
 import { useSettingsStore } from '@/stores/settings'
@@ -18,10 +23,36 @@ import GeneralSettingsPanel from '@/components/settings/GeneralSettings.vue'
 import ConsoleSettings from '@/components/settings/ConsoleSettings.vue'
 
 const settings = useSettingsStore()
+const route = useRoute()
 
 onMounted(async () => {
   await settings.init()
+  // v0.2+ 第一次进 settings 时按 query 切分类（chat 详情链接跳过来）
+  syncCategoryFromQuery()
 })
+
+// v0.2+ 监听 route.query.tab 变化 — 玩家点 chat error 详情跳过来时
+watch(
+  () => route.query.tab,
+  () => syncCategoryFromQuery(),
+)
+
+function syncCategoryFromQuery() {
+  const tab = route.query.tab
+  if (tab === 'console' || tab === 'general' || tab === 'api') {
+    activeCategory.value = tab
+  }
+}
+
+// v0.2+ runId from query → 透传给 ConsoleSettings 用作 search filter
+const consoleRunIdFilter = ref<string | null>(null)
+watch(
+  () => route.query.runId,
+  (v) => {
+    consoleRunIdFilter.value = typeof v === 'string' ? v : null
+  },
+  { immediate: true },
+)
 
 // activeCategory: 'api' | 'general' | 'console' —— v0.1.5+ 加 'console'
 // （active model 切换完全在 chat tab model selector，settings 只管 provider 库）
@@ -92,7 +123,11 @@ async function onReset() {
           :ui="settings.config.ui"
           :recent-projects="settings.config.recentProjects"
         />
-        <ConsoleSettings v-else-if="activeCategory === 'console'" key="console" />
+        <ConsoleSettings
+          v-else-if="activeCategory === 'console'"
+          key="console"
+          :run-id-filter="consoleRunIdFilter"
+        />
       </Transition>
 
       <!-- 底部 action bar（v0.1.5+ 只剩 重置 + 错误状态，"保存"按钮已删） -->

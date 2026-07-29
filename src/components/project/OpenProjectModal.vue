@@ -3,7 +3,8 @@
 //
 // 替代 v0.1.4 之前 openExisting 用的 `window.prompt`（OS system dialog）。
 // - 列 rootDir 下所有子文件夹（不 filter —— v0.1.5+ 取消 README.md 判定）
-// - PlotCraft 项目（含 world/）标 "PlotCraft 项目" 标签 + 排前面
+// - PlotCraft 项目（含 plot.cat）标 "PlotCraft 项目" 标签 + 排前面
+//   v0.2+ 改显式 plot.cat 标记；老项目（仅 world/）自动迁移补 plot.cat
 // - 单选 + 底部 "打开" 按钮
 // - Esc / 取消 关闭
 // - 空状态："该目录没有子文件夹"
@@ -101,7 +102,7 @@ onUnmounted(() => {
           <p class="modal-hint">
             扫描 <code class="path">{{ rootDir }}</code> 的子文件夹。带
             <span class="plotcraft-tag-inline">PlotCraft 项目</span>
-            标签的是含 <code>world/</code> 子目录的（v0.1.5+ 起的判定），其他是普通文件夹。
+            标签的是含 <code>plot.cat</code> 标记文件的（v0.2+ 起的判定，老项目会自动补），其他是普通文件夹。
           </p>
 
           <!-- Search -->

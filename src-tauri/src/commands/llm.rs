@@ -85,7 +85,19 @@ pub async fn start_chat(
 
     let app_clone = app.clone();
     let run_id_clone = run_id.clone();
+    console_log(
+        &app,
+        "info",
+        "llm",
+        format!("[start_chat] {} spawning stream_chat task", run_id_clone),
+    );
     tokio::spawn(async move {
+        console_log(
+            &app_clone,
+            "info",
+            "llm",
+            format!("[start_chat] {} task entered runtime", run_id_clone),
+        );
         let result = stream_chat(app_clone.clone(), run_id_clone.clone(), config, messages, cancel).await;
         if let Err(e) = result {
             eprintln!("[start_chat] error: {}", e);
@@ -95,13 +107,19 @@ pub async fn start_chat(
                 &app_clone,
                 "info",
                 "llm",
-                format!("[start_chat] {} completed", run_id_clone),
+                format!("[start_chat] {} completed OK", run_id_clone),
             );
         }
         // 清理 run map
         let state: tauri::State<RunMap> = app_clone.state();
         let mut map = state.lock().await;
         map.remove(&run_id_clone);
+        console_log(
+            &app_clone,
+            "info",
+            "llm",
+            format!("[start_chat] {} run map cleaned", run_id_clone),
+        );
     });
 
     Ok(run_id)

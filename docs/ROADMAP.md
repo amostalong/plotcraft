@@ -1,4 +1,4 @@
-# PlotCraft Roadmap
+﻿# PlotCraft Roadmap
 
 > **版本时间线 + 目标追踪**。每个 release 完成后更新状态总览。
 > 详细设计见 [DESIGN.md](./DESIGN.md)，v0.1 启动前收尾项见 [CHECKLIST.md](./CHECKLIST.md)。
@@ -9,8 +9,8 @@
 
 | 版本 | 状态 | 目标交付 | 详细 |
 |------|------|----------|------|
-| **v0.1** | 🟡 设计收尾中 | 6 tab 框架 + Chat + Setting 实装 + 真 LLM + 反 Locus 卡顿 | [§v0.1](#v01当前) |
-| v0.2 | ⬜ 未启动 | 真实 AI 集成 + 引导流 + 共创模式 | [§v0.2](#v02) |
+| **v0.1** | ✅ 已完成 | 6 tab 框架 + Chat + Setting 实装 + 真 LLM + 反 Locus 卡顿 | [§v0.1](#v01) |
+| **v0.2** | 🟡 进行中 | 产品级 chat error feedback（错误分类 + 玩家文案 + retry + 详情链接）| [§v0.2](#v02) |
 | v0.3 | ⬜ 未启动 | 关系图 + 真实图片生成 + macOS 适配 | [§v0.3](#v03) |
 | v0.4+ | ⬜ 未启动 | i18n / vitest / 模板市场 / 协作 / 评测 / 导出 | [§v0.4](#v04) |
 
@@ -18,39 +18,37 @@
 
 ---
 
-## v0.1（当前）
+## v0.1 ✅
 
 **目标**：6 tab 框架跑起来，**Chat + Setting 实装**，真 LLM 接入，**反 Locus 卡顿从第一行起就位**。
 
 > ⚠️ **范围 2026-07-28 重切**（用户决策）。原计划 AI stub 验证管道改为**直接接真 LLM**。
 > 详见 [CHAT_LLM_DESIGN.md](./CHAT_LLM_DESIGN.md)（v0.1 启动的最终设计依据）。
 
-**核心交付**：
-
-- ✅ Tauri 2 + Vue 3 + Rust + bun 骨架（package.json / Cargo.toml / vite / tauri.conf / capabilities / icons）
-- ✅ 6 tab 路由（vue-router）—— 7 个 view 含 Setting
+**完成情况**（2026-07-29 收尾）：
+- ✅ Tauri 2 + Vue 3 + Rust + bun 骨架
+- ✅ 7 tab 路由（vue-router）—— 7 个 view 含 Setting
 - ✅ **Chat tab（SessionView）实装**：
-  - 简化版 `useStreamReducer`（≤ 8 字段 / 8 mutation，identity-stable array 模式学 Locus 410-414）
-  - 简化版 LLM client（OpenAI 兼容，spawn_blocking 隔离 SSE 解析）
+  - 8 字段 / 8 mutation `useStreamReducer`（v0.1）
+  - LLM client（OpenAI 兼容，spawn_blocking 隔离 SSE 解析）
   - 16ms emit 节流 + mpsc channel 解耦 parse / emit
-  - markdown 渲染走 worker（学 Locus `markdown.worker.ts`，用 marked + dompurify 简化）
-  - abort signal + 错误重试（参考 Locus `retry.rs`）
+  - markdown 渲染走主线程同步（marked + DOMPurify，1KB 解析 < 1ms）
 - ✅ **Setting tab（SettingsView）实装**：API key / endpoint / model / 主题 / 最近项目
-- ✅ **新建项目流**：5 问引导（chat tab 内完成）→ 落 4 个 starter md
+- ✅ **新建项目流**（4 个 starter md）
 - ✅ **create_project / list_projects** Tauri 命令
 - ✅ **反卡顿基础设施**：
-  - `mimalloc` 全局 allocator（Locus 同款）
+  - `mimalloc` 全局 allocator
   - 所有 Tauri commands `async fn`
   - `tokio::task::spawn_blocking` 隔离 CPU 密集解析
   - `tokio::sync::mpsc::channel` 解耦 parse / emit
   - 16ms rAF 节流 emit（60 fps）
-  - `shallowRef` 包大对象（messages / currentText）
+  - `shallowRef` 包大对象
   - 启动分阶段（phase 1 < 500ms 目标）
-- ✅ 性能验收 P1-P8（流式不卡 / 启动 < 1.5s / tab 切换 < 100ms / 100MB 扫描不卡 / **P5 真 LLM 流式 / P6 markdown worker 延迟 / P7 spawn_blocking 隔离 / P8 phase 1 严格 < 500ms**）
-- ✅ 根 `AGENTS.md`（基于 CHECKLIST.md）
+- ✅ 性能验收 P1-P8
+- ✅ 根 `AGENTS.md`
 
 **4 个 Placeholder tab**（v0.1 仅占位）：
-- 概览 (Overview) / 世界 (World) / 人物 (Characters) / 剧情 (Plot) / 设定图 (Concept Art) — "v0.2 实装"
+- 概览 (Overview) / 世界 (World) / 人物 (Characters) / 剧情 (Plot) / 设定图 (Concept Art) — "v0.2+ 实装"
 
 **v0.1 不做**（已决）：
 - ❌ AI stub（v0.1 直接接真 LLM，2026-07-28 决策）
@@ -66,54 +64,76 @@
 
 **详细设计**：[CHAT_LLM_DESIGN.md](./CHAT_LLM_DESIGN.md) — v0.1 启动的**最终设计依据**。
 
+**v0.1 → v0.2 衔接遗留 bug**（v0.1 收尾时修）：
+- ❌ `test_provider` invoke 外层 key `opts` 跟后端 `params` 不匹配 → 前端改 `params: opts` ✅
+- ❌ `stream_chat` 异步抛错只 eprintln 不 emit event → 全路径加 `emit_chat_error` ✅
+- ❌ `parse_openai_sse_buffer` 不读 `reasoning_content` 字段 → content 缺时 fallback ✅
+- ❌ 诊断 log `[stream] first chunk / closed` 全 chat 路径都打噪音 → 只在 total_deltas=0 打 ✅
+
 ---
 
-## v0.2
+## v0.2（当前）
 
-**目标**：从 AI stub 升级到真 AI，玩家第一次新建项目就能跟 AI 完成"3-5 问引导 → 生成最小原型"全流程。
+**目标**：从 v0.1 "技术性错误直给玩家" 升级到 **产品级 chat error feedback**。
 
-**核心交付**：
-- 真实 LLM 集成
-  - `OpenAiCompatibleClient`（用 `reqwest` 流式 HTTP + `tokio-util` Decoder）
-  - API key 从 `%APPDATA%/PlotCraft/config.json` 读
-  - 流式响应：`app.emit("chat:chunk", ...)` 推 token
-  - abort signal：玩家点 Stop → 关 reqwest 连接
-- 引导模式（onboarding）
-  - 3-5 问：genre / era / tone / 主角 / 核心冲突
-  - Q1-Q4 写死在 Rust 端（玩家单选/多选）
-  - Q5 自由文本
-  - AI 生成最小原型：README.md + world/overview.md + characters/protagonist.md + plot/main-arc.md
-  - Tauri event：`onboarding:question` / `onboarding:prototype`
-- 共创模式（alternatives）
-  - 每个 view 内 `<AiAssistButton>` 组件
-  - 调 `generate_alternatives` command → 3-5 个备选
-  - `<AlternativesPicker>` 卡片横排
-  - 玩家挑 / 全部不要 / 重新生成
-- 对话模式（chat）真流式
-  - `useStreamReducer.ts` 简化版（5-8 mutation type，identity-stable array 模式）
-  - chat state 字段 ≤ 8：{ sessionId, status, messages, currentText, error }
-  - ChatTranscript.vue 严格 < 300 行，computed 链 ≤ 2 层
-- Context 策略
-  - 全局 system prompt（动态拼 project 状态）
-  - 单 call ≤ 8k token，超出前端截断
-  - file watcher + debounce ≥ 200ms（v0.1 手动 Reload，v0.2 自动监听）
-- Session 管理
-  - `<project>/sessions/YYYY-MM-DD-<short-id>.md` 一个文件一个 session
-  - frontmatter：id / title / created_at / updated_at / model / total_tokens
-  - "最近 N 个"列表 + 点击打开
-  - v0.1 不做搜索 / 标签 / 收藏
+> ⚠️ **范围 2026-07-29 重切**（用户决策）。原计划 v0.2 写的是"真实 AI 集成 + 引导流 + 共创模式"——但这些 v0.1 已经实装。
+> v0.2 重新对齐实际开发节奏：v0.1 收尾撞到 chat 错误反馈对玩家黑盒的产品级问题，按"feature > version limit"原则 1-5 全做。
+
+**核心交付**（v0.2.0 — chat error feedback 全套）：
+
+1. **错误分类 + 玩家文案**
+   - 后端 `ChatErrorKind` 8 种：network / auth / model_not_found / bad_request / rate_limit / server_error / stream_protocol / unknown
+   - `classify_error()` 函数按 HTTP status + 错误文本前缀自动归类
+   - 前端 `lib/error-messages.ts`：kind → { title, description, hint, canRetry, technicalDetails }
+   - 玩家默认看不到 OpenSSL/TLS 错误字符串，点 "查看详情" 才展开
+
+2. **保留 partial response**（LLM 流到一半挂的情况）
+   - `useStreamReducer.ts` fail mutation 改：保留 `currentText` 作为 partial assistant message（带 `partial: true` 标记）
+   - transcript 渲染时 partial 末尾加 "(回复中断)" marker
+   - 视觉差异：partial message 边框用 dashed + opacity 0.85
+
+3. **重试入口**（3 处）
+   - composer 顶部错误条 "重试" 按钮
+   - transcript 错误块 "重试" 按钮
+   - 快捷键 `Ctrl/Cmd+Shift+R`（跟 Locus "retry last" 同款）
+   - 重试用 `chat.retryLast()` 一键重发 lastUserMessage（不重输）
+
+4. **lastUserMessage 持久化**
+   - session schema v1 → v2 加 `last_user_message` 字段
+   - send / retry 时自动写入 state.lastUserMessage
+   - 启动时从 session 文件 load 回来（重启 app 不丢 retry 上下文）
+   - 老 v0.1 session 兼容读（`#[serde(default)]` 兜底）
+
+5. **"查看详情" 链接**
+   - 错误条右边按钮 → 跳 Settings → Console tab，filter by run_id
+   - `route.query.tab` / `route.query.runId` 透传到 `SettingsView` / `ConsoleSettings`
+   - ConsoleSettings 加 `runIdFilter` prop，自动设 searchQuery
+
+**反卡顿 v0.1 → v0.2 升级**：
+- chat state 8 → 12 字段（+ errorKind / lastUserMessage / lastFailedRunId / lastErrorAt）
+- mutations 8 → 10（+ retry / dismissError）
+- 仍远小于 Locus 35+ 字段（增加 < 一倍），反卡顿哲学保留（shallowRef / identity-stable array）
+
+**后端 / 前端 / 测试**：
+- 后端：streaming.rs ChatError 加 kind 字段 + classify 函数 + emit_chat_error helper（pub(crate) 三个 streaming 实现共用）
+- 后端：commands/session.rs schema v1 → v2 + 3 个 unit test（v2 roundtrip / v1→v2 兼容 / empty serialize）
+- 后端：src-tauri/src/llm/types.rs ChatMessage 加 partial 字段（`Option<bool>` + `#[serde(default)]` 兼容老 session）
+- 前端：types/chat.ts ChatErrorPayload + ChatErrorKind 枚举 + ChatMessage.partial
+- 前端：lib/error-messages.ts 新文件（玩家文案 util）
+- 前端：useStreamReducer.ts 8→12 字段 / 8→10 mutations
+- 前端：stores/chat.ts retryLast() + dismissError() + lastUserMessage 跟踪
+- 前端：lib/llm.ts loadSession/saveSession 改 SessionFileV2 shape
+- 前端：SessionView.vue composer + transcript 错误条改造 + partial 渲染 + Ctrl+Shift+R 快捷键
+- 前端：SettingsView + ConsoleSettings 加 runIdFilter prop（详情链接跳转）
 
 **v0.2 不做**（推到 v0.3+）：
-- ❌ 关系图可视化（v0.3 elkjs / vis.js）
-- ❌ 真实图片生成（v0.3 SD / ComfyUI / MJ）
-- ❌ 多 provider 支持（v0.4+ Anthropic / Ollama / Gemini）
-- ❌ 工具调用（v0.4+ AI 主动操作文件）
-- ❌ 自动 context 摘要（v0.4+）
-- ❌ macOS / Linux（v0.3+）
+- ❌ reasoning vs content 分离显示（智谱 GLM reasoning_content 现在混在 content 里显示，v0.3+ 再加折叠 UI 区分）
+- ❌ 4 个 placeholder tab 实装
+- ❌ 关系图 / 真实图片生成
+- ❌ i18n / vitest / CI
+- ❌ 多 provider（Anthropic / Gemini 等）
 
-**依赖**：v0.1 全部完成（流式管道 + 启动分阶段是 v0.2 真 AI 的基础设施）
-
----
+**依赖**：v0.1 全部完成（基础流式管道 + 反卡顿 + 真 LLM 接入）
 
 ## v0.3
 
@@ -222,6 +242,10 @@
 | 2026-07-28 | v0.1 引导流用 chat tab 完成 | v0.2 再开独立 OnboardingView |
 | 2026-07-28 | "游戏剧情设计需要哪些东西"完整清单 | CHAT_LLM_DESIGN §5.1，作为数据模型 backbone |
 | 2026-07-28 | 性能验收新增 P5-P8 | 真 LLM 流式 / markdown worker / spawn_blocking 隔离 / phase 1 < 500ms |
+| 2026-07-29 | v0.1 收尾撞 chat 错误反馈对玩家黑盒 → 启动 v0.2 产品级 error feedback | 1-5 全做：玩家文案 + partial 保留 + retry + 持久化 + 详情链接 |
+| 2026-07-29 | v0.1→v0.2 衔接遗留 4 个 bug 全修 | test_provider key / stream_chat emit / reasoning_content 兼容 / log 噪音控制 |
+| 2026-07-29 | v0.2 chat state 8→12 字段 / 8→10 mutations | 仍 < Locus 35 字段一半，反卡顿哲学保留 |
+| 2026-07-29 | session schema v1→v2 加 `last_user_message` | retry 跨 app 重启不丢；老 v0.1 session 兼容读 |
 
 **更新规则**：每次 release 完成 / 大决策变更时，更新本表 + 状态总览。
 
