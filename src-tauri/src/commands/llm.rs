@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::console::console_log;
 use crate::error::{AppError, AppResult};
 use crate::llm::config::{ApiFormat, EffortLevel, LlmConfig};
 use crate::llm::streaming::stream_chat;
@@ -44,9 +45,9 @@ pub async fn start_chat(
     let mut config = LlmConfig::from_app_config(&app)?;
     // API key 空 + 非本地端点 → 拒
     if config.api_key.is_empty() && !config.endpoint.contains("localhost") {
-        return Err(AppError::Config(
-            "API key is empty (and endpoint is not localhost)".to_string(),
-        ));
+        let err = AppError::Config("API key is empty (and endpoint is not localhost)".to_string());
+        console_log(&app, "error", "llm", &err.to_string());
+        return Err(err);
     }
 
     // 套用 per-run 选项
@@ -62,7 +63,9 @@ pub async fn start_chat(
 
     // model_override 空 + 主 model 空 → 没 model 不能跑
     if config.effective_model().is_empty() {
-        return Err(AppError::Config("model is empty".to_string()));
+        let err = AppError::Config("model is empty".to_string());
+        console_log(&app, "error", "llm", &err.to_string());
+        return Err(err);
     }
 
     let run_id = Uuid::new_v4().to_string();
@@ -72,12 +75,28 @@ pub async fn start_chat(
         map.insert(run_id.clone(), cancel.clone());
     }
 
+    // console_log 要在 config move 之前拿 model id
+    console_log(
+        &app,
+        "info",
+        "llm",
+        format!("[start_chat] {} started (model={})", run_id, config.effective_model()),
+    );
+
     let app_clone = app.clone();
     let run_id_clone = run_id.clone();
     tokio::spawn(async move {
         let result = stream_chat(app_clone.clone(), run_id_clone.clone(), config, messages, cancel).await;
         if let Err(e) = result {
             eprintln!("[start_chat] error: {}", e);
+            console_log(&app_clone, "error", "llm", format!("[start_chat] {}: {}", run_id_clone, e));
+        } else {
+            console_log(
+                &app_clone,
+                "info",
+                "llm",
+                format!("[start_chat] {} completed", run_id_clone),
+            );
         }
         // 清理 run map
         let state: tauri::State<RunMap> = app_clone.state();

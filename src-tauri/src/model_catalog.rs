@@ -26,6 +26,8 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::console;
+
 // === Embedded snapshot + config constants ===
 
 const EMBEDDED_SNAPSHOT_GZ: &[u8] = include_bytes!("../assets/model_catalog.json.gz");
@@ -522,8 +524,20 @@ pub fn spawn_background_refresh(app: AppHandle) {
 
         if let Err(e) = refresh_catalog_inner(&app).await {
             eprintln!("[model_catalog] bg refresh: failed (using local fallback): {e}");
+            console::console_log(
+                &app,
+                "warn",
+                "model_catalog",
+                format!("background refresh failed: {e}"),
+            );
         } else {
             eprintln!("[model_catalog] bg refresh: ok");
+            console::console_log(
+                &app,
+                "info",
+                "model_catalog",
+                "background refresh ok",
+            );
         }
     });
 }

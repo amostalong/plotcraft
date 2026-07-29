@@ -7,11 +7,12 @@
 //   （Locus 那边每改一字段就 emit 自己存；PlotCraft v0.1 简化成"编辑-保存"模型）
 
 import { onMounted, ref, computed } from 'vue'
-import { CheckCircle2, AlertCircle, Save, RotateCcw, Plug, SlidersHorizontal } from 'lucide-vue-next'
+import { CheckCircle2, AlertCircle, Save, RotateCcw, Plug, SlidersHorizontal, Terminal } from 'lucide-vue-next'
 
 import { useSettingsStore } from '@/stores/settings'
 import ProvidersPanel from '@/components/settings/ProvidersPanel.vue'
 import GeneralSettingsPanel from '@/components/settings/GeneralSettings.vue'
+import ConsoleSettings from '@/components/settings/ConsoleSettings.vue'
 
 const settings = useSettingsStore()
 const justSaved = ref(false)
@@ -20,9 +21,9 @@ onMounted(async () => {
   await settings.init()
 })
 
-// activeCategory: 'api' | 'general' —— v0.1.3+ 删了 'models' category
+// activeCategory: 'api' | 'general' | 'console' —— v0.1.5+ 加 'console'
 // （active model 切换完全在 chat tab model selector，settings 只管 provider 库）
-const activeCategory = ref<'api' | 'general'>('api')
+const activeCategory = ref<'api' | 'general' | 'console'>('api')
 
 async function onSave() {
   try {
@@ -67,6 +68,14 @@ function onReset() {
           <SlidersHorizontal :size="14" />
           <span>UI / Projects</span>
         </button>
+        <button
+          class="sidebar-item"
+          :class="{ active: activeCategory === 'console' }"
+          @click="activeCategory = 'console'"
+        >
+          <Terminal :size="14" />
+          <span>控制台</span>
+        </button>
       </div>
     </aside>
 
@@ -79,11 +88,12 @@ function onReset() {
           v-model:custom-providers="settings.config.customProviders"
         />
         <GeneralSettingsPanel
-          v-else
+          v-else-if="activeCategory === 'general'"
           key="general"
           :ui="settings.config.ui"
           :recent-projects="settings.config.recentProjects"
         />
+        <ConsoleSettings v-else-if="activeCategory === 'console'" key="console" />
       </Transition>
 
       <!-- 底部 action bar（保存 / 重置 / 状态） -->

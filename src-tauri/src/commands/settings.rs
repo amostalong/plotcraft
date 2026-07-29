@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use tokio::fs;
 
+use crate::console::console_log;
 use crate::error::{AppError, AppResult};
 use crate::llm::config::AppConfig;
 
@@ -31,7 +32,16 @@ pub async fn save_config(app: tauri::AppHandle, config: AppConfig) -> AppResult<
         fs::create_dir_all(parent).await?;
     }
     let json = serde_json::to_string_pretty(&config)
-        .map_err(|e| AppError::Config(format!("serialize: {}", e)))?;
-    fs::write(&path, json).await?;
+        .map_err(|e| {
+            let err = AppError::Config(format!("serialize: {}", e));
+            console_log(&app, "error", "settings", err.to_string());
+            err
+        })?;
+    fs::write(&path, json).await.map_err(|e| {
+        let err = AppError::Config(format!("write {}: {}", path.display(), e));
+        console_log(&app, "error", "settings", err.to_string());
+        err
+    })?;
+    console_log(&app, "info", "settings", format!("config saved to {}", path.display()));
     Ok(())
 }

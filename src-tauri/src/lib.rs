@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 mod commands;
+mod console;
 mod error;
 mod llm;
 mod model_catalog;
@@ -31,6 +32,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(run_map)
+        .manage(console::ConsoleState::new())
         .setup(|app| {
             // 启动后 5s 在后台拉一次 model catalog（cache 超 24h 才真拉）——
             // 失败不致命，fallback freshest local data
@@ -49,6 +51,8 @@ pub fn run() {
             commands::locus_import::import_from_locus,
             model_catalog::get_model_catalog,
             model_catalog::refresh_model_catalog,
+            console::get_console_entries,
+            console::clear_console,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
