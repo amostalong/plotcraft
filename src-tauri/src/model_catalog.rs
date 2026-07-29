@@ -539,28 +539,6 @@ pub async fn get_model_catalog(app: AppHandle) -> Result<ResolvedCatalog, String
         .await
         .map_err(|e| format!("get_model_catalog: {e}"))?;
     let resolved = get_resolved_catalog_inner(&state.catalog);
-    let total_models: usize = state
-        .catalog
-        .providers
-        .values()
-        .map(|p| p.models.len())
-        .sum();
-    eprintln!(
-        "[DEBUG get_model_catalog] state has {} providers / {} models, resolved {} providers (source={})",
-        state.catalog.providers.len(),
-        total_models,
-        resolved.providers.len(),
-        state.source,
-    );
-    if let Some(c) = load_cached_catalog(&app) {
-        eprintln!(
-            "[DEBUG] cache file has {} providers / fetched_at={}",
-            c.providers.len(),
-            c.fetched_at
-        );
-    } else {
-        eprintln!("[DEBUG] no cache file at {:?}", cache_path(&app).ok());
-    }
     Ok(resolved)
 }
 
