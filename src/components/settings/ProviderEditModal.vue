@@ -34,6 +34,7 @@ import { API_FORMAT_LABELS, DEFAULT_API_FORMAT, DEFAULT_ENDPOINTS } from '@/lib/
 import { findModel, getDefaultEffort, type BuiltinModel } from '@/lib/modelCatalog'
 import { testProvider, type TestProviderResult } from '@/lib/llm'
 import ProviderCatalogStep from './ProviderCatalogStep.vue'
+import ModelLibraryPanel from './ModelLibraryPanel.vue'
 
 const props = defineProps<{
   /** 当前编辑的 provider（null = 关闭）*/
@@ -247,8 +248,8 @@ function onSave() {
 
 // === v0.1.3+ models 列表增删 ===
 
-// v0.1.4+ 「从模型库添加」整体搬到 pick stage（ProviderCatalogStep）—— 这里只留
-// 「手动添加 model」inline form（catalog 选完后再补 model 用）
+// v0.1.4+ 「从模型库添加」整体搬到 pick stage（ProviderCatalogStep） + 内嵌的
+// ModelLibraryPanel —— 这里只留「手动添加 model」inline form
 
 /** 「手动添加 model」open/close（config stage 内部，给已 catalog 选完的 provider 再加 model） */
 function openManualForm() {
@@ -263,6 +264,21 @@ function closeManualForm() {
   manualName.value = ''
   manualError.value = null
 }
+
+/** v0.1.4+ 从 ModelLibraryPanel 选一个 model 加进 draft
+ *  - 避免重复（id 已存在直接 no-op）
+ *  - 第一个 model 自动设成 default
+ */
+function addFromLibrary(m: { id: string; name: string }) {
+  if (draftModels.value.some((x) => x.id === m.id)) return
+  draftModels.value = [...draftModels.value, { id: m.id, name: m.name || m.id }]
+  if (!draftDefaultModel.value.trim()) {
+    draftDefaultModel.value = m.id
+  }
+}
+
+/** ModelLibraryPanel 用的 existing model ids（要过滤已加的） */
+const existingModelIds = computed(() => draftModels.value.map((m) => m.id))
 
 function submitManualAdd() {
   const id = manualId.value.trim()
@@ -585,6 +601,13 @@ function onKeydown(e: KeyboardEvent) {
                 </option>
               </select>
             </div>
+
+            <!-- v0.1.4+ 模型库面板（仿 Locus 同款 —— 可折叠 + 搜索 + provider 分组） -->
+            <ModelLibraryPanel
+              :existing-model-ids="existingModelIds"
+              :disabled="saving"
+              @add-model="addFromLibrary"
+            />
           </section>
         </div>
 
