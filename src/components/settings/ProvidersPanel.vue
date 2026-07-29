@@ -27,7 +27,7 @@
 // v0.1+ "Import from Locus"：跨 app 读 Locus config.json + custom_providers.json，
 // 玩家挑要导入哪些 provider（API key 不带 —— Locus 存 keychain）。
 
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   Plus,
   Trash2,
@@ -37,6 +37,7 @@ import {
   Pencil,
   X,
   Download,
+  AlertTriangle,
 } from 'lucide-vue-next'
 import type { CustomProvider, ApiFormat } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
@@ -66,6 +67,14 @@ const customProviders = defineModel<CustomProvider[]>('custom-providers', { requ
 // === Add / Edit modal (v0.1.2+ 用 ProviderEditModal 替换原 inline form) ===
 const editingProvider = ref<CustomProvider | null>(null)
 const isAdding = ref(false)
+
+// === Delete confirm dialog (v0.1.3+ 替代 window.confirm —— 见 removeProvider) ===
+const confirmingDeleteId = ref<string | null>(null)
+const confirmingDeleteTarget = computed(() => {
+  const id = confirmingDeleteId.value
+  if (!id) return null
+  return customProviders.value.find((p) => p.id === id) ?? null
+})
 
 const existingProviderIds = computed(() => customProviders.value.map((p) => p.id))
 
@@ -109,8 +118,20 @@ function onModalSave(newProvider: CustomProvider) {
 }
 
 function removeProvider(id: string) {
-  if (!window.confirm(`删除 provider "${id}"？此操作不可撤销。`)) return
+  // v0.1.3+ 不能用 window.confirm —— Tauri 2 + WebView2 在 Windows 上 confirm 弹窗返回值
+  // 不可靠（弹窗能显示但 cancel 仍当 OK 走）。改用组件内 modal dialog（confirmingDeleteId）。
+  confirmingDeleteId.value = id
+}
+
+function cancelDelete() {
+  confirmingDeleteId.value = null
+}
+
+function confirmDelete() {
+  const id = confirmingDeleteId.value
+  if (!id) return
   customProviders.value = customProviders.value.filter((p) => p.id !== id)
+  confirmingDeleteId.value = null
 }
 
 function useProvider(p: CustomProvider) {
@@ -210,6 +231,16 @@ function applyImport() {
 
   closeImportModal()
 }
+
+// === Delete confirm dialog 键盘交互（Esc 取消） ===
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && confirmingDeleteId.value) {
+    cancelDelete()
+  }
+}
+
+onMounted(() => document.addEventListener('keydown', onKeydown))
+onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
@@ -438,6 +469,44 @@ function applyImport() {
           </div>
           <div class="modal-actions" v-else>
             <button @click="closeImportModal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- v0.1.3+ Delete confirm dialog (替代 window.confirm)
+         Teleport 到 body 避免被父级 overflow:hidden 截断；点击 overlay 关闭 = 取消 -->
+    <Teleport to="body">
+      <div
+        v-if="confirmingDeleteTarget"
+        class="confirm-overlay"
+        @mousedown.self="cancelDelete"
+      >
+        <div class="confirm-modal" role="alertdialog" aria-modal="true">
+          <div class="confirm-header">
+            <AlertTriangle :size="18" />
+            <span class="confirm-title">删除 provider？</span>
+          </div>
+          <div class="confirm-body">
+            <p>
+              确定删除 provider
+              <code class="confirm-target-id">{{ confirmingDeleteTarget.id }}</code>
+              <span v-if="confirmingDeleteTarget.name" class="confirm-target-name">
+                ({{ confirmingDeleteTarget.name }})
+              </span>
+              ？此操作不可撤销。
+            </p>
+            <p class="confirm-hint">
+              不会影响 config.json 里其他 provider 或 chat 历史。
+            </p>
+          </div>
+          <div class="confirm-actions">
+            <button type="button" class="confirm-cancel" @click="cancelDelete">
+              取消
+            </button>
+            <button type="button" class="confirm-delete" @click="confirmDelete" autofocus>
+              删除
+            </button>
           </div>
         </div>
       </div>
@@ -959,5 +1028,110 @@ label input:focus {
 .modal-actions button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* === Delete confirm dialog (v0.1.3+ 替代 window.confirm) === */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000; /* 高于 ProviderEditModal (z-index 100) */
+  animation: confirm-fade 0.12s ease-out;
+}
+.confirm-modal {
+  width: min(420px, calc(100vw - 32px));
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  animation: confirm-rise 0.15s ease-out;
+}
+.confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--error, #e53e3e);
+  margin-bottom: 12px;
+}
+.confirm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.confirm-body {
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.confirm-body p {
+  margin: 0 0 6px 0;
+}
+.confirm-target-id {
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.confirm-target-name {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-left: 2px;
+}
+.confirm-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.confirm-cancel,
+.confirm-delete {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+.confirm-cancel {
+  background: var(--bg);
+  color: var(--text);
+}
+.confirm-cancel:hover {
+  background: var(--hover);
+}
+.confirm-delete {
+  background: var(--error, #e53e3e);
+  border-color: var(--error, #e53e3e);
+  color: #fff;
+  font-weight: 500;
+}
+.confirm-delete:hover {
+  opacity: 0.85;
+}
+.confirm-delete:focus-visible,
+.confirm-cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@keyframes confirm-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes confirm-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 </style>
