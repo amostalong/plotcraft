@@ -119,11 +119,18 @@ async function send() {
   const text = input.value.trim()
   if (!text || isStreaming.value) return
   if (!chat.selectedModel.trim()) {
-    // 没 model 就不发（前端友好提示）
+    // v0.1.5+ 之前 send 静默 return（user 困惑"为什么没响应"）。现在 inline 提示
+    composerError.value = '⚠ 没选 model —— 点左下 model selector 选一个（先在 Settings → Providers 库加 model）'
     return
   }
+  composerError.value = null
   input.value = ''
-  await chat.sendMessage(text)
+  try {
+    await chat.sendMessage(text)
+  } catch (e) {
+    // v0.1.5+ 之前 send 失败只 console.error，user 看不到。现在 inline 显示
+    composerError.value = e instanceof Error ? e.message : String(e)
+  }
 }
 
 async function stop() {
@@ -135,6 +142,9 @@ const newProjectParent = ref<string | null>(null)
 const openProjectScan = ref<{ parentDir: string; entries: ProjectMeta[] } | null>(null)
 const creating = ref(false)
 const createError = ref<string | null>(null)
+
+// v0.1.5+ composer 错误提示（替代 send 静默 return + console.error）
+const composerError = ref<string | null>(null)
 
 async function onCreate() {
   createError.value = null
@@ -254,13 +264,23 @@ watch(
     </div>
 
     <form class="composer" @submit.prevent="send">
+      <!-- v0.1.5+ composer 顶部 inline 错误（send 失败 / model 空 提示） -->
+      <div v-if="composerError" class="composer-error">
+        <AlertCircle :size="12" />
+        <span>{{ composerError }}</span>
+        <button type="button" class="dismiss-btn" @click="composerError = null" title="关闭">
+          <X :size="11" />
+        </button>
+      </div>
+
       <!-- v0.1+ composer 布局（跟 Locus `ChatComposer` 同位）：
            - 上：textarea（满宽）
            - 下：footer 行（ModelEffortSelector 左 + 弹性空间 + 发送按钮 右） -->
       <textarea
         v-model="input"
         class="composer-input"
-        placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
+        :placeholder="chat.selectedModel.trim() ? '输入消息... (Enter 发送, Shift+Enter 换行)' : '⚠ 选个 model 才能发消息（点左下 model selector）'"
+        :class="{ 'no-model': !chat.selectedModel.trim() }"
         :disabled="isStreaming"
         @keydown.enter.exact.prevent="send"
       />
@@ -569,6 +589,55 @@ watch(
 .composer-input:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+/* v0.1.5+ 没选 model 时 input 红色边框 + placeholder italic 灰字 */
+.composer-input.no-model {
+  border-color: var(--error, #e53e3e);
+  border-style: dashed;
+}
+.composer-input.no-model::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* v0.1.5+ composer 顶部 inline 错误条 */
+.composer-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: rgba(232, 90, 90, 0.12);
+  border: 1px solid var(--error, #e53e3e);
+  color: var(--error, #e53e3e);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.composer-error svg {
+  flex-shrink: 0;
+}
+.composer-error span {
+  flex: 1;
+  min-width: 0;
+}
+.composer-error .dismiss-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  color: inherit;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.composer-error .dismiss-btn:hover {
+  opacity: 1;
+  background: rgba(232, 90, 90, 0.15);
 }
 .composer-footer {
   display: flex;
