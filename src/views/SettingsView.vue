@@ -7,11 +7,10 @@
 //   （Locus 那边每改一字段就 emit 自己存；PlotCraft v0.1 简化成"编辑-保存"模型）
 
 import { onMounted, ref, computed } from 'vue'
-import { CheckCircle2, AlertCircle, Save, RotateCcw, Plug, Cpu, SlidersHorizontal } from 'lucide-vue-next'
+import { CheckCircle2, AlertCircle, Save, RotateCcw, Plug, SlidersHorizontal } from 'lucide-vue-next'
 
 import { useSettingsStore } from '@/stores/settings'
 import ProvidersPanel from '@/components/settings/ProvidersPanel.vue'
-import ModelDefaultsPanel from '@/components/settings/ModelDefaults.vue'
 import GeneralSettingsPanel from '@/components/settings/GeneralSettings.vue'
 
 const settings = useSettingsStore()
@@ -21,8 +20,9 @@ onMounted(async () => {
   await settings.init()
 })
 
-// activeCategory: 'api' | 'models' | 'general' —— 跟 Locus 同名风格
-const activeCategory = ref<'api' | 'models' | 'general'>('api')
+// activeCategory: 'api' | 'general' —— v0.1.3+ 删了 'models' category
+// （active model 切换完全在 chat tab model selector，settings 只管 provider 库）
+const activeCategory = ref<'api' | 'general'>('api')
 
 async function onSave() {
   try {
@@ -56,14 +56,6 @@ function onReset() {
           <Plug :size="14" />
           <span>Providers</span>
         </button>
-        <button
-          class="sidebar-item"
-          :class="{ active: activeCategory === 'models' }"
-          @click="activeCategory = 'models'"
-        >
-          <Cpu :size="14" />
-          <span>Model Defaults</span>
-        </button>
 
         <!-- General group -->
         <div class="sidebar-group-label">General</div>
@@ -88,12 +80,6 @@ function onReset() {
           v-model:api-key="settings.config.apiKey"
           v-model:api-format="settings.config.apiFormat"
           v-model:custom-providers="settings.config.customProviders"
-        />
-        <ModelDefaultsPanel
-          v-else-if="activeCategory === 'models'"
-          key="models"
-          v-model:model="settings.config.model"
-          v-model:api-format="settings.config.apiFormat"
         />
         <GeneralSettingsPanel
           v-else

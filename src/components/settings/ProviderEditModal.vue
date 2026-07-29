@@ -30,7 +30,7 @@ import {
 
 import type { CustomProvider, ApiFormat, ProviderModel } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
-import { BUILTIN_MODELS, findModel, getDefaultEffort, getSupportedEfforts } from '@/lib/modelCatalog'
+import { BUILTIN_MODELS, findModel, getDefaultEffort } from '@/lib/modelCatalog'
 import { testProvider, type TestProviderResult } from '@/lib/llm'
 
 const props = defineProps<{

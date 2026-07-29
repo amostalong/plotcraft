@@ -4,45 +4,39 @@
 // 视觉 + 交互镜像 Locus `ModelEffortSelector.vue`（AGENTS.md 硬规则 #1：结构对齐，代码自写）：
 // - 单 trigger button：model 名 + effort 标签（带颜色）+ chevron ▾
 // - 点开 → 双 panel 下拉：
-//   - 左 panel：models 按 provider 分组（OpenAI / Anthropic 段头）
+//   - 左 panel：models 按 custom provider 分段（每个 provider 一个段头，Locus DEEPSEEK / WINKY-XXX 风格）
 //   - 右 panel：effort 列表（None / Low / Med / High / XHigh / Max）
 // - 位置：trigger 上方弹出（bottom: calc(100% + 6px)）
 // - 交互：click outside 关闭 + transition（opacity + translateY）
 // - 颜色：effort 等级映射到 Locus 同款（low=绿 / med=黄 / high/xhigh/max=橙）
 //
-// v0.1+ 行为：
-// - 没 model 时 trigger 显示 "Model" placeholder
+// v0.1+ 行为（不再自动展示 BUILTIN_MODELS）：
+// - 数据源：customProviderShortcuts（玩家在 Settings 主动 add 的 provider）
+// - 0 个 provider → trigger "Select model" placeholder + dropdown 显示空状态提示
 // - streaming 时 disabled（避免 race）
-// - 不在 builtin 列表的 model（玩家手填）也允许 —— 显示原 id 作 trigger label
+// - 玩家手填 / stale model id 仍允许：cleanupModelId 当 trigger label
 // - fast mode 跳过（PlotCraft v0.1 不接 codex / subagent）
 
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import {
-  groupModelsForSelector,
   groupCustomProviderShortcuts,
-  findModel,
-  getSupportedEfforts,
-  type BuiltinModel,
   type ModelSelectorGroup,
 } from '@/lib/modelCatalog'
 import { EFFORT_LABELS, type EffortLevel } from '@/lib/settings'
 
 const props = defineProps<{
-  /** builtin models（按 apiFormat 过滤后的子集） */
-  models: BuiltinModel[]
-  /** 当前选中的 model id（可能不在 models 列表里） */
+  /** 当前选中的 model id（可能不在任何 custom provider 的 defaultModel 里） */
   selectedId: string
   /** 当前 effort */
   effort: EffortLevel
-  /** 强制提供的 effort 列表（覆盖 model.supportedEfforts） */
-  efforts?: EffortLevel[]
-  /** 当前 model 是否支持 effort（false → 右 panel 隐藏） */
+  /** 当前 model 是否支持 effort（false → 右 panel 隐藏）
+   *  v0.1+ 玩家加的 custom model 不知道具体支持哪些 effort，best-effort 一律 true */
   effortSupported?: boolean
   /** 弹层对齐：start=左对齐, end=右对齐（默认） */
   align?: 'start' | 'end'
   disabled?: boolean
-  /** v0.1+ 玩家保存的 custom providers（仅 enabled 且有 defaultModel 的会显示在 Custom 段头下）
+  /** v0.1+ 玩家保存的 custom providers（仅 enabled 且有 defaultModel 的会显示）
    *  TS 端只给名字 + id + defaultModel（不传 apiKey / baseUrl，避免泄露） */
   customProviderShortcuts?: { id: string; name: string; defaultModel: string }[]
 }>()
@@ -55,49 +49,29 @@ const emit = defineEmits<{
 const open = ref(false)
 const selectorRef = ref<HTMLElement | null>(null)
 
-// === Locs of selected state ===
-const selectedModel = computed<BuiltinModel | null>(
-  () => findModel(props.selectedId) ?? null,
-)
-
 /** 当前选中的 custom provider shortcut（selectedId 匹配某个 custom provider 的 defaultModel） */
 const selectedCustomShortcut = computed(() => {
-  if (selectedModel.value) return null
+  if (!props.selectedId) return null
   if (!props.customProviderShortcuts) return null
-  return props.customProviderShortcuts.find(
-    (cp) => cp.defaultModel === props.selectedId,
-  ) ?? null
+  return (
+    props.customProviderShortcuts.find(
+      (cp) => cp.defaultModel === props.selectedId,
+    ) ?? null
+  )
 })
 
-/** trigger 按钮显示名（找不到 builtin → 简化原 id）
- *
- *  v0.1 处理逻辑（跟 Locus `optionDisplayName` 一致）：
- *  1. builtin 找到 → 用 `model.name`（例 "GPT-4o mini"）
- *  2. builtin 找不到但 id 含 `/`（OpenRouter / proxy 风格 `provider/model`）→ 取最后一段
- *     例 "openrouter/claude-sonnet-4.6" → "claude-sonnet-4.6"
- *  3. 完全自定义 → 原 id，超过 24 字符截断 + …（避免撑爆 trigger）
- *  4. 多个 builtin model 同名（不同 provider）→ 加 provider prefix
- */
+/** trigger 按钮显示名（custom provider → "provider / model"，stale id → 简化 + 截断） */
 const TRIGGER_MAX_LEN = 24
 const selectedDisplayName = computed(() => {
-  const m = selectedModel.value
-  if (m) {
-    // builtin 找到 + 无重名 → 用 friendly name
-    const duplicated = props.models.some(
-      (other) => other.id !== m.id && other.name === m.name,
-    )
-    if (!duplicated) return m.name
-    return `${providerLabel(m.provider)} / ${m.name}`
-  }
-  // builtin 找不到，但 selectedId 匹配某个 custom provider 的 defaultModel
-  // → 显示 provider 名前缀（"winky-claude / claude-sonnet-5-20250929"）
+  // 1. 匹配 custom provider 的 defaultModel → "<provider.name> / <cleaned id>"
+  //    例 "winky-claude / claude-sonnet-5-20250929"
   if (selectedCustomShortcut.value) {
     const cp = selectedCustomShortcut.value
     return `${cp.name} / ${cleanupModelId(cp.defaultModel)}`
   }
-  // builtin 找不到 + 不是 custom → 处理原 id
+  // 2. 完全自定义 / stale id（旧的 builtin gpt-4o-mini 等）→ 简化 + 截断
   const raw = props.selectedId
-  if (!raw) return 'Model'
+  if (!raw) return 'Select model'
   return cleanupModelId(raw)
 })
 
@@ -109,13 +83,15 @@ function cleanupModelId(id: string): string {
   return cleaned.slice(0, TRIGGER_MAX_LEN - 1) + '…'
 }
 
-/** 当前 model 支持的 effort 列表（按 EFFORT_ORDER 排序） */
-const levels = computed<EffortLevel[]>(() => {
-  if (props.efforts && props.efforts.length > 0) {
-    return props.efforts
-  }
-  return getSupportedEfforts(selectedModel.value ?? undefined)
-})
+/** 当前 model 支持的 effort 列表 —— v0.1+ 全部 6 个都展示（best-effort：后端对不支持的 model 静默 no-op） */
+const levels = computed<EffortLevel[]>(() => [
+  'none',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+])
 
 /** 当前选中的 effort 在 trigger 里的显示 label（CamelCase 跟 Locus 同款）
  *
@@ -128,12 +104,10 @@ const currentLevelLabel = computed<string | null>(() => {
   return EFFORT_LABELS[props.effort]
 })
 
-/** grouped models（左 panel）—— builtin + 每个 custom provider 各自一个段头 */
-const groupedModels = computed<ModelSelectorGroup[]>(() => {
-  const builtin = groupModelsForSelector(props.models)
-  const customs = groupCustomProviderShortcuts(props.customProviderShortcuts ?? [])
-  return [...builtin, ...customs]
-})
+/** grouped models（左 panel）—— 每个 custom provider 各自一个段头 */
+const groupedModels = computed<ModelSelectorGroup[]>(() =>
+  groupCustomProviderShortcuts(props.customProviderShortcuts ?? []),
+)
 
 /** trigger 整 title（hover tooltip） */
 const triggerTitle = computed(() => {
@@ -141,19 +115,6 @@ const triggerTitle = computed(() => {
   if (!props.effortSupported) return modelTitle
   return `${modelTitle} · ${EFFORT_LABELS[props.effort]}`
 })
-
-function providerLabel(provider: BuiltinModel['provider']): string {
-  switch (provider) {
-    case 'openai':
-      return 'OpenAI'
-    case 'anthropic':
-      return 'Anthropic'
-    case 'google':
-      return 'Google'
-    case 'custom':
-      return 'Custom'
-  }
-}
 
 /** effort 颜色（跟 Locus `levelColor` 一致） */
 function levelColor(level: EffortLevel): string {
@@ -203,7 +164,7 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   <div class="model-effort-selector" :class="{ open, 'align-end': align !== 'start' }" ref="selectorRef">
     <button
       class="model-effort-trigger"
-      :class="{ open, disabled }"
+      :class="{ open, disabled, empty: !selectedId }"
       type="button"
       :title="triggerTitle"
       :disabled="disabled"
@@ -231,9 +192,13 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
       >
         <div class="model-effort-model-panel">
           <template v-if="groupedModels.length === 0">
-            <div class="model-effort-empty">没有可用的 model —— 先在 Settings 填 API key + 选 provider</div>
+            <div class="model-effort-empty">
+              <p>未添加任何 provider</p>
+              <p class="model-effort-empty-hint">Settings → Providers 加一个</p>
+            </div>
           </template>
           <template
+            v-else
             v-for="(group, gi) in groupedModels"
             :key="group.key"
           >
@@ -245,47 +210,25 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
               {{ group.label }}
             </div>
 
-            <!-- builtin model 组：多个 model option -->
-            <template v-if="group.models">
-              <button
-                v-for="model in group.models"
-                :key="model.id"
-                type="button"
-                class="model-effort-option"
-                :class="{ active: model.id === selectedId }"
-                @click="selectModel(model.id)"
+            <!-- custom provider 段头：单 model option（用 provider.defaultModel 当 id） -->
+            <button
+              v-if="group.customProvider"
+              type="button"
+              class="model-effort-option"
+              :class="{ active: group.customProvider.defaultModel === selectedId }"
+              @click="selectModel(group.customProvider.defaultModel)"
+            >
+              <span class="model-effort-option-name">
+                {{ cleanupModelId(group.customProvider.defaultModel) }}
+              </span>
+              <span
+                v-if="group.customProvider.defaultModel === selectedId && currentLevelLabel"
+                class="model-effort-option-tag"
+                :style="{ color: levelColor(props.effort) }"
               >
-                <span class="model-effort-option-name">{{ model.name }}</span>
-                <span
-                  v-if="model.id === selectedId && currentLevelLabel"
-                  class="model-effort-option-tag"
-                  :style="{ color: levelColor(props.effort) }"
-                >
-                  {{ currentLevelLabel }}
-                </span>
-              </button>
-            </template>
-
-            <!-- custom provider 组：单 model option（用 provider.defaultModel） -->
-            <template v-else-if="group.customProvider">
-              <button
-                type="button"
-                class="model-effort-option"
-                :class="{ active: group.customProvider.defaultModel === selectedId }"
-                @click="selectModel(group.customProvider.defaultModel)"
-              >
-                <span class="model-effort-option-name">
-                  {{ cleanupModelId(group.customProvider.defaultModel) }}
-                </span>
-                <span
-                  v-if="group.customProvider.defaultModel === selectedId && currentLevelLabel"
-                  class="model-effort-option-tag"
-                  :style="{ color: levelColor(props.effort) }"
-                >
-                  {{ currentLevelLabel }}
-                </span>
-              </button>
-            </template>
+                {{ currentLevelLabel }}
+              </span>
+            </button>
           </template>
         </div>
 
@@ -357,6 +300,11 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
 .model-effort-trigger.disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+/* v0.1+ 没选 provider 时 trigger 文字明显灰一点（鼓励用户去加 provider） */
+.model-effort-trigger.empty .model-effort-model {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .model-effort-model {
@@ -445,6 +393,14 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   font-size: 12px;
   color: var(--text-muted);
   text-align: center;
+}
+.model-effort-empty p {
+  margin: 0;
+}
+.model-effort-empty-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.8;
 }
 
 .model-effort-option {

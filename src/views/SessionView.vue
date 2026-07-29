@@ -4,9 +4,12 @@
 // v0.1+ model + effort 选择器改用 Locus 同款 `ModelEffortSelector` 组件
 // （嵌在 chat composer 左下，trigger 按钮 + 双 panel 下拉）
 // - 位置：composer footer-start（跟 Locus ChatComposer 同位）
-// - 切 apiFormat → selector 自动重过滤建议列表
 // - 切走再切回 chat session 保留 selectedModel / selectedEffort（不重置）
 //   跟 Locus 行为对齐 —— 切 session tab 不丢玩家当前对话上下文
+//
+// v0.1.3+：chat selector 不再自动展示 BUILTIN_MODELS —— 只显示玩家在
+// Settings → Providers 主动 add 的 custom provider 及其 defaultModel。
+// 0 个 provider → trigger "Select model" placeholder + send disabled。
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
@@ -24,7 +27,6 @@ import { useChatStore } from '@/stores/chat'
 import { useSettingsStore } from '@/stores/settings'
 import { useProjectStore } from '@/stores/project'
 import { renderMarkdown } from '@/lib/markdown'
-import { BUILTIN_MODELS, findModel, getDefaultEffort, getSupportedEfforts } from '@/lib/modelCatalog'
 import type { EffortLevel } from '@/lib/settings'
 import ModelEffortSelector from '@/components/chat/ModelEffortSelector.vue'
 
@@ -41,21 +43,9 @@ const status = computed(() => chat.state.status)
 const error = computed(() => chat.state.error)
 const isStreaming = computed(() => status.value === 'streaming')
 
-/** 按 active apiFormat 过滤的 model 建议（ModelEffortSelector 用） */
-const suggestedModels = computed(() => {
-  const fmt = settings.config.apiFormat
-  switch (fmt) {
-    case 'anthropic_messages':
-      return BUILTIN_MODELS.filter((m) => m.provider === 'anthropic')
-    case 'openai_chat':
-    case 'openai_responses':
-    default:
-      return BUILTIN_MODELS.filter((m) => m.provider === 'openai')
-  }
-})
-
-/** v0.1+ 玩家 enabled 的 custom provider（selector Custom 段头用）
- *  v0.1.3+ effective default：defaultModel || models[0].id
+/** v0.1.3+ chat selector 唯一数据源：玩家 enabled 的 custom provider
+ *  effective default：defaultModel || models[0].id
+ *  0 个 provider → 数组为空 → selector 显示空状态
  */
 const customProviderShortcuts = computed(() =>
   settings.config.customProviders
@@ -67,21 +57,16 @@ const customProviderShortcuts = computed(() =>
     .filter((p) => p.defaultModel.length > 0),
 )
 
-/** 当前 model 是否支持 effort（找不到 / 不支持 → false，selector 隐藏右 panel） */
-const effortSupported = computed(() => {
-  const m = findModel(chat.selectedModel)
-  if (!m) {
-    // 自定义 model → 默认显示 effort panel（best-effort）
-    return true
-  }
-  const supported = getSupportedEfforts(m)
-  return supported.length > 1 || (supported.length === 1 && supported[0] !== 'none')
-})
+/** v0.1.3+：玩家加的 custom model 不知道具体支持哪些 effort —— 一律 best-effort 显示右 panel。
+ *  后端对不支持的 model 静默 no-op（不报错）。
+ *  0 model → 隐藏右 panel（避免空 effort 列表）
+ */
+const effortSupported = computed(() => chat.selectedModel.trim().length > 0)
 
 function onSelectModel(id: string) {
-  // 1. 检查是否选的是某个 custom provider 的 defaultModel
-  //    → 切 active connection 到该 provider（跟 ProvidersPanel "Use" 按钮行为一致）
-  //    v0.1.3+ effective default：defaultModel || models[0].id
+  // v0.1.3+ 检查是否选的是某个 custom provider 的 defaultModel
+  //   → 切 active connection 到该 provider（跟 ProvidersPanel "Use" 按钮行为一致）
+  //   effective default：defaultModel || models[0].id
   const cp = settings.config.customProviders.find((p) => {
     if (!p.enabled) return false
     const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
@@ -96,12 +81,7 @@ function onSelectModel(id: string) {
   }
 
   chat.selectedModel = id
-  // 切换 model 时，如果当前 effort 不在新 model 的支持列表里 → 重置为该 model 的 default
-  const m = findModel(id)
-  const supported = getSupportedEfforts(m)
-  if (!supported.includes(chat.selectedEffort)) {
-    chat.selectedEffort = getDefaultEffort(m)
-  }
+  // v0.1.3+ 不再重置 effort：custom model 不知道 default effort，保留玩家上次选的值
 }
 
 function onSelectEffort(level: EffortLevel) {
@@ -229,7 +209,6 @@ watch(
       />
       <div class="composer-footer">
         <ModelEffortSelector
-          :models="suggestedModels"
           :custom-provider-shortcuts="customProviderShortcuts"
           :selected-id="chat.selectedModel"
           :effort="chat.selectedEffort"

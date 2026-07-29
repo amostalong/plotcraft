@@ -199,7 +199,10 @@ const DEFAULT_CODE_ANALYSIS_TOOLS: CodeAnalysisToolsConfig = {
 
 export const DEFAULT_CONFIG: Config = {
   // Locus 字段 default
-  model: 'gpt-4o-mini',
+  // v0.1.3+：model 默认空串 —— active model 由 chat selector 从 customProviders 解析
+  // （之前是 'gpt-4o-mini'，导致老用户 config.model 卡在 builtin model id，
+  // 切 provider 时不会被正确识别为 custom provider 的 defaultModel）
+  model: '',
   base_url: 'https://api.openai.com/v1',
   debug: false,
   file_tool_workspace_boundary: false,

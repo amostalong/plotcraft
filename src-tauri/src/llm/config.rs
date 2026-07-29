@@ -434,6 +434,10 @@ impl CustomProvider {
     /// 1. `default_model` 显式设了（且非空）→ 用它
     /// 2. 否则用 `models[0].id`
     /// 3. 否则空串（前端应该 prompt 玩家去加 model）
+    ///
+    /// 注：v0.1.3+ 这逻辑由前端 chat store 镜像（解析 selectedModel fallback），
+    /// Rust 命令层不用 —— 标 `#[allow(dead_code)]` 避免 lint，保留作为 schema invariant 文档。
+    #[allow(dead_code)]
     pub fn effective_default_model(&self) -> &str {
         if !self.default_model.is_empty() {
             return &self.default_model;

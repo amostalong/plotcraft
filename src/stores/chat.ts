@@ -5,6 +5,12 @@
 // - chat 期间玩家改 selectedModel / selectedEffort → 同步写 settings.config.{model,effort} + save
 //   （v0.1.2 之前只在内存里存，关闭 app 丢 —— 现在持久化）
 // - v0.1.2+：Locus 风格 "Use provider" 切换也走 settings.config.base_url/apiKey/apiFormat 持久化
+//
+// v0.1.3+：chat selector 不再自动展示 BUILTIN_MODELS —— selectedModel 必须从
+// customProviders 解析。init 时的 fallback 规则：
+// 1. config.model 非空 + 匹配某 custom provider 的 effective defaultModel → 用它
+// 2. 否则回退到第一个 enabled + 有 effective defaultModel 的 custom provider
+// 3. 否则空串（0 provider → trigger "Select model" placeholder + send disabled）
 
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
@@ -19,7 +25,6 @@ import {
   onChatError,
 } from '@/lib/llm'
 import { DEFAULT_EFFORT, type EffortLevel } from '@/lib/settings'
-import { findModel, getDefaultEffort } from '@/lib/modelCatalog'
 import type { ChatMessage } from '@/types/chat'
 import { useSettingsStore } from './settings'
 
@@ -64,9 +69,39 @@ export const useChatStore = defineStore('chat', () => {
       try {
         const settings = useSettingsStore()
         if (!settings.loaded) await settings.init()
-        selectedModel.value = settings.config.model || ''
-        // v0.1.2+ effort 持久化：优先用 settings.config.effort，回退到 model 的 defaultEffort
-        selectedEffort.value = settings.config.effort ?? getDefaultEffort(findModel(selectedModel.value))
+
+        // v0.1.3+ model 解析：必须能匹配一个 custom provider 才用，否则回退
+        const customProviders = settings.config.customProviders ?? []
+        const persisted = settings.config.model?.trim() || ''
+
+        // 1. config.model 匹配某 provider 的 effective defaultModel → 用它（玩家手动选过的）
+        let resolved = ''
+        if (persisted) {
+          const match = customProviders.find((p) => {
+            if (!p.enabled) return false
+            const def = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+            return def === persisted
+          })
+          if (match) resolved = persisted
+        }
+
+        // 2. 回退到第一个 enabled + 有 effective defaultModel 的 custom provider
+        if (!resolved) {
+          const fallback = customProviders.find((p) => {
+            if (!p.enabled) return false
+            return (p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || '') !== ''
+          })
+          if (fallback) {
+            resolved = fallback.defaultModel?.trim() || fallback.models![0].id.trim()
+          }
+        }
+
+        // 3. 0 provider → 空串（trigger 显示 "Select model" placeholder + send disabled）
+        selectedModel.value = resolved
+
+        // v0.1.3+ effort 持久化：玩家保存的 effort 直接用，custom model 不知道 default effort，
+        // 回退到 DEFAULT_EFFORT（"none"）让玩家自己选
+        selectedEffort.value = settings.config.effort ?? DEFAULT_EFFORT
       } catch (e) {
         // 读不到 → 留空，让 SessionView UI 自己处理
         console.error('[chat.init] failed to load default model from settings:', e)
