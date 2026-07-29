@@ -48,3 +48,5 @@ dirs = "5"
 flate2 = "1"
 # indexmap 保留 models.dev slim snapshot 的 key 顺序（provider / model 列表按 API 文档序）
 indexmap = { version = "2", features = ["serde"] }
+# catalog 写盘 + fetched_at ISO 8601 时间戳
+chrono = { version = "0.4", features = ["serde"] }

@@ -81,11 +81,19 @@ export async function testProvider(opts: {
 
 /** Get the embedded model catalog (slim models.dev snapshot, ~167 providers)
  *  - Rust 端 lazy parse 一次 + 缓存到 OnceLock（in-process 不再 reparse）
+ *  - 优先 cache（player 上次 refresh 写盘的），cache 缺失/旧用 embedded
+ *  - App 启动后 5s 背景 refresh 一次（cache > 24h 才真拉）
  *  - 前端按需缓存到内存（player 打开 modal 才拉，避免启动阻塞）
- *  - v0.1 不做远端 refresh：snapshot 是 v0.1 固定版本，rebuild 才会换
  */
 export async function getModelCatalog(): Promise<ModelCatalog> {
   return invoke<ModelCatalog>('get_model_catalog')
+}
+
+/** Force a fresh remote refresh (GET https://models.dev/api.json)
+ *  - 走 Rust slim + sanity check + 写盘 + 替换 in-memory state
+ *  - 失败抛错（UI 给玩家看具体原因） */
+export async function refreshModelCatalog(): Promise<ModelCatalog> {
+  return invoke<ModelCatalog>('refresh_model_catalog')
 }
 
 // --- Tauri event subscriptions ---

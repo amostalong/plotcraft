@@ -31,6 +31,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(run_map)
+        .setup(|app| {
+            // 启动后 5s 在后台拉一次 model catalog（cache 超 24h 才真拉）——
+            // 失败不致命，fallback freshest local data
+            model_catalog::spawn_background_refresh(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             plotcraft_version,
             commands::llm::start_chat,
@@ -42,6 +48,7 @@ pub fn run() {
             commands::settings::save_config,
             commands::locus_import::import_from_locus,
             model_catalog::get_model_catalog,
+            model_catalog::refresh_model_catalog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

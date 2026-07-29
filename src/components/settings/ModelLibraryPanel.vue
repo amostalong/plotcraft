@@ -33,7 +33,7 @@ const emit = defineEmits<{
   'update:expanded': [value: boolean]
 }>()
 
-const { catalog, loading, error, load } = useModelCatalog()
+const { catalog, loading, refreshing, error, load, refresh } = useModelCatalog()
 
 // 第一次显示 panel 时 lazy 加载（onMounted 时机太早，performance 影响小）
 onMounted(() => {
@@ -142,11 +142,11 @@ const errorMessage = computed(() => error.value?.message ?? '')
         <button
           type="button"
           class="library-refresh"
-          :disabled="disabled || loading"
-          title="刷新 catalog（v0.1 内置 snapshot，不需要刷）"
-          @click="load"
+          :disabled="disabled || refreshing"
+          title="从 models.dev 拉新 catalog"
+          @click="refresh"
         >
-          <RefreshCw :size="11" :class="{ spinning: loading }" />
+          <RefreshCw :size="11" :class="{ spinning: refreshing }" />
         </button>
       </div>
 

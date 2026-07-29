@@ -30,7 +30,7 @@ const emit = defineEmits<{
   pickManual: []
 }>()
 
-const { catalog, loading, error, load } = useModelCatalog()
+const { catalog, loading, refreshing, error, load, refresh } = useModelCatalog()
 
 onMounted(() => {
   if (!catalog.value && !loading.value) {
@@ -95,11 +95,11 @@ function onPickManual() {
         <button
           type="button"
           class="pick-refresh"
-          :disabled="disabled || loading"
-          title="刷新 catalog"
-          @click="load"
+          :disabled="disabled || refreshing"
+          title="从 models.dev 拉新 catalog"
+          @click="refresh"
         >
-          <RefreshCw :size="11" :class="{ spinning: loading }" />
+          <RefreshCw :size="11" :class="{ spinning: refreshing }" />
         </button>
       </div>
     </div>
