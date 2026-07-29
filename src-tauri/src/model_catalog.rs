@@ -274,13 +274,44 @@ fn freshest(a: &ModelCatalog, b: &ModelCatalog) -> bool {
     a.fetched_at.as_str() > b.fetched_at.as_str()
 }
 
+/// v0.1.4+ cache health check：embedded 通常 167+ providers
+///  - < 30 providers → cache 拉坏了 / 某个旧 dev run 留下的脏数据 → 删掉
+///  - 空 fetched_at → 解析损坏 → 删掉
+fn is_cache_healthy(catalog: &ModelCatalog) -> bool {
+    if catalog.providers.len() < 30 {
+        eprintln!(
+            "[model_catalog] cache health: only {} providers (expected 30+)",
+            catalog.providers.len()
+        );
+        return false;
+    }
+    if catalog.fetched_at.is_empty() {
+        eprintln!("[model_catalog] cache health: empty fetched_at");
+        return false;
+    }
+    true
+}
+
 fn load_freshest(app: &AppHandle) -> Result<CatalogState, String> {
     let snapshot = parse_embedded_snapshot()?;
     match load_cached_catalog(app) {
-        Some(cached) if freshest(&cached, &snapshot) => Ok(CatalogState {
-            catalog: Arc::new(cached),
-            source: "cache",
-        }),
+        Some(cached) if is_cache_healthy(&cached) && freshest(&cached, &snapshot) => {
+            Ok(CatalogState {
+                catalog: Arc::new(cached),
+                source: "cache",
+            })
+        }
+        Some(_) => {
+            // unhealthy cache → 删了，下次 start 用 embedded
+            if let Ok(path) = cache_path(app) {
+                let _ = std::fs::remove_file(&path);
+                eprintln!("[model_catalog] dropped unhealthy cache at {:?}", path);
+            }
+            Ok(CatalogState {
+                catalog: Arc::new(snapshot),
+                source: "embedded",
+            })
+        }
         _ => Ok(CatalogState {
             catalog: Arc::new(snapshot),
             source: "embedded",
@@ -702,5 +733,41 @@ mod tests {
             status: None,
         };
         assert!(!is_listable_model(&m_no_tools));
+    }
+
+    #[test]
+    fn cache_health_rejects_broken_data() {
+        // < 30 providers → 不健康
+        let small = ModelCatalog {
+            fetched_at: "2026-07-29T00:00:00Z".to_string(),
+            providers: IndexMap::new(),
+        };
+        assert!(!is_cache_healthy(&small));
+
+        // 空 fetched_at → 不健康
+        let empty_time = ModelCatalog {
+            fetched_at: String::new(),
+            providers: IndexMap::new(),
+        };
+        assert!(!is_cache_healthy(&empty_time));
+
+        // 30+ providers + 有效 fetched_at → 健康
+        let mut providers = IndexMap::new();
+        for i in 0..30 {
+            providers.insert(
+                format!("p{i}"),
+                CatalogProvider {
+                    name: format!("P{i}"),
+                    api: None,
+                    npm: None,
+                    models: IndexMap::new(),
+                },
+            );
+        }
+        let healthy = ModelCatalog {
+            fetched_at: "2026-07-29T00:00:00Z".to_string(),
+            providers,
+        };
+        assert!(is_cache_healthy(&healthy));
     }
 }
