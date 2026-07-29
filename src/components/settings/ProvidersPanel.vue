@@ -284,8 +284,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
         >
           <div class="card-header">
             <div class="card-title">
-              <span class="provider-id">{{ p.id }}</span>
-              <span class="provider-name">{{ p.name }}</span>
+              <!-- v0.1.5+ 不再显示 provider.id（UUID 那一串机器可读 key）——
+                   name 已经是可读显示名，id 留作数据层 key（useProvider / 匹配用）。
+                   hover card 仍可看 id（dev debug 方便） -->
+              <span class="provider-name" :title="`id: ${p.id}`">{{ p.name }}</span>
               <span v-if="!p.enabled" class="disabled-tag">disabled</span>
             </div>
             <div class="card-actions">
@@ -654,14 +656,9 @@ label input:focus {
   gap: 8px;
   flex-wrap: wrap;
 }
-.provider-id {
-  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
-  font-size: 12px;
-  color: var(--accent);
-  font-weight: 500;
-}
 .provider-name {
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
 }
 .disabled-tag {
