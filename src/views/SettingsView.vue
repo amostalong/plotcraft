@@ -76,9 +76,6 @@ function onReset() {
         <ProvidersPanel
           v-if="activeCategory === 'api'"
           key="api"
-          v-model:base-url="settings.config.base_url"
-          v-model:api-key="settings.config.apiKey"
-          v-model:api-format="settings.config.apiFormat"
           v-model:custom-providers="settings.config.customProviders"
         />
         <GeneralSettingsPanel

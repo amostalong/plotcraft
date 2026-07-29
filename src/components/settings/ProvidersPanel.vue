@@ -1,23 +1,25 @@
 <script setup lang="ts">
-// Providers panel（v0.1.3+ 只剩 Saved Providers 库 + 顶部 hint）
+// Providers panel（v0.1.5+ 只剩 Saved Providers 库 + 顶部 hint）
 //
-//  v0.1.3 历史：
+//  v0.1 历史：
 //  - v0.1.0 整段 inline 列表 + Add/Edit form
 //  - v0.1.1 改 Locus 同款 custom providers section + import 按钮
 //  - v0.1.2 Active Connection 改 readonly display
 //  - v0.1.3 整段 Active Connection 删除（active 切换完全在 chat tab model selector）
+//  - v0.1.5 砍 Use 按钮 —— "启用/禁用" 是唯一开关，active connection 切换完全在
+//    chat selector 自己做（SessionView.onSelectModel 选 provider 时直接改
+//    settings.config.base_url/apiKey/apiFormat + save）
 //
 // 现在的布局：
-// - 顶部 hint：解释 active connection 切换路径
+// - 顶部 hint：解释 chat selector 是 active 切换的唯一入口
 // - Saved Providers section：每条 provider 一个 card（id / name / baseUrl / apiKey mask
-//   / apiFormat / defaultModel + Use / 启用 / Edit / Delete 按钮）
+//   / apiFormat / models + 启用 / Edit / Delete 按钮）
 // - 顶部按钮：Import from Locus + Add provider（弹 ProviderEditModal）
 //
 // 跟 Locus 差别：
 // - Locus `CustomProvider` 有完整字段 `id/name/endpoint/apiFormat/apiKey/catalogId/models[]`，
 //   且 apiKey 走 OS keychain
 // - PlotCraft v0.1 简化：不分 catalogId / models，apiKey 裸存
-// - "Use" provider 时把 baseUrl + apiKey + apiFormat 复制到顶层
 //
 // 支持的 API 协议（参考 Locus `ApiFormat`）：
 // - `openai_chat`（OpenAI Chat Completions + SSE）—— v0.1 已实装
@@ -31,58 +33,23 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   Plus,
   Trash2,
-  Check,
   Power,
   PowerOff,
   Pencil,
   X,
   Download,
   AlertTriangle,
-  CheckCircle2,
 } from 'lucide-vue-next'
 import type { CustomProvider, ApiFormat } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
 import { importFromLocus, type LocusImportData } from '@/lib/locusImport'
 import { useSettingsStore } from '@/stores/settings'
-import { useChatStore } from '@/stores/chat'
 import ProviderEditModal from '@/components/settings/ProviderEditModal.vue'
 
-const props = defineProps<{
-  baseUrl: string | null
-  apiKey: string
-  customProviders: CustomProvider[]
-}>()
-
-// === Active connection (v-model —— settings 顶层字段，player 改不到)
-//
-// v0.1.3+ 这个 panel 不再显示 active connection；
-// 玩家切 active 的唯一路径：
-// 1. chat tab 的 model selector → 选 builtin model 或 custom provider
-// 2. 选 custom provider → SessionView `onSelectModel` 把 baseUrl/apiKey/apiFormat 写到这 3 个 v-model
-// 3. settings 这里保留 v-model 是为了让 "Use" 按钮还能写
-const baseUrl = defineModel<string | null>('base-url', { required: true })
-const apiKey = defineModel<string>('api-key', { required: true })
-const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
-
 // === Saved library (v-model) ===
+// v0.1.5+ 删了 baseUrl/apiKey/apiFormat 3 个 v-model（之前只为 Use 按钮服务，
+// 现在 Use 砍了，active connection 由 chat selector 切）
 const customProviders = defineModel<CustomProvider[]>('custom-providers', { required: true })
-
-// === Toast（useProvider 成功提示用）===
-interface ToastMsg {
-  id: number
-  text: string
-  tone: 'success' | 'error'
-}
-const toast = ref<ToastMsg | null>(null)
-let toastTimer: number | null = null
-function showToast(text: string, tone: 'success' | 'error' = 'success') {
-  toast.value = { id: Date.now(), text, tone }
-  if (toastTimer) clearTimeout(toastTimer)
-  toastTimer = window.setTimeout(() => {
-    toast.value = null
-    toastTimer = null
-  }, 3000)
-}
 
 // === Add / Edit modal (v0.1.2+ 用 ProviderEditModal 替换原 inline form) ===
 const editingProvider = ref<CustomProvider | null>(null)
@@ -152,50 +119,6 @@ function confirmDelete() {
   if (!id) return
   customProviders.value = customProviders.value.filter((p) => p.id !== id)
   confirmingDeleteId.value = null
-}
-
-async function useProvider(p: CustomProvider) {
-  // v0.1.5+ Use 按钮完整化 —— 之前只写 3 个 v-model，chat 切过去还显示
-  // "未添加任何 provider"。补 3 件事：
-  // 1. 写 config.model = effectiveDefaultModel（chat selector 靠这个解析 trigger）
-  // 2. 同步 chat.selectedModel（让 trigger 立即变 active，不必等下次 init）
-  // 3. save 持久化 + toast 反馈
-
-  const effectiveModel = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
-
-  // 1. 写 active connection 3 字段
-  baseUrl.value = p.baseUrl
-  apiKey.value = p.apiKey
-  apiFormat.value = p.apiFormat
-
-  // 2. 写 config.model（chat selector 解析的 key）—— 写 settings.config
-  //    ref 即可，store 的 .config 是 ref 引用，会同步触发 reactivity
-  const settings = useSettingsStore()
-  if (!settings.loaded) await settings.init()
-  settings.config.model = effectiveModel
-
-  // 3. 同步 chat store（玩家当前在 chat tab 切回 trigger 立即变 active）
-  //    不要等 watcher 触发（init 时只 watch selectedModel/selectedEffort 改的时候）
-  const chat = useChatStore()
-  if (chat.selectedModel !== effectiveModel) {
-    chat.selectedModel = effectiveModel
-  }
-
-  // 4. 持久化
-  try {
-    await settings.save()
-  } catch (e) {
-    console.error('[useProvider] save failed:', e)
-    showToast(`保存失败：${e instanceof Error ? e.message : String(e)}`, 'error')
-    return
-  }
-
-  // 5. toast 反馈
-  if (effectiveModel) {
-    showToast(`已切换到 ${p.name} · ${effectiveModel}`)
-  } else {
-    showToast(`已切换到 ${p.name}（未设 model —— 去 chat tab 选一个）`, 'error')
-  }
 }
 
 function toggleEnabled(p: CustomProvider) {
@@ -272,19 +195,19 @@ function applyImport() {
   }
 
   // 2. 覆盖 active connection（玩家勾选时）
+  // v0.1.5+ 删 v-model 后改成直接写 settings.config（v-model 没了，store 是唯一入口）
   if (importApplyActive.value) {
-    // model 字段在 settings.config.model，ProvidersPanel 没绑 v-model
-    // （ModelDefaultsPanel 管它）—— 直接通过 store 改
+    const settings = useSettingsStore()
     if (locusData.value.model) {
-      const settings = useSettingsStore()
       settings.config.model = locusData.value.model
     }
     if (locusData.value.baseUrl) {
-      baseUrl.value = locusData.value.baseUrl
+      settings.config.base_url = locusData.value.baseUrl
     }
     if (locusData.value.inferredApiFormat) {
-      apiFormat.value = locusData.value.inferredApiFormat
+      settings.config.apiFormat = locusData.value.inferredApiFormat
     }
+    // apiKey 不从 Locus 带（keychain 隔离），玩家要手动填
   }
 
   closeImportModal()
@@ -307,9 +230,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
     <p class="hint">
       已保存的第三方 provider 库（顶层 <code>customProviders[]</code>，跟 Locus
       <code>CustomProvider</code> schema 同构，PlotCraft 简化 apiKey 裸存 + 不分 apiFormat）。
-      点 <strong>Use</strong> 把 provider 的 endpoint / key / format / model 写到 active
-      connection（settings 顶层），同步刷新 <strong>chat tab model selector</strong>，
-      切到 chat tab 就能直接发消息。
+      <br />
+      <strong>active connection 切换</strong>：<strong>chat tab model selector</strong> 选
+      哪个 provider，就切到那个（baseUrl / apiKey / apiFormat 一起切）。这边不用"Use"按钮
+      —— 只要 <strong>启用</strong> 就会出现在 chat selector。
       <br />
       <strong>注意</strong>：<code>models</code> 为空的 provider <strong>不会</strong>出现在
       chat selector —— chat 需要知道用哪个 model id 才能发请求。点 <strong>✎ Edit</strong>
@@ -319,8 +243,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
     <!-- Section 1: 没了 (v0.1.2+)
          v0.1.1 之前有 Active Connection section（3 个可编辑 input + Test 按钮）——
          v0.1.2 改 readonly display，v0.1.3 整段删除。
-         现在 active connection 完全在 chat tab 切（model selector → 选 provider →
-         "Use" 按钮复制到 active），settings 这里只管 Saved Providers 库。
+         v0.1.5 砍 Use 按钮 —— active 切换完全在 chat selector 自己做。
     -->
 
     <!-- Section 2: Saved library -->
@@ -366,16 +289,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               <span v-if="!p.enabled" class="disabled-tag">disabled</span>
             </div>
             <div class="card-actions">
-              <button
-                @click="useProvider(p)"
-                class="use-btn"
-                :disabled="!p.enabled"
-                :title="p.models.length === 0 ? '这个 provider 还没填 model —— 点 ✎ Edit 加 model 才能在 chat 用' : '切到 chat tab 用这个 provider 发送消息'"
-              >
-                <Check :size="12" />
-                <span>Use</span>
-              </button>
-              <button @click="toggleEnabled(p)" class="icon-btn" :title="p.enabled ? '禁用' : '启用'">
+              <button @click="toggleEnabled(p)" class="icon-btn" :title="p.enabled ? '禁用（不删除，只是从 chat selector 隐藏）' : '启用（出现在 chat selector）'">
                 <Power v-if="p.enabled" :size="12" />
                 <PowerOff v-else :size="12" />
               </button>
@@ -599,25 +513,6 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
         </div>
       </div>
     </Teleport>
-
-    <!-- v0.1.5+ Toast (useProvider 切 active connection 反馈)
-         Teleport 到 body；用 id 作 key 让连续 toast 也能重新触发动画 -->
-    <Teleport to="body">
-      <Transition name="toast">
-        <div
-          v-if="toast"
-          :key="toast.id"
-          class="toast"
-          :class="`toast-${toast.tone}`"
-          role="status"
-          aria-live="polite"
-        >
-          <CheckCircle2 v-if="toast.tone === 'success'" :size="14" />
-          <AlertTriangle v-else :size="14" />
-          <span>{{ toast.text }}</span>
-        </div>
-      </Transition>
-    </Teleport>
   </div>
 </template>
 
@@ -784,27 +679,8 @@ label input:focus {
   align-items: center;
 }
 .use-btn {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 3px 8px;
-  background: var(--accent);
-  color: var(--bg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 11px;
-  font-family: inherit;
-  margin-right: 4px;
-}
-.use-btn:hover:not(:disabled) {
-  opacity: 0.85;
-}
-.use-btn:disabled {
-  background: var(--border);
-  color: var(--text-muted);
-  border-color: var(--border);
-  cursor: not-allowed;
+  /* v0.1.5+ Use 按钮已删 —— 留空 class 避免外部 style 引用时 collapse；下个版本清理 */
+  display: none;
 }
 .icon-btn {
   display: flex;
@@ -1276,57 +1152,5 @@ label input:focus {
 @keyframes confirm-rise {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-/* === Toast (v0.1.5+ useProvider 反馈) ===
-   屏幕底部居中浮动，3s 后自动消失；用 id key + Transition 触发 enter/leave 动画
-   避免被父级 overflow:hidden 截断 → Teleport 到 body */
-.toast {
-  position: fixed;
-  left: 50%;
-  bottom: 28px;
-  transform: translateX(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 16px;
-  background: var(--bg-elev);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
-  font-size: 13px;
-  z-index: 1100; /* 高于 confirm modal (1000) */
-  max-width: min(560px, calc(100vw - 32px));
-  pointer-events: none;
-}
-.toast-success {
-  border-color: var(--accent);
-}
-.toast-success svg {
-  color: var(--accent);
-  flex-shrink: 0;
-}
-.toast-error {
-  border-color: var(--error, #e53e3e);
-  color: var(--error, #e53e3e);
-}
-.toast-error svg {
-  color: var(--error, #e53e3e);
-  flex-shrink: 0;
-}
-.toast-enter-active,
-.toast-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-.toast-enter-from,
-.toast-leave-to {
-  opacity: 0;
-  transform: translateX(-50%) translateY(8px);
-}
-.toast-enter-to,
-.toast-leave-from {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
 }
 </style>
