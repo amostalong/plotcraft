@@ -36,6 +36,7 @@ import { findModel } from '@/lib/modelCatalog'
 import type { CatalogModel, CatalogProvider } from '@/types/catalog'
 import { useModelCatalog } from '@/composables/useModelCatalog'
 import { testProvider, type TestProviderResult } from '@/lib/llm'
+import { useSettingsStore } from '@/stores/settings'
 import ProviderCatalogStep from './ProviderCatalogStep.vue'
 import ModelLibraryPanel from './ModelLibraryPanel.vue'
 
@@ -239,7 +240,22 @@ function onSave() {
     defaultModel: draftDefaultModel.value.trim(),
   }
   emit('save', newProvider)
-  saving.value = false
+  // v0.1.5+ modal 保存自动落盘：之前只 emit 让 ProvidersPanel 改 v-model，
+  // 玩家必须再点 Settings 底部"保存"才写 config.json —— 心智模型反直觉，
+  // 经常漏点导致新增 model 丢失。现在 modal 保存直接调 settings.save()。
+  // 其他 panel（启用/删除 provider）保持 v-model 行为，player 显式点 Settings 底部保存。
+  void (async () => {
+    try {
+      const settings = useSettingsStore()
+      if (!settings.loaded) await settings.init()
+      await settings.save()
+      console.log(`[ProviderEditModal] saved provider ${newProvider.id} to disk`)
+    } catch (e) {
+      console.error('[ProviderEditModal] settings.save() failed:', e)
+    } finally {
+      saving.value = false
+    }
+  })()
 }
 
 // === v0.1.3+ models 列表增删 ===
