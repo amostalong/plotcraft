@@ -67,25 +67,6 @@ const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
 // === Saved library (v-model) ===
 const customProviders = defineModel<CustomProvider[]>('custom-providers', { required: true })
 
-// === Active provider 判定（"使用中" badge 用）===
-//
-// 用 baseUrl + apiKey + apiFormat 三元组匹配 active connection → 找到的 provider id 即为"使用中"。
-// 注意：apiKey 严格匹配（不忽略前导空格），所以玩家在 modal 改过 key 之后，旧的
-// "使用中" badge 会自动消失 —— 这正是想要的（"你在用" 跟着 baseUrl/key/format 走）。
-const activeProviderId = computed<string | null>(() => {
-  const targetBaseUrl = (baseUrl.value ?? '').trim()
-  if (!targetBaseUrl) return null
-  return (
-    customProviders.value.find(
-      (p) =>
-        p.enabled &&
-        p.baseUrl.trim() === targetBaseUrl &&
-        p.apiKey === apiKey.value &&
-        p.apiFormat === apiFormat.value,
-    )?.id ?? null
-  )
-})
-
 // === Toast（useProvider 成功提示用）===
 interface ToastMsg {
   id: number
@@ -328,7 +309,11 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
       <code>CustomProvider</code> schema 同构，PlotCraft 简化 apiKey 裸存 + 不分 apiFormat）。
       点 <strong>Use</strong> 把 provider 的 endpoint / key / format / model 写到 active
       connection（settings 顶层），同步刷新 <strong>chat tab model selector</strong>，
-      切到 chat tab 就能直接发消息。带 <strong>使用中</strong> 角标的就是当前 active。
+      切到 chat tab 就能直接发消息。
+      <br />
+      <strong>注意</strong>：<code>models</code> 为空的 provider <strong>不会</strong>出现在
+      chat selector —— chat 需要知道用哪个 model id 才能发请求。点 <strong>✎ Edit</strong>
+      → "<strong>从模型库添加</strong>" 选 model，或"手动添加"填 id + name。
     </p>
 
     <!-- Section 1: 没了 (v0.1.2+)
@@ -378,22 +363,17 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             <div class="card-title">
               <span class="provider-id">{{ p.id }}</span>
               <span class="provider-name">{{ p.name }}</span>
-              <span v-if="activeProviderId === p.id" class="active-tag" title="当前 active connection 用的就是这个 provider">
-                <Check :size="10" />
-                使用中
-              </span>
               <span v-if="!p.enabled" class="disabled-tag">disabled</span>
             </div>
             <div class="card-actions">
               <button
                 @click="useProvider(p)"
                 class="use-btn"
-                :class="{ active: activeProviderId === p.id }"
                 :disabled="!p.enabled"
-                :title="activeProviderId === p.id ? '已经是当前 active connection' : '切到 chat tab 用这个 provider 发送消息'"
+                :title="p.models.length === 0 ? '这个 provider 还没填 model —— 点 ✎ Edit 加 model 才能在 chat 用' : '切到 chat tab 用这个 provider 发送消息'"
               >
                 <Check :size="12" />
-                <span>{{ activeProviderId === p.id ? 'In Use' : 'Use' }}</span>
+                <span>Use</span>
               </button>
               <button @click="toggleEnabled(p)" class="icon-btn" :title="p.enabled ? '禁用' : '启用'">
                 <Power v-if="p.enabled" :size="12" />
@@ -422,9 +402,29 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             </div>
             <div class="card-row">
               <span class="card-label">models:</span>
-              <code>
-                {{ p.models.length }} 个{{ p.models.length > 0 ? `（default: ${p.defaultModel || p.models[0]?.id || '—'}）` : '（未填 —— 不会出现在 chat selector）' }}
-              </code>
+              <template v-if="p.models.length > 0">
+                <code>
+                  {{ p.models.length }} 个（default: {{ p.defaultModel || p.models[0]?.id || '—' }}）
+                </code>
+              </template>
+              <template v-else>
+                <!-- v0.1.5+ 显眼提示：models 空的 provider 不会出现在 chat selector
+                     给个"+"按钮直接打开 edit modal 加 model，避免玩家要先去 chat
+                     看 dropdown 才能发现"为什么没出现" -->
+                <span class="models-empty-warning">
+                  <AlertTriangle :size="12" />
+                  0 个 —— chat selector 看不到
+                </span>
+                <button
+                  type="button"
+                  class="add-model-btn"
+                  @click="startEdit(p)"
+                  title="打开 edit modal 给这个 provider 加 model"
+                >
+                  <Plus :size="11" />
+                  <span>加 model</span>
+                </button>
+              </template>
             </div>
           </div>
         </div>
@@ -778,19 +778,6 @@ label input:focus {
   padding: 1px 6px;
   font-style: italic;
 }
-/* v0.1.5+ 当前 active provider 的角标 —— accent 底色 + bg 文字，让"使用中"一眼可见 */
-.active-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 10px;
-  color: var(--bg);
-  background: var(--accent);
-  border-radius: 3px;
-  padding: 1px 6px;
-  font-weight: 500;
-  letter-spacing: 0.2px;
-}
 .card-actions {
   display: flex;
   gap: 4px;
@@ -818,13 +805,6 @@ label input:focus {
   color: var(--text-muted);
   border-color: var(--border);
   cursor: not-allowed;
-}
-/* v0.1.5+ 当前 active 的 provider —— Use 按钮变 outline，显示 "In Use" 文字
-   避免视觉上"再点一次 Use"，但仍可点击（重写会显示相同 toast） */
-.use-btn.active {
-  background: transparent;
-  color: var(--accent);
-  border-color: var(--accent);
 }
 .icon-btn {
   display: flex;
@@ -873,6 +853,42 @@ label input:focus {
   padding: 1px 6px;
   font-size: 11px;
   word-break: break-all;
+}
+/* v0.1.5+ provider 没 model 时的显眼提示 —— error 色 + 图标，比之前灰 code 醒目 */
+.models-empty-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  background: rgba(232, 90, 90, 0.12);
+  border: 1px solid var(--error, #e53e3e);
+  color: var(--error, #e53e3e);
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.models-empty-warning svg {
+  flex-shrink: 0;
+}
+/* v0.1.5+ "加 model" 按钮 —— 直接打开该 provider 的 edit modal
+   比让玩家去翻整个 modal 找位置方便 */
+.add-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  font-family: inherit;
+  font-weight: 500;
+}
+.add-model-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
 }
 
 /* === Import from Locus button === */

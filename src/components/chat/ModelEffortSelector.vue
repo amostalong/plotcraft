@@ -39,6 +39,10 @@ const props = defineProps<{
   /** v0.1+ 玩家保存的 custom providers（仅 enabled 且有 defaultModel 的会显示）
    *  TS 端只给名字 + id + defaultModel（不传 apiKey / baseUrl，避免泄露） */
   customProviderShortcuts?: { id: string; name: string; defaultModel: string }[]
+  /** v0.1.5+ 没填 model 的 enabled provider 数 —— empty state 文案分流
+   *  > 0 → 提示"有 N 个 provider 但没填 model"，玩家去 Settings 加 model
+   *  = 0 → 真正"0 个 provider"，提示去 add provider */
+  unconfiguredProviderCount?: number
 }>()
 
 const emit = defineEmits<{
@@ -193,8 +197,16 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
         <div class="model-effort-model-panel">
           <template v-if="groupedModels.length === 0">
             <div class="model-effort-empty">
-              <p>未添加任何 provider</p>
-              <p class="model-effort-empty-hint">Settings → Providers 加一个</p>
+              <template v-if="(props.unconfiguredProviderCount ?? 0) > 0">
+                <!-- v0.1.5+ 分流：库里有 provider 但都没填 model -->
+                <p>有 {{ unconfiguredProviderCount }} 个 provider，但都没填 model</p>
+                <p class="model-effort-empty-hint">Settings → Providers 库点 ✎ Edit → 加 model</p>
+              </template>
+              <template v-else>
+                <!-- 真正 0 provider：玩家还没 add 任何东西 -->
+                <p>未添加任何 provider</p>
+                <p class="model-effort-empty-hint">Settings → Providers 加一个</p>
+              </template>
             </div>
           </template>
           <template

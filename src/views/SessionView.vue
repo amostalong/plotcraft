@@ -57,6 +57,17 @@ const customProviderShortcuts = computed(() =>
     .filter((p) => p.defaultModel.length > 0),
 )
 
+/** v0.1.5+ 没填 model 的 enabled provider 数 —— 给 chat selector empty state 用
+ *  让玩家能区分"完全没 add provider"和"add 了但没 model"两种情况 */
+const unconfiguredProviderCount = computed(
+  () =>
+    settings.config.customProviders.filter((p) => {
+      if (!p.enabled) return false
+      const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+      return effective === ''
+    }).length,
+)
+
 /** v0.1.3+：玩家加的 custom model 不知道具体支持哪些 effort —— 一律 best-effort 显示右 panel。
  *  后端对不支持的 model 静默 no-op（不报错）。
  *  0 model → 隐藏右 panel（避免空 effort 列表）
@@ -210,6 +221,7 @@ watch(
       <div class="composer-footer">
         <ModelEffortSelector
           :custom-provider-shortcuts="customProviderShortcuts"
+          :unconfigured-provider-count="unconfiguredProviderCount"
           :selected-id="chat.selectedModel"
           :effort="chat.selectedEffort"
           :effort-supported="effortSupported"
