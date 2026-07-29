@@ -59,10 +59,15 @@ pub async fn create_project(
         folder: project_dir.to_string_lossy().to_string(),
         created_at: String::new(),
         updated_at: String::new(),
+        // v0.1.5+ 新建的项目当然含 world/ —— true
+        is_plotcraft_project: true,
     })
 }
 
-/// 扫描 folder 的子文件夹，含 README.md 的算项目
+/// 扫描 folder 的子文件夹 —— v0.1.5+ 不再 filter README.md，列所有子目录
+/// PlotCraft 标识（`world/` 子目录存在）走 ProjectMeta.is_plotcraft_project，
+/// 让前端 OpenProjectModal 给玩家视觉提示（"看起来是 PlotCraft 项目"标签），
+/// 玩家自己决定选哪个。
 #[tauri::command]
 pub async fn list_projects(folder: String) -> AppResult<Vec<ProjectMeta>> {
     let dir = PathBuf::from(&folder);
@@ -77,20 +82,30 @@ pub async fn list_projects(folder: String) -> AppResult<Vec<ProjectMeta>> {
         if !path.is_dir() {
             continue;
         }
-        let readme = path.join("README.md");
-        if readme.exists() {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            projects.push(ProjectMeta {
-                name,
-                folder: path.to_string_lossy().to_string(),
-                created_at: String::new(),
-                updated_at: String::new(),
-            });
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        // 跳过 hidden 目录（.开头，如 .git / .DS_Store 之类）
+        if name.starts_with('.') {
+            continue;
         }
+        // v0.1.5+ PlotCraft 标识：含 `world/` 子目录就算（4 个 starter 之一）
+        let is_plotcraft_project = path.join("world").is_dir();
+        projects.push(ProjectMeta {
+            name,
+            folder: path.to_string_lossy().to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            is_plotcraft_project,
+        });
     }
+    // 按 PlotCraft 项目排前面，其他按名字
+    projects.sort_by(|a, b| {
+        b.is_plotcraft_project
+            .cmp(&a.is_plotcraft_project)
+            .then(a.name.cmp(&b.name))
+    });
     Ok(projects)
 }

@@ -8,6 +8,13 @@ export interface ProjectMeta {
   folder: string
   created_at: string
   updated_at: string
+  /**
+   * v0.1.5+ PlotCraft 项目标识：含 `world/` 子目录
+   * （v0.1.5 之前用 README.md 判定，git clone 别人的项目会被误认；
+   *  改成 `world/` 更精准 —— 4 个 starter 之一）
+   * 前端 OpenProjectModal 用这个给玩家视觉提示 + 排序时 PlotCraft 项目排前面
+   */
+  is_plotcraft_project: boolean
 }
 
 export async function createProject(folder: string, name: string): Promise<ProjectMeta> {

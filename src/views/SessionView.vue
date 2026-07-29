@@ -27,8 +27,11 @@ import { useChatStore } from '@/stores/chat'
 import { useSettingsStore } from '@/stores/settings'
 import { useProjectStore } from '@/stores/project'
 import { renderMarkdown } from '@/lib/markdown'
+import type { ProjectMeta } from '@/lib/project'
 import type { EffortLevel } from '@/lib/settings'
 import ModelEffortSelector from '@/components/chat/ModelEffortSelector.vue'
+import NewProjectModal from '@/components/project/NewProjectModal.vue'
+import OpenProjectModal from '@/components/project/OpenProjectModal.vue'
 
 const chat = useChatStore()
 const settings = useSettingsStore()
@@ -127,12 +130,55 @@ async function stop() {
   await chat.stopCurrent()
 }
 
+// === v0.1.5+ Project flow：pickFolder → modal → confirm ===
+const newProjectParent = ref<string | null>(null)
+const openProjectScan = ref<{ parentDir: string; entries: ProjectMeta[] } | null>(null)
+const creating = ref(false)
+const createError = ref<string | null>(null)
+
 async function onCreate() {
-  await project.createNew()
+  createError.value = null
+  const dir = await project.pickParentDir('选择项目根目录（你的游戏文件夹会放在这里）')
+  if (!dir) return
+  newProjectParent.value = dir
 }
+function onNewModalClose() {
+  newProjectParent.value = null
+  createError.value = null
+}
+async function onNewModalCreate(name: string) {
+  if (!newProjectParent.value) return
+  creating.value = true
+  createError.value = null
+  try {
+    await project.confirmCreateNew(newProjectParent.value, name)
+    newProjectParent.value = null // 成功后关 modal
+  } catch (e) {
+    createError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    creating.value = false
+  }
+}
+
 async function onOpen() {
-  await project.openExisting()
+  createError.value = null
+  try {
+    const result = await project.scanForProjects()
+    if (!result) return
+    openProjectScan.value = result
+  } catch (e) {
+    createError.value = e instanceof Error ? e.message : String(e)
+  }
 }
+function onOpenModalClose() {
+  openProjectScan.value = null
+  createError.value = null
+}
+function onOpenModalPick(p: ProjectMeta) {
+  project.confirmOpenProject(p)
+  openProjectScan.value = null
+}
+
 function onCloseProject() {
   project.close()
 }
@@ -241,6 +287,33 @@ watch(
         </button>
       </div>
     </form>
+
+    <!-- v0.1.5+ Project modals (custom PlotCraft 风格，替代 OS system dialog) -->
+    <NewProjectModal
+      v-if="newProjectParent"
+      :parent-dir="newProjectParent"
+      :creating="creating"
+      @close="onNewModalClose"
+      @create="onNewModalCreate"
+    />
+    <OpenProjectModal
+      v-if="openProjectScan"
+      :root-dir="openProjectScan.parentDir"
+      :entries="openProjectScan.entries"
+      @close="onOpenModalClose"
+      @pick="onOpenModalPick"
+    />
+
+    <!-- v0.1.5+ Project flow error toast (e.g. 创建失败 / list 失败) -->
+    <Teleport to="body">
+      <div v-if="createError" class="project-error-toast" role="alert">
+        <AlertCircle :size="14" />
+        <span>{{ createError }}</span>
+        <button @click="createError = null" class="dismiss-btn" title="关闭">
+          <X :size="12" />
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -529,5 +602,43 @@ watch(
 .composer-send.stop {
   background: var(--error);
   color: white;
+}
+
+/* === v0.1.5+ Project flow error toast (e.g. 创建失败 / list 失败) === */
+.project-error-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  background: var(--bg-elev);
+  color: var(--error, #e53e3e);
+  border: 1px solid var(--error, #e53e3e);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  z-index: 1100; /* 高于 OpenProjectModal (1000) */
+  max-width: min(560px, calc(100vw - 32px));
+}
+.project-error-toast .dismiss-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  color: var(--error, #e53e3e);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.project-error-toast .dismiss-btn:hover {
+  opacity: 1;
+  background: rgba(232, 90, 90, 0.15);
 }
 </style>

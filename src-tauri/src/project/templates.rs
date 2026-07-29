@@ -22,6 +22,13 @@ pub struct ProjectMeta {
     pub folder: String,
     pub created_at: String,
     pub updated_at: String,
+    /// v0.1.5+ PlotCraft 项目标识：含 `world/` 子目录
+    /// （v0.1.5 之前用 README.md 判定，git clone 别人的项目会被误认；
+    ///  改成 `world/` 更精准 —— 4 个 starter 之一）。
+    /// 前端 OpenProjectModal 用这个给玩家视觉提示（"看起来是 PlotCraft 项目"标签）
+    /// + 排序时 PlotCraft 项目排前面。
+    #[serde(default)]
+    pub is_plotcraft_project: bool,
 }
 
 const README_TEMPLATE: &str = r#"---
