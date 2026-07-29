@@ -38,10 +38,13 @@ import {
   X,
   Download,
   AlertTriangle,
+  CheckCircle2,
 } from 'lucide-vue-next'
 import type { CustomProvider, ApiFormat } from '@/lib/settings'
 import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
 import { importFromLocus, type LocusImportData } from '@/lib/locusImport'
+import { useSettingsStore } from '@/stores/settings'
+import { useChatStore } from '@/stores/chat'
 import ProviderEditModal from '@/components/settings/ProviderEditModal.vue'
 
 const props = defineProps<{
@@ -63,6 +66,42 @@ const apiFormat = defineModel<ApiFormat>('api-format', { required: true })
 
 // === Saved library (v-model) ===
 const customProviders = defineModel<CustomProvider[]>('custom-providers', { required: true })
+
+// === Active provider 判定（"使用中" badge 用）===
+//
+// 用 baseUrl + apiKey + apiFormat 三元组匹配 active connection → 找到的 provider id 即为"使用中"。
+// 注意：apiKey 严格匹配（不忽略前导空格），所以玩家在 modal 改过 key 之后，旧的
+// "使用中" badge 会自动消失 —— 这正是想要的（"你在用" 跟着 baseUrl/key/format 走）。
+const activeProviderId = computed<string | null>(() => {
+  const targetBaseUrl = (baseUrl.value ?? '').trim()
+  if (!targetBaseUrl) return null
+  return (
+    customProviders.value.find(
+      (p) =>
+        p.enabled &&
+        p.baseUrl.trim() === targetBaseUrl &&
+        p.apiKey === apiKey.value &&
+        p.apiFormat === apiFormat.value,
+    )?.id ?? null
+  )
+})
+
+// === Toast（useProvider 成功提示用）===
+interface ToastMsg {
+  id: number
+  text: string
+  tone: 'success' | 'error'
+}
+const toast = ref<ToastMsg | null>(null)
+let toastTimer: number | null = null
+function showToast(text: string, tone: 'success' | 'error' = 'success') {
+  toast.value = { id: Date.now(), text, tone }
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => {
+    toast.value = null
+    toastTimer = null
+  }, 3000)
+}
 
 // === Add / Edit modal (v0.1.2+ 用 ProviderEditModal 替换原 inline form) ===
 const editingProvider = ref<CustomProvider | null>(null)
@@ -134,10 +173,48 @@ function confirmDelete() {
   confirmingDeleteId.value = null
 }
 
-function useProvider(p: CustomProvider) {
+async function useProvider(p: CustomProvider) {
+  // v0.1.5+ Use 按钮完整化 —— 之前只写 3 个 v-model，chat 切过去还显示
+  // "未添加任何 provider"。补 3 件事：
+  // 1. 写 config.model = effectiveDefaultModel（chat selector 靠这个解析 trigger）
+  // 2. 同步 chat.selectedModel（让 trigger 立即变 active，不必等下次 init）
+  // 3. save 持久化 + toast 反馈
+
+  const effectiveModel = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+
+  // 1. 写 active connection 3 字段
   baseUrl.value = p.baseUrl
   apiKey.value = p.apiKey
   apiFormat.value = p.apiFormat
+
+  // 2. 写 config.model（chat selector 解析的 key）—— 写 settings.config
+  //    ref 即可，store 的 .config 是 ref 引用，会同步触发 reactivity
+  const settings = useSettingsStore()
+  if (!settings.loaded) await settings.init()
+  settings.config.model = effectiveModel
+
+  // 3. 同步 chat store（玩家当前在 chat tab 切回 trigger 立即变 active）
+  //    不要等 watcher 触发（init 时只 watch selectedModel/selectedEffort 改的时候）
+  const chat = useChatStore()
+  if (chat.selectedModel !== effectiveModel) {
+    chat.selectedModel = effectiveModel
+  }
+
+  // 4. 持久化
+  try {
+    await settings.save()
+  } catch (e) {
+    console.error('[useProvider] save failed:', e)
+    showToast(`保存失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    return
+  }
+
+  // 5. toast 反馈
+  if (effectiveModel) {
+    showToast(`已切换到 ${p.name} · ${effectiveModel}`)
+  } else {
+    showToast(`已切换到 ${p.name}（未设 model —— 去 chat tab 选一个）`, 'error')
+  }
 }
 
 function toggleEnabled(p: CustomProvider) {
@@ -249,8 +326,9 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
     <p class="hint">
       已保存的第三方 provider 库（顶层 <code>customProviders[]</code>，跟 Locus
       <code>CustomProvider</code> schema 同构，PlotCraft 简化 apiKey 裸存 + 不分 apiFormat）。
-      点 <strong>Use</strong> 把 provider 的 endpoint/key 复制到 active connection（settings 顶层）。
-      active connection 切换现在完全在 <strong>chat tab 的 model selector</strong> 里做。
+      点 <strong>Use</strong> 把 provider 的 endpoint / key / format / model 写到 active
+      connection（settings 顶层），同步刷新 <strong>chat tab model selector</strong>，
+      切到 chat tab 就能直接发消息。带 <strong>使用中</strong> 角标的就是当前 active。
     </p>
 
     <!-- Section 1: 没了 (v0.1.2+)
@@ -300,12 +378,22 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             <div class="card-title">
               <span class="provider-id">{{ p.id }}</span>
               <span class="provider-name">{{ p.name }}</span>
+              <span v-if="activeProviderId === p.id" class="active-tag" title="当前 active connection 用的就是这个 provider">
+                <Check :size="10" />
+                使用中
+              </span>
               <span v-if="!p.enabled" class="disabled-tag">disabled</span>
             </div>
             <div class="card-actions">
-              <button @click="useProvider(p)" class="use-btn" :disabled="!p.enabled">
+              <button
+                @click="useProvider(p)"
+                class="use-btn"
+                :class="{ active: activeProviderId === p.id }"
+                :disabled="!p.enabled"
+                :title="activeProviderId === p.id ? '已经是当前 active connection' : '切到 chat tab 用这个 provider 发送消息'"
+              >
                 <Check :size="12" />
-                <span>Use</span>
+                <span>{{ activeProviderId === p.id ? 'In Use' : 'Use' }}</span>
               </button>
               <button @click="toggleEnabled(p)" class="icon-btn" :title="p.enabled ? '禁用' : '启用'">
                 <Power v-if="p.enabled" :size="12" />
@@ -511,6 +599,25 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
         </div>
       </div>
     </Teleport>
+
+    <!-- v0.1.5+ Toast (useProvider 切 active connection 反馈)
+         Teleport 到 body；用 id 作 key 让连续 toast 也能重新触发动画 -->
+    <Teleport to="body">
+      <Transition name="toast">
+        <div
+          v-if="toast"
+          :key="toast.id"
+          class="toast"
+          :class="`toast-${toast.tone}`"
+          role="status"
+          aria-live="polite"
+        >
+          <CheckCircle2 v-if="toast.tone === 'success'" :size="14" />
+          <AlertTriangle v-else :size="14" />
+          <span>{{ toast.text }}</span>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -671,6 +778,19 @@ label input:focus {
   padding: 1px 6px;
   font-style: italic;
 }
+/* v0.1.5+ 当前 active provider 的角标 —— accent 底色 + bg 文字，让"使用中"一眼可见 */
+.active-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
 .card-actions {
   display: flex;
   gap: 4px;
@@ -698,6 +818,13 @@ label input:focus {
   color: var(--text-muted);
   border-color: var(--border);
   cursor: not-allowed;
+}
+/* v0.1.5+ 当前 active 的 provider —— Use 按钮变 outline，显示 "In Use" 文字
+   避免视觉上"再点一次 Use"，但仍可点击（重写会显示相同 toast） */
+.use-btn.active {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .icon-btn {
   display: flex;
@@ -1133,5 +1260,57 @@ label input:focus {
 @keyframes confirm-rise {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* === Toast (v0.1.5+ useProvider 反馈) ===
+   屏幕底部居中浮动，3s 后自动消失；用 id key + Transition 触发 enter/leave 动画
+   避免被父级 overflow:hidden 截断 → Teleport 到 body */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  z-index: 1100; /* 高于 confirm modal (1000) */
+  max-width: min(560px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.toast-success {
+  border-color: var(--accent);
+}
+.toast-success svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.toast-error {
+  border-color: var(--error, #e53e3e);
+  color: var(--error, #e53e3e);
+}
+.toast-error svg {
+  color: var(--error, #e53e3e);
+  flex-shrink: 0;
+}
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+}
+.toast-enter-to,
+.toast-leave-from {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 </style>
