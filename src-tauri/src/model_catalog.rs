@@ -498,9 +498,12 @@ pub fn spawn_background_refresh(app: AppHandle) {
 // === Tauri commands ===
 
 #[tauri::command]
-pub fn get_model_catalog(app: AppHandle) -> Result<ResolvedCatalog, String> {
-    // tokio runtime 里用 block_on 太重 —— 用 try_block_on 把 future 跑完
-    let state = futures::executor::block_on(current_state(&app))
+pub async fn get_model_catalog(app: AppHandle) -> Result<ResolvedCatalog, String> {
+    // v0.1.4+ fix: 之前用 `futures::executor::block_on` 同步跑 future，
+    // 但 future 内部用 tokio RwLock → panic "no reactor running"。
+    // Tauri 2 command 默认就是 async（tokio runtime），直接 await 即可。
+    let state = current_state(&app)
+        .await
         .map_err(|e| format!("get_model_catalog: {e}"))?;
     Ok(get_resolved_catalog_inner(&state.catalog))
 }
