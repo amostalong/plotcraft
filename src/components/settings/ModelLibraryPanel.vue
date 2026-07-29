@@ -20,8 +20,8 @@ import { DEFAULT_ENDPOINTS, type ApiFormat } from '@/lib/settings'
 const props = defineProps<{
   /** 已经加进 draft 的 model id 列表 —— 这些从库列表里隐藏 */
   existingModelIds: string[]
-  /** 默认是否展开（v0.1 默认展开） */
-  defaultExpanded?: boolean
+  /** v0.1.4+ v-model expanded：受控展开状态（外部 header 按钮 / panel 自己的 toggle 都改这个） */
+  expanded: boolean
   /** 整个 panel disable（保存中） */
   disabled?: boolean
 }>()
@@ -29,10 +29,16 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 点 model → 加到 draft */
   addModel: [model: BuiltinModel]
+  /** v-model 双向：外部 / panel 内部 toggle 时 emit */
+  'update:expanded': [value: boolean]
 }>()
 
-const expanded = ref(props.defaultExpanded !== false)
 const query = ref('')
+
+function setExpanded(v: boolean) {
+  if (props.disabled) return
+  emit('update:expanded', v)
+}
 
 /** 搜索关键词 normalize：小写 + 去空白 —— 跟 Locus `normalizeModelSearch` 一致 */
 const search = computed(() => query.value.toLowerCase().replace(/\s+/g, '').trim())
@@ -126,7 +132,7 @@ function onPick(m: BuiltinModel) {
         type="button"
         class="library-toggle"
         :disabled="disabled"
-        @click="expanded = !expanded"
+        @click="setExpanded(!expanded)"
       >
         <component :is="expanded ? ChevronDown : ChevronRight" :size="12" />
         <span class="library-toggle-text">

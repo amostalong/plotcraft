@@ -17,6 +17,7 @@
 
 import { computed, ref, watch } from 'vue'
 import {
+  BookOpen,
   CheckCircle2,
   ChevronLeft,
   Loader2,
@@ -280,6 +281,11 @@ function addFromLibrary(m: { id: string; name: string }) {
 /** ModelLibraryPanel 用的 existing model ids（要过滤已加的） */
 const existingModelIds = computed(() => draftModels.value.map((m) => m.id))
 
+/** v0.1.4+ ModelLibraryPanel 展开状态（v-model）
+ *  - 外部 header "从模型库添加" 按钮 + panel 自己的 toggle 双向改这个
+ *  - 默认展开（玩家打开 modal 看到 panel 是展开的，1 个 model 直接可加） */
+const libraryExpanded = ref(true)
+
 function submitManualAdd() {
   const id = manualId.value.trim()
   const name = manualName.value.trim() || id
@@ -498,8 +504,18 @@ function onKeydown(e: KeyboardEvent) {
               </span>
               <span v-else class="models-count empty">未添加</span>
               <div class="models-actions">
-                <!-- v0.1.4+ 「从模型库添加」整体搬到 pick stage —— 这里只剩
-                     「手动添加 model」（catalog 选完后再补 model 用） -->
+                <!-- v0.1.4+ model 列表头部双按钮（Locus 同款）：
+                     "从模型库添加" 展开/收起下方 ModelLibraryPanel；
+                     "手动添加" 打开内联 form 输 id + name -->
+                <button
+                  class="add-model-btn"
+                  type="button"
+                  :disabled="saving"
+                  @click="libraryExpanded = !libraryExpanded"
+                >
+                  <BookOpen :size="11" />
+                  <span>{{ libraryExpanded ? '收起模型库' : '从模型库添加' }}</span>
+                </button>
                 <button
                   class="add-model-btn"
                   type="button"
@@ -507,7 +523,7 @@ function onKeydown(e: KeyboardEvent) {
                   @click="openManualForm"
                 >
                   <Plus :size="11" />
-                  <span>手动添加 model</span>
+                  <span>手动添加</span>
                 </button>
               </div>
             </div>
@@ -585,7 +601,7 @@ function onKeydown(e: KeyboardEvent) {
               </div>
             </div>
             <div v-else-if="!showManualForm" class="models-empty">
-              <p>还没有 model —— 右上点 "手动添加 model"</p>
+              <p>还没有 model —— 右上点 "从模型库添加" 或 "手动添加"</p>
               <p class="hint">
                 PlotCraft v0.1 简化：每个 model 只需 id + display name（context window 自动从 BUILTIN_MODELS lookup）
               </p>
@@ -602,8 +618,10 @@ function onKeydown(e: KeyboardEvent) {
               </select>
             </div>
 
-            <!-- v0.1.4+ 模型库面板（仿 Locus 同款 —— 可折叠 + 搜索 + provider 分组） -->
+            <!-- v0.1.4+ 模型库面板（仿 Locus 同款 —— 可折叠 + 搜索 + provider 分组）
+                 展开状态 v-model 跟 header "从模型库添加" 按钮双向绑定 -->
             <ModelLibraryPanel
+              v-model:expanded="libraryExpanded"
               :existing-model-ids="existingModelIds"
               :disabled="saving"
               @add-model="addFromLibrary"
