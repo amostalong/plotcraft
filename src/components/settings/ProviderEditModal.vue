@@ -3,21 +3,22 @@
 //
 // 视觉 + 交互镜像 Locus `CustomProviderModal.vue`（AGENTS.md 硬规则 #1：结构对齐，代码自写）：
 // - 1080×720 modal 居中浮层
-// - 左 320px：connection 字段（API Key / ID / Display Name / Endpoint / API Format / Default Model）
-// - 右 flex：model 列表（v0.1 简化：单个 defaultModel card，Locus 同款但少了多 model 增删）
+// - 2 阶段流程（v0.1.4+ 仿 Locus pick → config）：
+//   - stage='pick'：PlayerCatalogStep（搜索框 + 手动添加卡 + catalog 列表）
+//   - stage='config'：左 320px connection 字段，右 flex model 列表
 // - 中间状态条：local error + test result（连接成功 / 失败 + 错误码 + 模型返回片段）
 // - Footer：保存 / 测试 / 取消
+// - 顶 ← 返回按钮（仅 isNew=true + stage=config 时显示，仿 Locus）
 //
 // v0.1 简化（vs Locus）：
-// - 没有 catalog "从模型库添加" wizard（v0.2+ 接 models.dev snapshot 再说）
-// - 没有 per-provider 多 model 增删（只有 1 个 defaultModel）
+// - 内置 catalog 只 1 条（claude-sonnet-4-5），远程 fetch / 刷新等 v0.2+ 再说
 // - ID 编辑模式不允许改（Locus 允许但我们 v0.1 直接锁）
 // - 字段 label hardcode 英文（v0.1 不上 vue-i18n）
 
 import { computed, ref, watch } from 'vue'
 import {
-  BookOpen,
   CheckCircle2,
+  ChevronLeft,
   Loader2,
   Plus,
   Save,
@@ -29,9 +30,10 @@ import {
 } from 'lucide-vue-next'
 
 import type { CustomProvider, ApiFormat, ProviderModel } from '@/lib/settings'
-import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
-import { BUILTIN_MODELS, findModel, getDefaultEffort } from '@/lib/modelCatalog'
+import { API_FORMAT_LABELS, DEFAULT_API_FORMAT, DEFAULT_ENDPOINTS } from '@/lib/settings'
+import { findModel, getDefaultEffort, type BuiltinModel } from '@/lib/modelCatalog'
 import { testProvider, type TestProviderResult } from '@/lib/llm'
+import ProviderCatalogStep from './ProviderCatalogStep.vue'
 
 const props = defineProps<{
   /** 当前编辑的 provider（null = 关闭）*/
@@ -57,13 +59,19 @@ const draftEnabled = ref(true)
 const draftModels = ref<ProviderModel[]>([])
 const draftDefaultModel = ref('')
 
-// 「从模型库添加」dropdown state
-const showCatalogPicker = ref(false)
-// 「手动添加」inline form state
+// 「手动添加 model」inline form state（config stage 内部，给 catalog 选完后再加 model 用）
 const showManualForm = ref(false)
 const manualId = ref('')
 const manualName = ref('')
 const manualError = ref<string | null>(null)
+
+// === 2 阶段流程（v0.1.4+ 仿 Locus pick → config） ===
+//
+//  v0.1.4+：isNew=true 打开 modal → stage='pick'（ProviderCatalogStep）
+//  玩家选 catalog / 手动 → onPickCatalog / onPickManual → 切到 stage='config'，draft 填好
+//  isNew=false（编辑）→ 直接 stage='config'
+//  玩家在 config 阶段点 ← → 回到 stage='pick'，draft 保留（跟 Locus 一致）
+const stage = ref<'pick' | 'config'>('config')
 
 // === UI state ===
 const localError = ref<string | null>(null)
@@ -71,36 +79,107 @@ const testRunning = ref(false)
 const testResult = ref<TestProviderResult | null>(null)
 const saving = ref(false)
 
-/** 初始化 draft 当 provider prop 变化 */
+/** draft 全部清空到 empty defaults（isNew 初始 / pick stage 手动按钮共用） */
+function resetDraftsToEmpty() {
+  draftId.value = ''
+  draftName.value = ''
+  draftEndpoint.value = ''
+  draftApiKey.value = ''
+  draftApiFormat.value = DEFAULT_API_FORMAT
+  draftEnabled.value = true
+  draftModels.value = []
+  draftDefaultModel.value = ''
+}
+
+/** 把 props.provider 的字段塞到 draft（编辑模式用） */
+function populateDraftsFromProvider(p: CustomProvider) {
+  draftId.value = p.id
+  draftName.value = p.name
+  draftEndpoint.value = p.baseUrl
+  draftApiKey.value = p.apiKey
+  draftApiFormat.value = p.apiFormat
+  draftEnabled.value = p.enabled
+  draftModels.value = p.models ? p.models.map((m) => ({ ...m })) : []
+  draftDefaultModel.value = p.defaultModel
+}
+
+/** 清 UI state（localError / test result / saving） */
+function resetUiState() {
+  localError.value = null
+  testResult.value = null
+  testRunning.value = false
+  saving.value = false
+  showManualForm.value = false
+  manualId.value = ''
+  manualName.value = ''
+  manualError.value = null
+}
+
+/** v0.1.4+ 初始化：modal 每次 mount（provider prop 从 null 变 object）时跑一次
+ *
+ *  - isNew=true → stage='pick' + resetDraftsToEmpty
+ *  - isNew=false → stage='config' + populateDraftsFromProvider
+ *
+ *  modal 用 v-if 控制（ProvidersPanel `editingProvider` null 时销毁），
+ *  所以"打开"= "remount"，watch immediate 每次都跑。
+ *  stage 切换（pick ↔ config）不触发 watch（provider prop 不变）。
+ */
 watch(
   () => props.provider,
   (p) => {
-    if (p) {
-      draftId.value = p.id
-      draftName.value = p.name
-      draftEndpoint.value = p.baseUrl
-      draftApiKey.value = p.apiKey
-      draftApiFormat.value = p.apiFormat
-      draftEnabled.value = p.enabled
-      draftModels.value = p.models ? p.models.map((m) => ({ ...m })) : []
-      draftDefaultModel.value = p.defaultModel
+    if (!p) return
+    resetUiState()
+    if (props.isNew) {
+      stage.value = 'pick'
+      resetDraftsToEmpty()
+    } else {
+      stage.value = 'config'
+      populateDraftsFromProvider(p)
     }
-    localError.value = null
-    testResult.value = null
-    testRunning.value = false
-    saving.value = false
-    showCatalogPicker.value = false
-    showManualForm.value = false
-    manualId.value = ''
-    manualName.value = ''
-    manualError.value = null
   },
   { immediate: true },
 )
 
-const dialogTitle = computed(() =>
-  props.isNew ? '添加供应商' : `编辑 "${props.provider?.name ?? ''}"`,
-)
+const dialogTitle = computed(() => {
+  if (props.isNew && stage.value === 'pick') return '添加供应商'
+  if (props.isNew) return '添加供应商 · 配置'
+  return `编辑 "${props.provider?.name ?? ''}"`
+})
+
+/** v0.1.4+ pick stage 交互 */
+function onPickCatalog(model: BuiltinModel) {
+  const apiFormat: ApiFormat =
+    model.provider === 'anthropic' ? 'anthropic_messages' : 'openai_chat'
+  const providerLabel =
+    model.provider === 'anthropic'
+      ? 'Anthropic'
+      : model.provider === 'openai'
+        ? 'OpenAI'
+        : model.provider === 'google'
+          ? 'Google'
+          : 'Custom'
+  // draftId 用 provider + model id 拼（小写 + dash），保证唯一
+  draftId.value = `${model.provider}-${model.id}`.replace(/[^a-z0-9-]/g, '-')
+  draftName.value = `${providerLabel} / ${model.name}`
+  draftEndpoint.value = DEFAULT_ENDPOINTS[apiFormat]
+  draftApiKey.value = ''
+  draftApiFormat.value = apiFormat
+  draftEnabled.value = true
+  draftModels.value = [{ id: model.id, name: model.name }]
+  draftDefaultModel.value = model.id
+  stage.value = 'config'
+}
+
+function onPickManual() {
+  resetDraftsToEmpty()
+  stage.value = 'config'
+}
+
+function onBackToPick() {
+  if (!props.isNew) return // 编辑模式没 pick stage
+  stage.value = 'pick'
+  // 不 reset drafts —— Locus 同款，切回去不丢玩家已填的
+}
 
 /** Endpoint 用 auto-growing textarea（strip 空白 — URL 不该有 whitespace）*/
 function updateEndpoint(e: Event) {
@@ -168,43 +247,12 @@ function onSave() {
 
 // === v0.1.3+ models 列表增删 ===
 
-/** 「从模型库添加」open/close */
-function openCatalogPicker() {
-  showCatalogPicker.value = true
-  showManualForm.value = false
-  manualError.value = null
-}
-function closeCatalogPicker() {
-  showCatalogPicker.value = false
-}
+// v0.1.4+ 「从模型库添加」整体搬到 pick stage（ProviderCatalogStep）—— 这里只留
+// 「手动添加 model」inline form（catalog 选完后再补 model 用）
 
-/** BUILTIN_MODELS 里还没加进 draftModels 的 model（按 apiFormat 过滤） */
-const catalogCandidates = computed(() => {
-  const existingIds = new Set(draftModels.value.map((m) => m.id))
-  return BUILTIN_MODELS.filter(
-    (m) =>
-      !existingIds.has(m.id) &&
-      // 按 active apiFormat 过滤建议（跟 chat selector 一致）
-      (draftApiFormat.value === 'anthropic_messages'
-        ? m.provider === 'anthropic'
-        : m.provider === 'openai'),
-  )
-})
-
-function addFromCatalog(m: { id: string; name: string }) {
-  // 避免重复
-  if (draftModels.value.some((x) => x.id === m.id)) return
-  draftModels.value = [...draftModels.value, { id: m.id, name: m.name || m.id }]
-  // 如果没设 defaultModel → 设成刚加的这个
-  if (!draftDefaultModel.value.trim()) {
-    draftDefaultModel.value = m.id
-  }
-}
-
-/** 「手动添加」open/close */
+/** 「手动添加 model」open/close（config stage 内部，给已 catalog 选完的 provider 再加 model） */
 function openManualForm() {
   showManualForm.value = true
-  showCatalogPicker.value = false
   manualError.value = null
   manualId.value = ''
   manualName.value = ''
@@ -319,6 +367,16 @@ function onKeydown(e: KeyboardEvent) {
         <!-- Header -->
         <div class="provider-modal-header">
           <div class="provider-modal-header-lead">
+            <button
+              v-if="isNew && stage === 'config'"
+              class="back-btn"
+              type="button"
+              :disabled="saving"
+              title="返回 catalog 选"
+              @click="onBackToPick"
+            >
+              <ChevronLeft :size="14" />
+            </button>
             <span class="provider-modal-title">{{ dialogTitle }}</span>
           </div>
           <button class="close-btn" type="button" :disabled="saving" @click="onClose">
@@ -326,8 +384,16 @@ function onKeydown(e: KeyboardEvent) {
           </button>
         </div>
 
-        <!-- Body: 2 栏（左 connection，右 model） -->
-        <div class="config-body">
+        <!-- v0.1.4+ Pick stage (仿 Locus) —— isNew + stage='pick' 时显示 -->
+        <ProviderCatalogStep
+          v-if="isNew && stage === 'pick'"
+          :disabled="saving"
+          @pick-catalog="onPickCatalog"
+          @pick-manual="onPickManual"
+        />
+
+        <!-- Body: 2 栏（左 connection，右 model）—— stage='config' 时显示 -->
+        <div v-else-if="stage === 'config'" class="config-body">
           <!-- Left: connection fields -->
           <aside class="config-side">
             <div class="config-field">
@@ -416,15 +482,8 @@ function onKeydown(e: KeyboardEvent) {
               </span>
               <span v-else class="models-count empty">未添加</span>
               <div class="models-actions">
-                <button
-                  class="add-model-btn"
-                  type="button"
-                  :disabled="saving"
-                  @click="openCatalogPicker"
-                >
-                  <BookOpen :size="11" />
-                  <span>从模型库添加</span>
-                </button>
+                <!-- v0.1.4+ 「从模型库添加」整体搬到 pick stage —— 这里只剩
+                     「手动添加 model」（catalog 选完后再补 model 用） -->
                 <button
                   class="add-model-btn"
                   type="button"
@@ -432,37 +491,12 @@ function onKeydown(e: KeyboardEvent) {
                   @click="openManualForm"
                 >
                   <Plus :size="11" />
-                  <span>手动添加</span>
+                  <span>手动添加 model</span>
                 </button>
               </div>
             </div>
 
-            <!-- 从模型库添加 dropdown -->
-            <div v-if="showCatalogPicker" class="catalog-picker">
-              <div class="catalog-picker-header">
-                <span>从 BUILTIN_MODELS 选（{{ catalogCandidates.length }} 个候选）</span>
-                <button class="icon-btn" @click="closeCatalogPicker" type="button">
-                  <X :size="11" />
-                </button>
-              </div>
-              <div v-if="catalogCandidates.length === 0" class="catalog-empty">
-                候选都用完了
-              </div>
-              <div v-else class="catalog-list">
-                <button
-                  v-for="m in catalogCandidates"
-                  :key="m.id"
-                  type="button"
-                  class="catalog-option"
-                  @click="addFromCatalog(m)"
-                >
-                  <span class="catalog-option-name">{{ m.name }}</span>
-                  <code class="catalog-option-id">{{ m.id }}</code>
-                </button>
-              </div>
-            </div>
-
-            <!-- 手动添加 inline form -->
+            <!-- 手动添加 model inline form (config stage 内部) -->
             <div v-if="showManualForm" class="manual-form">
               <div class="manual-form-grid">
                 <input
@@ -534,8 +568,8 @@ function onKeydown(e: KeyboardEvent) {
                 </div>
               </div>
             </div>
-            <div v-else-if="!showCatalogPicker && !showManualForm" class="models-empty">
-              <p>还没有 model —— 右上点 "从模型库添加" 或 "手动添加"</p>
+            <div v-else-if="!showManualForm" class="models-empty">
+              <p>还没有 model —— 右上点 "手动添加 model"</p>
               <p class="hint">
                 PlotCraft v0.1 简化：每个 model 只需 id + display name（context window 自动从 BUILTIN_MODELS lookup）
               </p>
@@ -554,8 +588,11 @@ function onKeydown(e: KeyboardEvent) {
           </section>
         </div>
 
-        <!-- Status bar: local error + test result -->
-        <div v-if="localError || testResult || testRunning" class="provider-modal-status">
+        <!-- Status bar: local error + test result (config stage only) -->
+        <div
+          v-if="stage === 'config' && (localError || testResult || testRunning)"
+          class="provider-modal-status"
+        >
           <div v-if="localError" class="local-error">{{ localError }}</div>
           <div
             v-else-if="testResult || testRunning"
@@ -581,8 +618,8 @@ function onKeydown(e: KeyboardEvent) {
           </div>
         </div>
 
-        <!-- Footer: Save / Test / Cancel -->
-        <div class="provider-modal-footer">
+        <!-- Footer: Save / Test / Cancel (config stage only) -->
+        <div v-if="stage === 'config'" class="provider-modal-footer">
           <button class="btn primary" type="button" :disabled="saving" @click="onSave">
             <Save :size="14" />
             <span>{{ saving ? '保存中...' : '保存' }}</span>
@@ -672,6 +709,29 @@ function onKeydown(e: KeyboardEvent) {
   color: var(--text);
 }
 .close-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* v0.1.4+ ← 返回 pick stage 按钮（仿 Locus 顶←） */
+.back-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.back-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.back-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
