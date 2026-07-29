@@ -61,15 +61,22 @@ fn session_dir(app: &tauri::AppHandle) -> AppResult<PathBuf> {
 ///
 /// 设计：v0.1 不抛错，让前端能"优雅降级"到空 session。损坏文件留盘 + console
 /// 提示，玩家可以手动删 `default.json` 重置。
+///
+/// v0.1.5+ fix Windows read：用 `std::fs::read` + `spawn_blocking` 跟 save_session
+/// 一致（避免 `tokio::fs::read` 在 Windows 上偶发文件锁/时序问题）。
 #[tauri::command]
 pub async fn load_session(app: tauri::AppHandle) -> AppResult<Vec<ChatMessage>> {
     let path = session_path(&app)?;
     if !path.exists() {
         return Ok(vec![]);
     }
-    let bytes = fs::read(&path).await.map_err(|e| {
-        crate::error::AppError::Config(format!("read session {}: {}", path.display(), e))
-    })?;
+    let path_for_log = path.display().to_string();
+    let bytes: Vec<u8> = tokio::task::spawn_blocking(move || std::fs::read(&path))
+        .await
+        .map_err(|e| crate::error::AppError::Config(format!("read session: join error: {}", e)))?
+        .map_err(|e| {
+            crate::error::AppError::Config(format!("read session: {}", e))
+        })?;
     // 损坏文件：返回空（前端不感知），错误走 console
     match serde_json::from_slice::<SessionFile>(&bytes) {
         Ok(s) => Ok(s.messages),
@@ -78,7 +85,7 @@ pub async fn load_session(app: tauri::AppHandle) -> AppResult<Vec<ChatMessage>> 
                 &app,
                 "warn",
                 "session",
-                format!("load_session: failed to parse {}: {}", path.display(), e),
+                format!("load_session: failed to parse {}: {}", path_for_log, e),
             );
             Ok(vec![])
         }
@@ -127,37 +134,46 @@ pub async fn save_session(app: tauri::AppHandle, messages: Vec<ChatMessage>) -> 
         return Err(err);
     }
 
-    // atomic write: tmp → rename
+    // atomic write: tmp → rename —— v0.1.5+ fix Windows rename 失败
+    //
+    // 之前用 `tokio::fs::write` + `tokio::fs::rename` 在 Windows 上偶发
+    // "系统找不到指定的文件 (os error 2)" —— tokio 的 Windows 实现对
+    // 短间隔 write→rename 处理不稳，source 文件元数据未及时 sync 到 disk
+    // 导致 rename 时 source not found。
+    //
+    // 修法：用 `std::fs::` 同步 fs（跟 model_catalog.rs 同款），整个
+    // 写+rename 在 `spawn_blocking` 里跑（避免阻塞 tokio runtime）。
+    // 跟 model_catalog.rs 的 `save_cached_catalog` 一致，Windows 上稳。
     let tmp_path = path.with_extension(format!("json{}", SESSION_TMP_SUFFIX));
-    fs::write(&tmp_path, &json).await.map_err(|e| {
-        let err = crate::error::AppError::Config(format!(
-            "write session tmp {}: {}",
-            tmp_path.display(),
-            e
-        ));
+    let json_len = json.len();
+    let msg_count = payload.messages.len();
+    let result: Result<(), String> = tokio::task::spawn_blocking(move || {
+        std::fs::write(&tmp_path, &json)
+            .map_err(|e| format!("write session tmp {}: {}", tmp_path.display(), e))?;
+        std::fs::rename(&tmp_path, &path).map_err(|e| {
+            format!(
+                "rename session {} → {}: {}",
+                tmp_path.display(),
+                path.display(),
+                e
+            )
+        })?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("save_session: join error: {}", e)))?;
+
+    if let Err(e) = result {
+        let err = crate::error::AppError::Config(format!("save_session: {}", e));
         crate::console::console_log(&app, "error", "session", err.to_string());
-        err
-    })?;
-    fs::rename(&tmp_path, &path).await.map_err(|e| {
-        let err = crate::error::AppError::Config(format!(
-            "rename session {} → {}: {}",
-            tmp_path.display(),
-            path.display(),
-            e
-        ));
-        crate::console::console_log(&app, "error", "session", err.to_string());
-        err
-    })?;
+        return Err(err);
+    }
 
     crate::console::console_log(
         &app,
         "info",
         "session",
-        format!(
-            "session saved: {} messages, {} bytes",
-            payload.messages.len(),
-            json.len()
-        ),
+        format!("session saved: {} messages, {} bytes", msg_count, json_len),
     );
     Ok(())
 }
