@@ -31,8 +31,10 @@ import {
 } from 'lucide-vue-next'
 
 import type { CustomProvider, ApiFormat, ProviderModel } from '@/lib/settings'
-import { API_FORMAT_LABELS, DEFAULT_API_FORMAT, DEFAULT_ENDPOINTS } from '@/lib/settings'
-import { findModel, getDefaultEffort, type BuiltinModel } from '@/lib/modelCatalog'
+import { API_FORMAT_LABELS, DEFAULT_API_FORMAT } from '@/lib/settings'
+import { findModel } from '@/lib/modelCatalog'
+import type { CatalogModel, CatalogProvider } from '@/types/catalog'
+import { useModelCatalog } from '@/composables/useModelCatalog'
 import { testProvider, type TestProviderResult } from '@/lib/llm'
 import ProviderCatalogStep from './ProviderCatalogStep.vue'
 import ModelLibraryPanel from './ModelLibraryPanel.vue'
@@ -148,27 +150,20 @@ const dialogTitle = computed(() => {
   return `编辑 "${props.provider?.name ?? ''}"`
 })
 
-/** v0.1.4+ pick stage 交互 */
-function onPickCatalog(model: BuiltinModel) {
-  const apiFormat: ApiFormat =
-    model.provider === 'anthropic' ? 'anthropic_messages' : 'openai_chat'
-  const providerLabel =
-    model.provider === 'anthropic'
-      ? 'Anthropic'
-      : model.provider === 'openai'
-        ? 'OpenAI'
-        : model.provider === 'google'
-          ? 'Google'
-          : 'Custom'
+/** v0.1.4+ pick stage 交互（接 ProviderCatalogStep 的 pickCatalog emit）
+ *  payload: { provider, firstModel } —— Tauri models.dev catalog 的 provider + 该 provider 第一条 model
+ *  prefill 用 provider.endpoint + suggested_api_format（比原来 hardcode DEFAULT_ENDPOINTS 准） */
+function onPickCatalog(payload: { provider: CatalogProvider; firstModel: CatalogModel }) {
+  const { provider, firstModel } = payload
   // draftId 用 provider + model id 拼（小写 + dash），保证唯一
-  draftId.value = `${model.provider}-${model.id}`.replace(/[^a-z0-9-]/g, '-')
-  draftName.value = `${providerLabel} / ${model.name}`
-  draftEndpoint.value = DEFAULT_ENDPOINTS[apiFormat]
+  draftId.value = `${provider.id}-${firstModel.id}`.replace(/[^a-z0-9-]/g, '-')
+  draftName.value = `${provider.name} / ${firstModel.name}`
+  draftEndpoint.value = provider.endpoint
   draftApiKey.value = ''
-  draftApiFormat.value = apiFormat
+  draftApiFormat.value = provider.suggested_api_format as ApiFormat
   draftEnabled.value = true
-  draftModels.value = [{ id: model.id, name: model.name }]
-  draftDefaultModel.value = model.id
+  draftModels.value = [{ id: firstModel.id, name: firstModel.name }]
+  draftDefaultModel.value = firstModel.id
   stage.value = 'config'
 }
 
@@ -267,19 +262,53 @@ function closeManualForm() {
 }
 
 /** v0.1.4+ 从 ModelLibraryPanel 选一个 model 加进 draft
+ *  payload: { model, provider } —— model.id 写入 draft，provider 备用（v0.1 暂不用）
  *  - 避免重复（id 已存在直接 no-op）
  *  - 第一个 model 自动设成 default
  */
-function addFromLibrary(m: { id: string; name: string }) {
-  if (draftModels.value.some((x) => x.id === m.id)) return
-  draftModels.value = [...draftModels.value, { id: m.id, name: m.name || m.id }]
+function addFromLibrary(payload: { model: CatalogModel; provider: CatalogProvider }) {
+  const { model } = payload
+  if (draftModels.value.some((x) => x.id === model.id)) return
+  draftModels.value = [...draftModels.value, { id: model.id, name: model.name || model.id }]
   if (!draftDefaultModel.value.trim()) {
-    draftDefaultModel.value = m.id
+    draftDefaultModel.value = model.id
   }
 }
 
 /** ModelLibraryPanel 用的 existing model ids（要过滤已加的） */
 const existingModelIds = computed(() => draftModels.value.map((m) => m.id))
+
+/** Tauri catalog（v0.1.4+）—— 给 lookupBuiltinContext / lookupBuiltinEffort 用
+ *  - 不在 onMounted 触发（UI 第一次展开 model list 才查 Tauri，避免 modal 打开阻塞） */
+const { catalog: tauriCatalog, load: loadTauriCatalog } = useModelCatalog()
+function ensureCatalogLoaded() {
+  if (!tauriCatalog.value) loadTauriCatalog().catch(() => {})
+}
+
+/** 在 Tauri catalog 里查 model（v0.1.4+ 主源；找不到回退到 BUILTIN_MODELS） */
+function findCatalogModel(id: string): CatalogModel | null {
+  const cat = tauriCatalog.value
+  if (cat) {
+    for (const p of cat.providers) {
+      const m = p.models.find((mm) => mm.id === id)
+      if (m) return m
+    }
+  }
+  // 兜底：硬编码 BUILTIN_MODELS（v0.1.4 前 1 条 claude-sonnet-4-5 / 离线 fallback）
+  const builtin = findModel(id)
+  if (!builtin) return null
+  return {
+    id: builtin.id,
+    name: builtin.name,
+    context_window: builtin.contextWindow,
+    output_limit: 0,
+    reasoning: (builtin.supportedEfforts?.length ?? 0) > 0,
+    tool_call: true,
+    vision: false,
+    release_date: undefined,
+    status: undefined,
+  }
+}
 
 /** v0.1.4+ ModelLibraryPanel 展开状态（v-model）
  *  - 外部 header "从模型库添加" 按钮 + panel 自己的 toggle 双向改这个
@@ -316,19 +345,22 @@ function setAsDefault(id: string) {
   draftDefaultModel.value = id
 }
 
-/** model card 上下文：查 builtin 拿 context window 显示 */
+/** model card 上下文：查 catalog 拿 context window + reasoning 显示
+ *  v0.1.4+ 主查 Tauri catalog，找不到回退到 BUILTIN_MODELS（1 条 claude-sonnet-4-5 / 离线） */
 function lookupBuiltinContext(id: string): string | null {
-  const m = findModel(id)
-  if (!m) return null
-  if (m.contextWindow >= 1_000_000) return `${(m.contextWindow / 1_000_000).toFixed(1)}M ctx`
-  if (m.contextWindow >= 1_000) return `${Math.round(m.contextWindow / 1_000)}K ctx`
-  return `${m.contextWindow} ctx`
+  ensureCatalogLoaded()
+  const m = findCatalogModel(id)
+  if (!m || !m.context_window) return null
+  if (m.context_window >= 1_000_000) return `${(m.context_window / 1_000_000).toFixed(1)}M ctx`
+  if (m.context_window >= 1_000) return `${Math.round(m.context_window / 1_000)}K ctx`
+  return `${m.context_window} ctx`
 }
 
 function lookupBuiltinEffort(id: string): string | null {
-  const m = findModel(id)
+  ensureCatalogLoaded()
+  const m = findCatalogModel(id)
   if (!m) return null
-  return getDefaultEffort(m) || null
+  return m.reasoning ? 'reasoning' : null
 }
 
 async function onTest() {

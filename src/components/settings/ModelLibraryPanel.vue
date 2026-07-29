@@ -5,127 +5,110 @@
 // - 标题 + 展开/收起 toggle + 总数提示
 // - 搜索框（按 provider 名 / endpoint / model id / model name 过滤）
 // - provider 分组列表：每个 provider 显示名字 + endpoint，下面列出 model
-// - 每个 model：name + 上下文徽标 + reasoning 徽标（R）
-// - 点 model → emit('addModel', m) → ProviderEditModal 加到 draftModels
+// - 每个 model：name + 上下文徽标（K/M）+ reasoning 徽标（R）+ vision 徽标（V）
+// - 点 model → emit('addModel', { model, provider }) → ProviderEditModal 加到 draftModels
 //
-// v0.1 简化：catalog 只 1 条 BUILTIN_MODELS（claude-sonnet-4-5 / Anthropic），
-// 1 个 provider 组 + 1 个 model。结构跟 Locus 同款，未来加 catalog entry 直接扩。
+// v0.1.4+ 数据源从硬编码 BUILTIN_MODELS 改成 Tauri models.dev catalog
+// （~167 providers，listable 后剩 ~30+ providers / ~1000 models，src-tauri/src/model_catalog.rs）
 // 已加进 draftModels 的 model id 自动从列表隐藏。
 
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-vue-next'
-import { BUILTIN_MODELS, type BuiltinModel } from '@/lib/modelCatalog'
-import { DEFAULT_ENDPOINTS, type ApiFormat } from '@/lib/settings'
+import { useModelCatalog, loadModelCatalog } from '@/composables/useModelCatalog'
+import type { CatalogModel, CatalogProvider } from '@/types/catalog'
 
 const props = defineProps<{
   /** 已经加进 draft 的 model id 列表 —— 这些从库列表里隐藏 */
   existingModelIds: string[]
-  /** v0.1.4+ v-model expanded：受控展开状态（外部 header 按钮 / panel 自己的 toggle 都改这个） */
+  /** v-model expanded：受控展开状态（外部 header 按钮 / panel 自己的 toggle 都改这个） */
   expanded: boolean
   /** 整个 panel disable（保存中） */
   disabled?: boolean
 }>()
 
 const emit = defineEmits<{
-  /** 点 model → 加到 draft */
-  addModel: [model: BuiltinModel]
+  /** 点 model → 加到 draft（带 provider 信息让 ProviderEditModal 知道 apiFormat 兜底） */
+  addModel: [payload: { model: CatalogModel; provider: CatalogProvider }]
   /** v-model 双向：外部 / panel 内部 toggle 时 emit */
   'update:expanded': [value: boolean]
 }>()
 
-const query = ref('')
+const { catalog, loading, error, load } = useModelCatalog()
+
+// 第一次显示 panel 时 lazy 加载（onMounted 时机太早，performance 影响小）
+onMounted(() => {
+  if (!catalog.value && !loading.value) {
+    load().catch(() => {
+      /* 错误已经在 composable 里存了，UI 显示即可 */
+    })
+  }
+})
 
 function setExpanded(v: boolean) {
   if (props.disabled) return
   emit('update:expanded', v)
 }
 
-/** 搜索关键词 normalize：小写 + 去空白 —— 跟 Locus `normalizeModelSearch` 一致 */
+const query = ref('')
+
+/** 搜索关键词 normalize：小写 + 去空白 */
 const search = computed(() => query.value.toLowerCase().replace(/\s+/g, '').trim())
 
-const PROVIDER_LABELS: Record<BuiltinModel['provider'], string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  google: 'Google',
-  custom: 'Custom',
-}
-
-/** 按 provider 分组 catalog（每个 provider 一组） */
-interface ProviderGroup {
-  provider: BuiltinModel['provider']
-  label: string
-  endpoint: string
-  models: BuiltinModel[]
-}
-
-const providerGroups = computed<ProviderGroup[]>(() => {
-  const groups = new Map<BuiltinModel['provider'], BuiltinModel[]>()
-  for (const m of BUILTIN_MODELS) {
-    if (!groups.has(m.provider)) groups.set(m.provider, [])
-    groups.get(m.provider)!.push(m)
-  }
+/** 按 existingModelIds 过滤后剩下的 provider（空 model 数组过滤掉） */
+const filteredProviders = computed<CatalogProvider[]>(() => {
+  const cat = catalog.value
+  if (!cat) return []
   const existing = new Set(props.existingModelIds)
-  const out: ProviderGroup[] = []
-  for (const [provider, models] of groups) {
-    const apiFormat: ApiFormat =
-      provider === 'anthropic' ? 'anthropic_messages' : 'openai_chat'
-    out.push({
-      provider,
-      label: PROVIDER_LABELS[provider] ?? provider,
-      endpoint: DEFAULT_ENDPOINTS[apiFormat],
-      models: models.filter((m) => !existing.has(m.id)),
-    })
-  }
-  return out
-})
-
-/** 搜索过滤后剩下的 provider（空 model 数组过滤掉） */
-const filteredGroups = computed<ProviderGroup[]>(() => {
   const q = search.value
-  return providerGroups.value
-    .map((g) => {
-      if (!q) return g
-      const hitProvider = g.label.toLowerCase().includes(q) || g.endpoint.toLowerCase().includes(q)
-      const filteredModels = g.models.filter(
+  return cat.providers
+    .map((p) => {
+      if (!q) return p
+      const hitProvider =
+        p.name.toLowerCase().includes(q) || p.endpoint.toLowerCase().includes(q)
+      const models = p.models.filter(
         (m) =>
           hitProvider ||
           m.id.toLowerCase().includes(q) ||
-          m.name.toLowerCase().includes(q) ||
-          (m.note ?? '').toLowerCase().includes(q),
+          m.name.toLowerCase().includes(q),
       )
-      return { ...g, models: filteredModels }
+      return { ...p, models }
     })
-    .filter((g) => g.models.length > 0)
+    .filter((p) => p.models.some((m) => !existing.has(m.id)))
+    // 重写 models：去掉已加进 draft 的
+    .map((p) => ({
+      ...p,
+      models: p.models.filter((m) => !existing.has(m.id)),
+    }))
 })
 
-/** 总数提示 */
+/** 总数提示（"X / Y 个 model" / "Y 个 model"）*/
 const totalCount = computed(() => {
-  const shown = filteredGroups.value.reduce((sum, g) => sum + g.models.length, 0)
-  const total = BUILTIN_MODELS.length
+  if (!catalog.value) return '0 个 model'
+  const total = catalog.value.providers.reduce((sum, p) => sum + p.models.length, 0)
+  const shown = filteredProviders.value.reduce((sum, p) => sum + p.models.length, 0)
   if (search.value) return `${shown} / ${total} 个 model`
   return `${total} 个 model`
 })
 
-/** model 是否支持 reasoning（有 supportedEfforts）*/
-function isReasoning(m: BuiltinModel): boolean {
-  return !!m.supportedEfforts && m.supportedEfforts.length > 0
-}
-
 /** 上下文窗口格式化 "200000" → "200K" */
 function formatCtx(tokens: number): string {
+  if (!tokens) return ''
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
   if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`
   return String(tokens)
 }
 
-function onPick(m: BuiltinModel) {
+function onPick(model: CatalogModel, provider: CatalogProvider) {
   if (props.disabled) return
-  emit('addModel', m)
+  emit('addModel', { model, provider })
 }
+
+// 错误时给一个明确 hint（玩家就知道是 catalog 拉取失败，不是 catalog 是空的）
+const errorMessage = computed(() => error.value?.message ?? '')
 </script>
 
 <template>
-  <div class="model-library" :class="{ collapsed: !expanded }">
+  <div class="model-library" :class="{ collapsed: !expanded, loading: loading }">
     <!-- 标题行：库名 + 展开/收起 toggle + 总数 -->
     <div class="library-header">
       <button
@@ -152,54 +135,65 @@ function onPick(m: BuiltinModel) {
             type="text"
             class="library-search-input"
             :disabled="disabled"
-            placeholder="搜索供应商或模型（如 anthropic、claude、sonnet）"
+            placeholder="搜索供应商或模型（如 anthropic、claude、deepseek）"
             spellcheck="false"
           />
         </div>
         <button
           type="button"
           class="library-refresh"
-          :disabled="disabled"
-          title="刷新 catalog（v0.1 暂未接远端）"
+          :disabled="disabled || loading"
+          title="刷新 catalog（v0.1 内置 snapshot，不需要刷）"
+          @click="load"
         >
-          <RefreshCw :size="11" />
+          <RefreshCw :size="11" :class="{ spinning: loading }" />
         </button>
       </div>
 
-      <p v-if="!search" class="library-hint">
-        v0.1 内置只 {{ BUILTIN_MODELS.length }} 条；想加其他 model 走 "手动添加 model"。
+      <p v-if="!search && !error" class="library-hint">
+        v0.1 内置 models.dev snapshot — 全部 {{ catalog?.providers.length ?? 0 }} 个
+        listable provider 可加。
       </p>
-      <p v-else class="library-hint">搜索 "{{ query }}" 的结果</p>
+      <p v-else-if="search" class="library-hint">搜索 "{{ query }}" 的结果</p>
+      <p v-else-if="errorMessage" class="library-hint library-error">
+        ⚠ catalog 拉取失败：{{ errorMessage }}
+      </p>
 
-      <div v-if="filteredGroups.length === 0" class="library-empty">
+      <div v-if="loading && !catalog" class="library-status">
+        加载 catalog…
+      </div>
+      <div v-else-if="filteredProviders.length === 0" class="library-status">
         {{ search ? '没有匹配的 model' : '模型库里没有可加的 model（都已加）' }}
       </div>
 
       <div v-else class="library-list">
         <div
-          v-for="group in filteredGroups"
-          :key="group.provider"
+          v-for="provider in filteredProviders"
+          :key="provider.id"
           class="library-provider"
         >
           <div class="library-provider-header">
-            <span class="library-provider-name">{{ group.label }}</span>
-            <code class="library-provider-endpoint">{{ group.endpoint }}</code>
+            <span class="library-provider-name">{{ provider.name }}</span>
+            <code class="library-provider-endpoint">{{ provider.endpoint }}</code>
           </div>
           <button
-            v-for="m in group.models"
+            v-for="m in provider.models"
             :key="m.id"
             type="button"
             class="library-model"
             :disabled="disabled"
-            @click="onPick(m)"
+            @click="onPick(m, provider)"
           >
             <span class="library-model-name">{{ m.name }}</span>
             <span class="library-model-badges">
-              <span v-if="m.contextWindow" class="badge badge-ctx">
-                {{ formatCtx(m.contextWindow) }}
+              <span v-if="m.context_window" class="badge badge-ctx">
+                {{ formatCtx(m.context_window) }}
               </span>
-              <span v-if="isReasoning(m)" class="badge badge-r" title="支持 reasoning effort">
+              <span v-if="m.reasoning" class="badge badge-r" title="支持 reasoning effort">
                 R
+              </span>
+              <span v-if="m.vision" class="badge badge-v" title="支持 vision / image input">
+                V
               </span>
             </span>
           </button>
@@ -339,6 +333,13 @@ function onPick(m: BuiltinModel) {
   cursor: not-allowed;
 }
 
+.spinning {
+  animation: library-spin 0.9s linear infinite;
+}
+@keyframes library-spin {
+  to { transform: rotate(360deg); }
+}
+
 .library-hint {
   margin: 0;
   padding: 0 2px;
@@ -346,13 +347,16 @@ function onPick(m: BuiltinModel) {
   color: var(--text-muted);
   line-height: 1.4;
 }
+.library-error {
+  color: var(--error, #e53e3e);
+}
 
 /* === List === */
 .library-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 220px;
+  max-height: 280px;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -445,8 +449,13 @@ function onPick(m: BuiltinModel) {
   color: var(--thinking-high, #dd6b20);
   border: 1px solid rgba(221, 107, 32, 0.3);
 }
+.badge-v {
+  background: rgba(56, 161, 105, 0.12);
+  color: var(--thinking-low, #38a169);
+  border: 1px solid rgba(56, 161, 105, 0.3);
+}
 
-.library-empty {
+.library-status {
   padding: 12px 8px;
   font-size: 11.5px;
   color: var(--text-muted);

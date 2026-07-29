@@ -10,6 +10,7 @@ import type {
   ChatDonePayload,
   ChatErrorPayload,
 } from '@/types/chat'
+import type { ModelCatalog } from '@/types/catalog'
 import type { ApiFormat, EffortLevel } from './settings'
 
 /** Chat run 选项（start_chat 第二个参数）
@@ -76,6 +77,15 @@ export async function testProvider(opts: {
   model: string
 }): Promise<TestProviderResult> {
   return invoke<TestProviderResult>('test_provider', { opts })
+}
+
+/** Get the embedded model catalog (slim models.dev snapshot, ~167 providers)
+ *  - Rust 端 lazy parse 一次 + 缓存到 OnceLock（in-process 不再 reparse）
+ *  - 前端按需缓存到内存（player 打开 modal 才拉，避免启动阻塞）
+ *  - v0.1 不做远端 refresh：snapshot 是 v0.1 固定版本，rebuild 才会换
+ */
+export async function getModelCatalog(): Promise<ModelCatalog> {
+  return invoke<ModelCatalog>('get_model_catalog')
 }
 
 // --- Tauri event subscriptions ---

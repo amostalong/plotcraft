@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 mod commands;
 mod error;
 mod llm;
+mod model_catalog;
 mod project;
 
 #[global_allocator]
@@ -40,6 +41,7 @@ pub fn run() {
             commands::settings::load_config,
             commands::settings::save_config,
             commands::locus_import::import_from_locus,
+            model_catalog::get_model_catalog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

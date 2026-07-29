@@ -2,20 +2,20 @@
 // ProviderCatalogStep —— "从模型库添加" 的 Locus 同款 pick stage
 //
 // 视觉 + 交互镜像 Locus `ProviderCatalogStep.vue`（AGENTS.md 硬规则 #1：结构对齐，代码自写）：
-// - 顶部：搜索框（v0.1 暂时 1 个 entry 没用上，保留给 v0.2+ 多 catalog entry 时启用）
+// - 顶部：搜索框（按 provider 名 / endpoint 过滤，30+ providers 必备）
 // - 手动添加卡（dashed border + + icon + 名字 + 描述 + chevron）
 // - 分割线 + "或从模型库选" 段头
-// - catalog provider 列表：每个 row 显示名字 / 描述 / 数量 badge / chevron
-//   - v0.1 BUILTIN_MODELS 只 1 条（claude-sonnet-4-5 / Anthropic），按 provider 分组渲染
+// - catalog provider 列表：每个 row 显示名字 / endpoint / model count / chevron
 //
-// v0.1 简化：1 个 builtin entry，没有 remote catalog、没有 refresh 按钮。
-// v0.2+ 拿 snapshot 缓存的 catalog 时，把 search / refresh 加上。
+// v0.1.4+ 数据源从硬编码 BUILTIN_MODELS 改成 Tauri models.dev catalog
+//  - 30+ listable providers（~167 raw，filter 完剩 ~30+ 真正能用的）
+//  - 每行对应一个 CatalogProvider；点 → prefill draft + 切到 config
+//  - v0.1 暂不接远端 refresh（snapshot 嵌在 Rust binary 里，rebuild 才会换）
 
-import { computed } from 'vue'
-import { BookOpen, Plus, ChevronRight, Search } from 'lucide-vue-next'
-import { BUILTIN_MODELS, type BuiltinModel } from '@/lib/modelCatalog'
-import type { ApiFormat } from '@/lib/settings'
-import { DEFAULT_ENDPOINTS } from '@/lib/settings'
+import { computed, onMounted, ref } from 'vue'
+import { BookOpen, Plus, ChevronRight, Search, RefreshCw } from 'lucide-vue-next'
+import { useModelCatalog } from '@/composables/useModelCatalog'
+import type { CatalogModel, CatalogProvider } from '@/types/catalog'
 
 const props = defineProps<{
   /** disabled 状态（save 进行中） */
@@ -23,62 +23,53 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  /** 玩家选了 catalog 里的一条 → prefill draft 切到 config */
-  pickCatalog: [model: BuiltinModel]
+  /** 玩家选了 catalog 里的一条 provider → prefill draft 切到 config
+   *  v0.1 用 provider 第一条 model 作 starter；config 阶段还能用 library 补 model */
+  pickCatalog: [payload: { provider: CatalogProvider; firstModel: CatalogModel }]
   /** 玩家点 "手动添加" → 切到 config，draft 留空 */
   pickManual: []
 }>()
 
-/** BuiltinModel.provider → UI label
- *  v0.1 只用 anthropic / openai 两个；custom 留给 v0.2+ */
-const PROVIDER_LABELS: Record<BuiltinModel['provider'], string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  google: 'Google',
-  custom: 'Custom',
-}
+const { catalog, loading, error, load } = useModelCatalog()
 
-/** 按 provider 分组 catalog（每个 provider 一行，v0.1 通常只有 1 行） */
-interface CatalogRow {
-  provider: BuiltinModel['provider']
-  providerLabel: string
-  /** 选这条 row 后建议填的 endpoint（按 provider 选 DEFAULT_ENDPOINTS） */
-  suggestedEndpoint: string
-  /** 选这条 row 后建议填的 apiFormat（openai → openai_chat，anthropic → anthropic_messages） */
-  suggestedApiFormat: ApiFormat
-  /** 这一组里所有 model */
-  models: BuiltinModel[]
-}
-
-const catalogRows = computed<CatalogRow[]>(() => {
-  const groups = new Map<BuiltinModel['provider'], BuiltinModel[]>()
-  for (const m of BUILTIN_MODELS) {
-    if (!groups.has(m.provider)) groups.set(m.provider, [])
-    groups.get(m.provider)!.push(m)
-  }
-  const rows: CatalogRow[] = []
-  for (const [provider, models] of groups) {
-    const apiFormat: ApiFormat =
-      provider === 'anthropic' ? 'anthropic_messages' : 'openai_chat'
-    rows.push({
-      provider,
-      providerLabel: PROVIDER_LABELS[provider] ?? provider,
-      suggestedEndpoint: DEFAULT_ENDPOINTS[apiFormat],
-      suggestedApiFormat: apiFormat,
-      models,
+onMounted(() => {
+  if (!catalog.value && !loading.value) {
+    load().catch(() => {
+      /* 错误已经存在 composable 里 */
     })
   }
-  return rows
 })
 
-/** 整段 catalog 数量 = 所有 model 数（v0.1 始终 1） */
-const totalModels = computed(() =>
-  catalogRows.value.reduce((sum, r) => sum + r.models.length, 0),
-)
+const query = ref('')
+const search = computed(() => query.value.toLowerCase().replace(/\s+/g, '').trim())
 
-function onPickCatalog(model: BuiltinModel) {
+/** 搜索过滤后的 provider 列表（空数组过滤掉） */
+const filteredProviders = computed<CatalogProvider[]>(() => {
+  const cat = catalog.value
+  if (!cat) return []
+  const q = search.value
+  if (!q) return cat.providers
+  return cat.providers.filter(
+    (p) =>
+      p.name.toLowerCase().includes(q) ||
+      p.endpoint.toLowerCase().includes(q) ||
+      p.id.toLowerCase().includes(q),
+  )
+})
+
+/** 总数提示 */
+const totalInfo = computed(() => {
+  const cat = catalog.value
+  if (!cat) return '0 provider'
+  const total = cat.providers.length
+  const shown = filteredProviders.value.length
+  if (search.value) return `${shown} / ${total} provider`
+  return `${total} provider`
+})
+
+function onPickCatalog(provider: CatalogProvider, firstModel: CatalogModel) {
   if (props.disabled) return
-  emit('pickCatalog', model)
+  emit('pickCatalog', { provider, firstModel })
 }
 
 function onPickManual() {
@@ -89,16 +80,27 @@ function onPickManual() {
 
 <template>
   <div class="catalog-pick-step">
-    <!-- 搜索框（v0.1 1 个 entry 不启用，保留位置 + disabled 状态） -->
+    <!-- 搜索框（v0.1 启用 — 30+ providers 必备） -->
     <div class="pick-toolbar">
       <div class="pick-search-wrap">
         <Search :size="12" class="pick-search-icon" />
         <input
+          v-model="query"
           class="pick-search"
           type="text"
-          disabled
-          placeholder="搜索 provider / model（v0.2+ 启用，v0.1 暂只 1 个）"
+          :disabled="disabled"
+          placeholder="搜索 provider / model（如 anthropic、deepseek）"
+          spellcheck="false"
         />
+        <button
+          type="button"
+          class="pick-refresh"
+          :disabled="disabled || loading"
+          title="刷新 catalog"
+          @click="load"
+        >
+          <RefreshCw :size="11" :class="{ spinning: loading }" />
+        </button>
       </div>
     </div>
 
@@ -127,34 +129,40 @@ function onPickManual() {
     <!-- Catalog provider 列表 -->
     <div class="pick-list">
       <button
-        v-for="row in catalogRows"
-        :key="row.provider"
+        v-for="provider in filteredProviders"
+        :key="provider.id"
         type="button"
         class="pick-row"
         :disabled="disabled"
-        @click="onPickCatalog(row.models[0])"
+        @click="provider.models[0] && onPickCatalog(provider, provider.models[0])"
       >
         <span class="pick-row-main">
-          <span class="pick-row-name">{{ row.providerLabel }}</span>
+          <span class="pick-row-name">{{ provider.name }}</span>
           <span class="pick-row-endpoint">
-            {{ row.suggestedEndpoint }}
+            {{ provider.endpoint }}
           </span>
         </span>
         <span class="pick-row-side">
           <span class="pick-badge">
-            {{ row.models.length }} model{{ row.models.length === 1 ? '' : 's' }}
+            {{ provider.models.length }} model{{ provider.models.length === 1 ? '' : 's' }}
           </span>
           <ChevronRight :size="12" class="pick-chevron" />
         </span>
       </button>
-      <div v-if="catalogRows.length === 0" class="pick-status">
-        暂无 catalog entry
+      <div v-if="error" class="pick-status pick-status-error">
+        ⚠ catalog 拉取失败：{{ error.message }}
+      </div>
+      <div v-else-if="loading && filteredProviders.length === 0" class="pick-status">
+        加载 catalog…
+      </div>
+      <div v-else-if="filteredProviders.length === 0" class="pick-status">
+        {{ search ? '没有匹配的 provider' : '暂无 catalog entry' }}
       </div>
     </div>
 
     <!-- 底部 hint -->
     <p class="pick-hint">
-      v0.1 内置只 {{ totalModels }} 条；想加其他 model 走 "手动添加"。
+      v0.1 内置 models.dev snapshot · {{ totalInfo }}
     </p>
   </div>
 </template>
@@ -181,6 +189,9 @@ function onPickManual() {
   position: relative;
   flex: 1;
   min-width: 0;
+  display: flex;
+  gap: 4px;
+  align-items: center;
 }
 .pick-search-icon {
   position: absolute;
@@ -191,7 +202,8 @@ function onPickManual() {
   pointer-events: none;
 }
 .pick-search {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 7px 10px 7px 28px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -203,9 +215,41 @@ function onPickManual() {
   box-sizing: border-box;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
+.pick-search:focus:not(:disabled) {
+  border-color: var(--accent);
+}
 .pick-search:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.pick-refresh {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+  padding: 0;
+}
+.pick-refresh:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.pick-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.spinning {
+  animation: pick-spin 0.9s linear infinite;
+}
+@keyframes pick-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* === 手动添加卡 === */
@@ -330,7 +374,7 @@ function onPickManual() {
   flex: 1;
 }
 .pick-row-name {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
 }
@@ -363,6 +407,9 @@ function onPickManual() {
   font-size: 12px;
   color: var(--text-muted);
   text-align: center;
+}
+.pick-status-error {
+  color: var(--error, #e53e3e);
 }
 
 /* === Hint === */

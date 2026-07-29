@@ -42,3 +42,9 @@ uuid = { version = "1", features = ["v4"] }
 # commit 8: Locus import —— 跨 app 读 Locus config.json + custom_providers.json
 # dirs 拿 OS config dir（Windows: %APPDATA%, macOS: ~/Library/Application Support, Linux: ~/.config）
 dirs = "5"
+
+# v0.1.4+ models.dev 内置 catalog snapshot（gzipped 157KB，~167 providers / ~1500 models）
+# flate2 解 gzip，serde_json 解析
+flate2 = "1"
+# indexmap 保留 models.dev slim snapshot 的 key 顺序（provider / model 列表按 API 文档序）
+indexmap = { version = "2", features = ["serde"] }
