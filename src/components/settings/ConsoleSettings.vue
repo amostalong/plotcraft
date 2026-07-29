@@ -79,7 +79,7 @@ async function onClear() {
 }
 
 async function copyEntry(entry: ConsoleEntry) {
-  const text = `[${formatTime(entry.timestampMs)}] [${sourceLabel(entry.source)}] [${entry.module}] [${entry.level.toUpperCase()}] ${entry.message}`
+  const text = `[${formatTime(entry.timestamp_ms)}] [${sourceLabel(entry.source)}] [${entry.module}] [${entry.level.toUpperCase()}] ${entry.message}`
   try {
     await navigator.clipboard.writeText(text)
     copiedId.value = entry.id
@@ -208,7 +208,7 @@ onUnmounted(() => {
         @click="copyEntry(entry)"
         :title="`点击复制整行`"
       >
-        <span class="console-time">{{ formatTime(entry.timestampMs) }}</span>
+        <span class="console-time">{{ formatTime(entry.timestamp_ms) }}</span>
         <span class="console-source">{{ sourceLabel(entry.source) }}</span>
         <span class="console-module">{{ entry.module }}</span>
         <span class="console-level">{{ entry.level.toUpperCase() }}</span>

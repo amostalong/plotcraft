@@ -23,15 +23,23 @@ export type ConsoleLevel = 'info' | 'warn' | 'error'
 /** console 来源（v0.1 简化 2 种） */
 export type ConsoleSource = 'backend' | 'frontend'
 
-/** 单条 console entry —— 镜像 Rust 端 ConsoleEntry */
+/** 单条 console entry —— 镜像 Rust 端 ConsoleEntry
+ *
+ *  v0.1.5+ fix: Rust serde 默认 snake_case，emit payload 里字段是 `timestamp_ms`，
+ *  不是 `timestampMs`。前端之前用 camelCase → Rust 推的 entry 的 timestamp 拿到
+ *  undefined → NaN:NaN:NaN（控制台 time 列坏）。改成 snake_case 跟 Rust 对齐
+ *  （AGENTS.md 硬规则 #8：跨 Tauri boundary 走 snake_case）。
+ *
+ *  前端 pushLocal 时也用 `timestamp_ms` 写，确保 key 一致。
+ */
 export interface ConsoleEntry {
   id: string
   level: ConsoleLevel
   source: ConsoleSource
   module: string
   message: string
-  /** 毫秒时间戳 */
-  timestampMs: number
+  /** 毫秒时间戳（snake_case 跟 Rust 端对齐） */
+  timestamp_ms: number
 }
 
 const MAX_ENTRIES = 1000
@@ -76,7 +84,7 @@ function pushFrontend(level: ConsoleLevel, args: unknown[]): void {
     source: 'frontend',
     module: 'app',
     message: formatArgs(args),
-    timestampMs: Date.now(),
+    timestamp_ms: Date.now(),
   })
 }
 
@@ -160,6 +168,6 @@ export function _pushTestEntry(entry: Partial<ConsoleEntry>): void {
     source: entry.source ?? 'frontend',
     module: entry.module ?? 'app',
     message: entry.message ?? '',
-    timestampMs: entry.timestampMs ?? Date.now(),
+    timestamp_ms: entry.timestamp_ms ?? Date.now(),
   })
 }
