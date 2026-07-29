@@ -463,7 +463,9 @@ async fn refresh_catalog_inner(app: &AppHandle) -> Result<(ModelCatalog, &'stati
 /// - cache 已有但旧于 24h → 等 5s 就拉
 /// - 失败 → 静默（fallback freshest local data）
 pub fn spawn_background_refresh(app: AppHandle) {
-    tokio::spawn(async move {
+    // v0.1.4+ fix: setup hook 里 `tokio::spawn` 找不到 reactor（panic "no reactor running"）。
+    // 改用 Tauri 自己的 async runtime wrapper —— 它在 setup 阶段已经初始化好了。
+    tauri::async_runtime::spawn(async move {
         tokio::time::sleep(BG_REFRESH_DELAY).await;
 
         // 决定要不要 refresh
