@@ -128,8 +128,11 @@ export function createStreamReducer() {
         return
       }
       case 'loadSession': {
+        // v0.1.5+ fix spread precedence：之前 `{...m.sessionId === null ? a : b}` 缺括号
+        // runtime 会展开 `...m.sessionId` 当 spread operand（operator precedence bug）
+        const base = m.sessionId === null ? initial : { ...initial, sessionId: m.sessionId }
         state.value = {
-          ...m.sessionId === null ? initial : { ...initial, sessionId: m.sessionId },
+          ...base,
           sessionId: m.sessionId,
           messages: m.messages,
           lastEventAt: now,

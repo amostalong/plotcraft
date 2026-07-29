@@ -49,6 +49,8 @@ pub fn run() {
             commands::settings::load_config,
             commands::settings::save_config,
             commands::locus_import::import_from_locus,
+            commands::session::load_session,
+            commands::session::save_session,
             model_catalog::get_model_catalog,
             model_catalog::refresh_model_catalog,
             console::get_console_entries,

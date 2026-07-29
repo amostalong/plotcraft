@@ -96,6 +96,24 @@ export async function refreshModelCatalog(): Promise<ModelCatalog> {
   return invoke<ModelCatalog>('refresh_model_catalog')
 }
 
+// === v0.1.5+ Chat session 持久化 ===
+//
+// 单 session 持久化到 `%APPDATA%/PlotCraft/sessions/default.json`：
+// - load_session: 启动时拉历史 messages（无文件 / 解析失败 → 返回空）
+// - save_session: debounce 1s 写盘（每 chunk 写太频繁）
+//
+// v0.1 简化：单 session 不切换（v0.2+ 多 session + 按项目分组）
+
+/** 拉 chat session 历史 messages —— 无文件 / 损坏 → 返回空（不抛错） */
+export async function loadSession(): Promise<ChatMessage[]> {
+  return invoke<ChatMessage[]>('load_session')
+}
+
+/** 写 chat session —— atomic write（tmp → rename），错误抛给上层 */
+export async function saveSession(messages: ChatMessage[]): Promise<void> {
+  await invoke('save_session', { messages })
+}
+
 // --- Tauri event subscriptions ---
 
 export async function onChatChunk(

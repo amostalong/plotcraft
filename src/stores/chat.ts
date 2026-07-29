@@ -11,6 +11,13 @@
 // 1. config.model 非空 + 匹配某 custom provider 的 effective defaultModel → 用它
 // 2. 否则回退到第一个 enabled + 有 effective defaultModel 的 custom provider
 // 3. 否则空串（0 provider → trigger "Select model" placeholder + send disabled）
+//
+// v0.1.5+：chat session messages 持久化（之前只内存，关闭 app 丢）
+// - 启动 init() 时 load_session 拉历史 messages → reduce loadSession
+// - 玩家 send / 收到 chunk / done / cancel / fail → 触发 messages 变化
+// - watch messages 变化 + debounce 1s → save_session 写盘
+// - debounce 1s：避免流式期间每 chunk 都写（1K token/秒 = 1000 次 emit）
+//   1s 内的所有 chunk 合并成一次写盘
 
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
@@ -23,6 +30,8 @@ import {
   onChatChunk,
   onChatDone,
   onChatError,
+  loadSession,
+  saveSession,
 } from '@/lib/llm'
 import { DEFAULT_EFFORT, type EffortLevel } from '@/lib/settings'
 import type { ChatMessage } from '@/types/chat'
@@ -108,6 +117,17 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
 
+    // v0.1.5+ 加载历史 chat session messages
+    try {
+      const history = await loadSession()
+      if (history.length > 0) {
+        reduce({ type: 'loadSession', sessionId: 'default', messages: history })
+        console.log(`[chat.init] loaded ${history.length} messages from session`)
+      }
+    } catch (e) {
+      console.error('[chat.init] failed to load session:', e)
+    }
+
     // 监听 selectedModel / selectedEffort 变化 → 持久化到 settings.config
     // （不写回时只在内存里，关闭 app 丢 —— v0.1.2 修复）
     watch(
@@ -115,6 +135,26 @@ export const useChatStore = defineStore('chat', () => {
       ([m, e]) => {
         if (!m) return
         persistToSettings(m, e)
+      },
+      { flush: 'post' },
+    )
+
+    // v0.1.5+ 监听 messages 变化 → debounce 1s 写盘
+    // （流式期间每 chunk 触发 messages 变化，但只在 done/cancel/fail 时 messages 数组真改；
+    //  这里只 persist"完成态"的 messages，不存中间 chunk）
+    let saveTimer: ReturnType<typeof setTimeout> | null = null
+    watch(
+      () => state.value.messages,
+      (msgs) => {
+        if (saveTimer) clearTimeout(saveTimer)
+        // 1s debounce：流式期间 chunk 不持久化（currentText 不在 messages 里），
+        // done / cancel / fail 时 messages 数组真改了 → 等 1s 没新事件才落盘
+        // 防止 streaming 期间快速写盘
+        saveTimer = setTimeout(() => {
+          saveSession(msgs).catch((e) => {
+            console.error('[chat] saveSession failed:', e)
+          })
+        }, 1000)
       },
       { flush: 'post' },
     )
