@@ -3,8 +3,9 @@
 // v0.1.3+ 设计：
 // - BUILTIN_MODELS 不再自动展示在 chat selector —— chat selector 只显示玩家在
 //   Settings → Providers 主动 add 的 custom provider 及其 defaultModel
-// - BUILTIN_MODELS 仍然存在，只作为 ProviderEditModal "从模型库添加" dropdown 的候选源
-//   （玩家在 add provider 时可以快速挑已知模型 + 拿 context window / default effort 元数据）
+// - BUILTIN_MODELS 暂时只留 1 条 MiniMax 官方占位（claude-sonnet-4-5）
+//   只作为 ProviderEditModal "从模型库添加" dropdown 的候选源
+// - 玩家要更多 model 走 "手动添加"（id + name 两个 input）或者 Locus import
 // - 不 import Locus 文件（AGENTS.md 硬规则 #1）
 // - v0.2+ 走远端 fetch + snapshot 缓存（schema 留口子）
 
@@ -33,158 +34,16 @@ export interface BuiltinModel {
 /**
  * PlotCraft v0.1 内置模型列表 —— 只给 ProviderEditModal "从模型库添加" 用
  *
- * 选取原则：
- * 1. OpenAI 官方主力（gpt-4o / gpt-4o-mini / o1 / o3-mini）—— 真实 OpenAI endpoint 用
- * 2. 主流 OpenAI 兼容模型（DeepSeek / Qwen / Llama）—— 自建 endpoint / proxy 用
- * 3. Anthropic 官方主力（claude-opus-4-1 / sonnet-4-5 / 3-5-sonnet）—— Anthropic endpoint 用
+ * v0.1.3+：v0.1 暂时只留一个 MiniMax 官方主推的 Claude Sonnet 4.5 作为占位。
+ * 玩家要更多 model 走 "手动添加"（id + name 两个 input）或者 Locus import。
  */
 export const BUILTIN_MODELS: readonly BuiltinModel[] = [
-  // --- OpenAI 官方 ---
-  {
-    id: 'gpt-4o',
-    name: 'GPT-4o',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · 旗舰多模态',
-  },
-  {
-    id: 'gpt-4o-mini',
-    name: 'GPT-4o mini',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · 默认 · 便宜',
-  },
-  {
-    id: 'gpt-4-turbo',
-    name: 'GPT-4 Turbo',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · 老旗舰',
-  },
-  {
-    id: 'gpt-3.5-turbo',
-    name: 'GPT-3.5 Turbo',
-    provider: 'openai',
-    contextWindow: 16_385,
-    note: '16K context · 极便宜',
-  },
-  {
-    id: 'o1',
-    name: 'o1',
-    provider: 'openai',
-    contextWindow: 200_000,
-    note: '200K context · reasoning',
-    supportedEfforts: ['none', 'low', 'medium', 'high'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'o1-mini',
-    name: 'o1 mini',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · 轻量 reasoning',
-    supportedEfforts: ['none', 'low', 'medium', 'high'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'o1-preview',
-    name: 'o1 preview',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · 老 reasoning',
-    supportedEfforts: ['none', 'low', 'medium', 'high'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'o3-mini',
-    name: 'o3 mini',
-    provider: 'openai',
-    contextWindow: 200_000,
-    note: '200K context · 新 reasoning',
-    supportedEfforts: ['none', 'low', 'medium', 'high'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'o4-mini',
-    name: 'o4 mini',
-    provider: 'openai',
-    contextWindow: 200_000,
-    note: '200K context · 新 reasoning',
-    supportedEfforts: ['none', 'low', 'medium', 'high'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'deepseek-chat',
-    name: 'DeepSeek-V3 Chat',
-    provider: 'openai',
-    contextWindow: 64_000,
-    note: '64K context · 兼容 openai_chat',
-  },
-  {
-    id: 'deepseek-reasoner',
-    name: 'DeepSeek-R1',
-    provider: 'openai',
-    contextWindow: 64_000,
-    note: '64K context · reasoning · 兼容 openai_chat',
-    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'qwen-plus',
-    name: 'Qwen Plus',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · 阿里云',
-  },
-  {
-    id: 'qwen-turbo',
-    name: 'Qwen Turbo',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · 阿里云便宜',
-  },
-  {
-    id: 'llama-3.1-70b',
-    name: 'Llama 3.1 70B',
-    provider: 'openai',
-    contextWindow: 128_000,
-    note: '128K context · Meta',
-  },
-
-  // --- Anthropic 官方 ---
-  {
-    id: 'claude-opus-4-1',
-    name: 'Claude Opus 4.1',
-    provider: 'anthropic',
-    contextWindow: 200_000,
-    note: '200K context · 旗舰',
-    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'high',
-  },
   {
     id: 'claude-sonnet-4-5',
     name: 'Claude Sonnet 4.5',
     provider: 'anthropic',
     contextWindow: 200_000,
-    note: '200K context · 主力',
-    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'claude-3-5-sonnet-latest',
-    name: 'Claude 3.5 Sonnet (latest)',
-    provider: 'anthropic',
-    contextWindow: 200_000,
-    note: '200K context · 老主力',
-    supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    defaultEffort: 'high',
-  },
-  {
-    id: 'claude-3-5-haiku-latest',
-    name: 'Claude 3.5 Haiku (latest)',
-    provider: 'anthropic',
-    contextWindow: 200_000,
-    note: '200K context · 便宜快',
+    note: '200K context · MiniMax 官方主推',
     supportedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     defaultEffort: 'high',
   },
