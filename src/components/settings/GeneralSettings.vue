@@ -4,14 +4,35 @@
 // v0.1 实装：UI 主题 / 最近项目展示
 // v0.2+ 加：DisplaySettings（字体 / 字号）/ NotificationsSettings / 等
 // （参考 Locus 但只取 PlotCraft 实际需要的）
+//
+// v0.1.5+：theme 切换走 watch + 直接 settings.save()，跟 modal 保存一致
+// （v0.1.5+ 起 Settings 底部"保存"按钮干掉，所有 v-model 改动自动落盘）
 
 import { SlidersHorizontal, Clock } from 'lucide-vue-next'
+import { watch } from 'vue'
 import type { UiConfig } from '@/lib/settings'
+import { useSettingsStore } from '@/stores/settings'
 
-defineProps<{
+const props = defineProps<{
   ui: UiConfig
   recentProjects: string[]
 }>()
+
+const settings = useSettingsStore()
+
+// 主题切换自动落盘
+watch(
+  () => props.ui.theme,
+  async (newTheme, oldTheme) => {
+    if (oldTheme === undefined) return // 初次 mount 不算改动
+    try {
+      await settings.save()
+      console.log(`[GeneralSettings] theme changed: ${oldTheme} → ${newTheme}`)
+    } catch (e) {
+      console.error('[GeneralSettings] save failed:', e)
+    }
+  },
+)
 </script>
 
 <template>

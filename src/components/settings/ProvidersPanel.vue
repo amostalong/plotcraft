@@ -119,12 +119,27 @@ function confirmDelete() {
   if (!id) return
   customProviders.value = customProviders.value.filter((p) => p.id !== id)
   confirmingDeleteId.value = null
+  // v0.1.5+ 删除 provider 立即落盘（Settings 底部"保存"按钮已删）
+  void persistProviders()
 }
 
 function toggleEnabled(p: CustomProvider) {
   customProviders.value = customProviders.value.map((x) =>
     x.id === p.id ? { ...x, enabled: !x.enabled } : x,
   )
+  // v0.1.5+ 启用/禁用 provider 立即落盘
+  void persistProviders()
+}
+
+/** v0.1.5+ helper：把当前 customProviders 写盘（Settings 底部"保存"按钮已删） */
+async function persistProviders() {
+  try {
+    const settings = useSettingsStore()
+    if (!settings.loaded) await settings.init()
+    await settings.save()
+  } catch (e) {
+    console.error('[ProvidersPanel] settings.save() failed:', e)
+  }
 }
 
 function formatLabel(fmt: ApiFormat): string {
@@ -209,6 +224,9 @@ function applyImport() {
     }
     // apiKey 不从 Locus 带（keychain 隔离），玩家要手动填
   }
+
+  // v0.1.5+ 立即落盘（Settings 底部"保存"按钮已删）
+  void persistProviders()
 
   closeImportModal()
 }

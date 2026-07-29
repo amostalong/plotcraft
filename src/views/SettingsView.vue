@@ -2,12 +2,15 @@
 // PlotCraft v0.1 Settings —— Locus-shape layout
 //
 // 布局参考 Locus `SettingsView.vue`：左侧分组导航 + 右侧内容切换
-// - 跟 Locus 的差异：v0.1 只 2 个分组（LLM / General），内容面板也只 3 个
-// - 改 settings 不直接落盘，要点底部"保存"才一次性写 config.json
-//   （Locus 那边每改一字段就 emit 自己存；PlotCraft v0.1 简化成"编辑-保存"模型）
+// - 跟 Locus 的差异：v0.1 只 3 个分组（LLM / General / 控制台）
+//
+// v0.1.5+：所有 settings 改动自动落盘（v0.1.4 之前是"编辑-保存"模型，
+// 玩家要点底部"保存"按钮才写 config.json；现在 modal / theme / provider toggle
+// / 删除 / import 等都直接 settings.save()）。底部"保存"按钮已删，
+// 只剩"重置"按钮（显式操作）。
 
-import { onMounted, ref, computed } from 'vue'
-import { CheckCircle2, AlertCircle, Save, RotateCcw, Plug, SlidersHorizontal, Terminal } from 'lucide-vue-next'
+import { onMounted, ref } from 'vue'
+import { AlertCircle, RotateCcw, Plug, SlidersHorizontal, Terminal } from 'lucide-vue-next'
 
 import { useSettingsStore } from '@/stores/settings'
 import ProvidersPanel from '@/components/settings/ProvidersPanel.vue'
@@ -15,7 +18,6 @@ import GeneralSettingsPanel from '@/components/settings/GeneralSettings.vue'
 import ConsoleSettings from '@/components/settings/ConsoleSettings.vue'
 
 const settings = useSettingsStore()
-const justSaved = ref(false)
 
 onMounted(async () => {
   await settings.init()
@@ -25,19 +27,16 @@ onMounted(async () => {
 // （active model 切换完全在 chat tab model selector，settings 只管 provider 库）
 const activeCategory = ref<'api' | 'general' | 'console'>('api')
 
-async function onSave() {
-  try {
-    await settings.save()
-    justSaved.value = true
-    setTimeout(() => (justSaved.value = false), 2000)
-  } catch {
-    // error 已经在 store 里
-  }
-}
-
-function onReset() {
+async function onReset() {
   if (window.confirm('确定要重置为默认配置吗？这不会清空项目列表。')) {
     settings.reset()
+    // v0.1.5+ 重置立即落盘（Settings 底部"保存"按钮已删）
+    try {
+      await settings.save()
+      console.log('[SettingsView] config reset to default')
+    } catch (e) {
+      console.error('[SettingsView] reset save failed:', e)
+    }
   }
 }
 </script>
@@ -96,20 +95,12 @@ function onReset() {
         <ConsoleSettings v-else-if="activeCategory === 'console'" key="console" />
       </Transition>
 
-      <!-- 底部 action bar（保存 / 重置 / 状态） -->
+      <!-- 底部 action bar（v0.1.5+ 只剩 重置 + 错误状态，"保存"按钮已删） -->
       <div class="actions">
-        <button @click="onSave" :disabled="settings.saving" class="primary">
-          <Save :size="16" />
-          <span>{{ settings.saving ? '保存中...' : '保存' }}</span>
-        </button>
         <button @click="onReset">
           <RotateCcw :size="16" />
           <span>重置</span>
         </button>
-        <div v-if="justSaved" class="success">
-          <CheckCircle2 :size="16" />
-          <span>已保存</span>
-        </div>
         <div v-if="settings.error" class="error">
           <AlertCircle :size="16" />
           <span>{{ settings.error }}</span>
@@ -207,14 +198,6 @@ function onReset() {
 .actions button:hover {
   background: var(--hover);
   color: var(--text);
-}
-.actions button.primary {
-  background: var(--accent);
-  color: var(--bg);
-  border-color: var(--accent);
-}
-.actions button.primary:hover {
-  opacity: 0.85;
 }
 .actions button:disabled {
   opacity: 0.5;
