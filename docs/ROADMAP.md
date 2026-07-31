@@ -1,4 +1,4 @@
-﻿# PlotCraft Roadmap
+# PlotCraft Roadmap
 
 > **版本时间线 + 目标追踪**。每个 release 完成后更新状态总览。
 > 详细设计见 [DESIGN.md](./DESIGN.md)，v0.1 启动前收尾项见 [CHECKLIST.md](./CHECKLIST.md)。
@@ -10,9 +10,10 @@
 | 版本 | 状态 | 目标交付 | 详细 |
 |------|------|----------|------|
 | **v0.1** | ✅ 已完成 | 6 tab 框架 + Chat + Setting 实装 + 真 LLM + 反 Locus 卡顿 | [§v0.1](#v01) |
-| **v0.2** | 🟡 进行中 | 产品级 chat error feedback（错误分类 + 玩家文案 + retry + 详情链接）| [§v0.2](#v02) |
-| v0.3 | ⬜ 未启动 | 关系图 + 真实图片生成 + macOS 适配 | [§v0.3](#v03) |
-| v0.4+ | ⬜ 未启动 | i18n / vitest / 模板市场 / 协作 / 评测 / 导出 | [§v0.4](#v04) |
+| **v0.2** | ✅ 已完成 | 产品级 chat error feedback（8 分类 + 玩家文案 + retry + 详情链接）| [§v0.2](#v02) |
+| **v0.3+** | ✅ 已完成 | AI 面板重构（单 AiChatPanel + presets chips + 备选内联化）+ 概念 tab + 世界 tab + concept/world 通用 store 形状 | [§v0.3+](#v03) |
+| **v0.4+** | 🟡 进行中 | Tool calling 替代 JSON 解析（3 个内置 tool + Settings tab 工具/工具权限 UI + 多轮 send）| [§v0.4+](#v04-tool-calling-替代-json-解析) |
+| v0.5+ | ⬜ 未启动 | 关系图 + 真实图片生成 + macOS 适配 + i18n / vitest / CI | [§v0.5+](#v05) |
 
 **状态图例**：⬜ 未启动 / 🟡 进行中 / ✅ 已完成 / ⏸️ 暂停 / ❌ 取消
 
@@ -135,30 +136,96 @@
 
 **依赖**：v0.1 全部完成（基础流式管道 + 反卡顿 + 真 LLM 接入）
 
-## v0.3
+## v0.3+ ✅
 
-**目标**：补齐"可视化"和"图片"两块短板，让玩家能看到人物关系、能给角色/场景生图。
+**目标**：统一 AI 面板形态（备选 = 聊天的一部分）+ 实装概念 tab + 实装世界 tab。
 
-**核心交付**：
-- 关系图可视化
-  - elkjs 或 vis.js 渲染 `characters/relationships.json`
-  - 节点 = 人物，边 = 关系（带类型：朋友/敌对/师徒/...）
-  - 拖拽 / 缩放 / 点击节点 → 跳到人物 sheet
-- 真实图片生成
-  - 接入 ComfyUI / SD API / Midjourney（v0.3 选一个起步）
-  - `art/characters/foo.png` 旁放 `foo.prompt.txt`（DESIGN 已定约定）
-  - 占位图 → 真实生成的迁移：保留原 prompt，玩家点"重生成"覆盖
-- macOS 适配
-  - Tauri 2 跨平台已 ok，主要是 .icns icon + 路径兼容
-  - 在 macOS 上跑一次完整 smoke test
+> ⚠️ **2026-07-30 用户决策**：v0.3 范围重切为"AI 面板重构 + 概念/世界 tab"——原计划的"关系图 + 图片生成"推迟到 v0.5+。
+> 详见 [AI_PANEL_DESIGN.md §1-6](AI_PANEL_DESIGN.md)。
 
-**v0.3 不做**：
-- ❌ Linux 适配（v0.4+）
-- ❌ 模板市场（v0.4+）
-- ❌ 协作（v0.4+）
-- ❌ 评测（v0.4+）
+**核心交付**（v0.3.0）：
+- ✅ **AI 面板统一**：单 `AiChatPanel.vue` 替代 v0.2 的 `StepChatPanel` + `AlternativesPicker` 两件套
+  - 消息列表 + presets chips + composer
+  - assistant 备选内联进消息（AltCard 卡片组；流中只显示 "AI 在想..." 占位）
+  - 整体采用条：取本轮（最后 user msg 之后）所有 AI 回复拼接
+  - `polishExpandFailed` 兜底（v0.4+ 删，因为 JSON 解析路径已删）
+- ✅ **概念 tab**（6 步漏斗：种子→核心体验→支柱→世界规则→人物功能→三幕）
+  - 6 步 × 4 presets（生成/反思/润色/扩展）= 24 chip
+  - step chat per-item Map 化 + 自动落盘（`项目/.chats/concept/<stepId>.json`）
+  - chat 宪法注入（`项目/concept/` 摘要进 system prompt）
+- ✅ **世界 tab**（5 节固定分节：overview / geography / history / magic-system / factions）
+  - 通用 docs 模块（collection 注册表，concept / world 共用一套 IO）
+  - step chat 跟 concept 形状对称
+  - 概念宪法 + 其他节摘要进 AI context
+- ✅ **Settings store 形态**：config.json 持久化，UI 改动自动落盘
+- ✅ **chat listener 跟 view 生命周期解耦**（切 tab 不丢 stream）
 
-**依赖**：v0.2 全部完成（图片生成需要真 AI 集成做后端）
+**反卡顿 v0.2 → v0.3+ 升级**：
+- `useStreamReducer` 12 字段（v0.2）→ 改为 per-item Map（v0.3+）+ 5 个 shallowRef Map（messages / text / streaming / errorKind / errorRaw / runId）
+- component 派生 computed 按 `currentXxxId` ref 自动取当前 item 的状态
+- store 暴露 `stepChat: markRaw({ messages, text, streaming, errorKind, errorRaw, send, reset })` 给组件
+
+**新增非流式 `generate` command**（test_provider 骨架泛化）：
+- v0.3+ 当前无调用方（备选走流式 chat + JSON parse 内联）
+- 保留为 v0.4+ AI 验收类功能（"批量检查所有 step 是否满足宪法"）
+
+**v0.3+ 不做**（推到 v0.5+）：
+- ❌ 关系图可视化
+- ❌ 真实图片生成
+- ❌ macOS 适配
+- ❌ 3 个非 v0.1 tab 实装（人物/剧情/概览）
+
+**依赖**：v0.2 全部完成
+
+---
+
+## v0.4+（当前）
+
+**目标**：tool calling 替代 JSON 数组解析（更可靠 + 多轮"采用 button 类似 ask_question"流程），Settings tab 工具/工具权限 UI。
+
+> ⚠️ **2026-07-30 用户决策**：v0.4+ 范围重切为"tool calling"——原计划的 i18n / vitest / 模板市场 / 协作推迟到 v0.5+。
+> 详见 [AI_PANEL_DESIGN.md §7](AI_PANEL_DESIGN.md)。
+
+**核心交付**（v0.4.0）：
+- ✅ **Tool calling 协议级支持**（Rust streaming.rs 3 协议 + 事件分发）
+  - `pub enum StreamEvent { Text(String), ToolCalls(Vec<ToolCallPartial>) }` 替换 mpsc `String` 通道
+  - OpenAI Chat Completions 解析 `delta.tool_calls[]`
+  - OpenAI Responses 解析 `output_item.added` + `function_call_arguments.delta`
+  - Anthropic Messages 解析 `content_block_start.tool_use` + `input_json_delta`
+  - `chat:chunk` / `chat:tool_call` / `chat:done` / `chat:error` 4 事件分发
+- ✅ **3 个内置 tool schema**（`lib/ai-tools.ts`）
+  - `ask_user_question`（2-5 个备选让玩家选；OpenAI Chat 风格的"question + options[]" 结构）
+  - `update_doc_item`（LLM 主动写编辑器；item_id enum = concept 6 步）
+  - `ask_free_text`（LLM 反问开放问题）
+- ✅ **resolveEnabledTools 过滤关闭的 tool**（用户硬要求："关闭的 tool 不在 prompt 给 LLM"）
+  - `enabled: false` → 完全不在 `tools` 字段
+  - 不在 system prompt 描述
+  - LLM schema 里看不到
+- ✅ **Settings tab 工具/工具权限双 sub-tab**（Locus 风格）
+  - 工具 sub-tab：3 toggle 启用/禁用
+  - 工具权限 sub-tab：auto / ask / deny radio（Locus 风格权限策略）
+  - 默认值：ask_user_question/ask_free_text = auto（只问不写），update_doc_item = ask（写编辑器前确认）
+- ✅ **多轮 tool calling 核心**（`stepChat.sendToolResult` API）
+  - 玩家点 AltCard → 调 LLM 第二轮（带 tool result）→ LLM 调 update_doc_item → 玩家点"确认写入" → 写编辑器
+  - 跨 request 回放：assistant 消息必须带 `tool_calls`，tool 消息必须带 `tool_call_id`（OpenAI 协议要求）
+  - 协议 schema 自动转：OpenAI 原样用 `tools`，Anthropic 转 `tools: [{name, description, input_schema}]`；tool message 跨协议转换（OpenAI `role: tool` / Anthropic `role: user + content: [{type: tool_result}]`）
+- ✅ **AltCard 加 title/description props**（v0.4+ ask_user_question option 用；v0.3+ 老路径不传 = header 不显示）
+- ✅ **AiChatPanel 重构**：删 `parseAlternatives` JSON 解析 + `polishExpandFailed` 兜底；新增 `assistant-tool-question` / `assistant-tool-freetext` / `assistant-tool-update` 3 种渲染分支
+
+**`permission: 'ask'` 实现方式**（v0.4+ 简化）：
+- 走 inline 确认按钮（"AI 建议写入 X" + 确认按钮），跟 v0.3+ 整体采用条一致风格
+- modal popup 留 v0.5+ 扩展
+
+**v0.4+ 不做**（推到 v0.5+）：
+- ❌ `permission: 'ask'` modal popup（v0.4+ 用 inline 按钮）
+- ❌ tool schema 扩展到 world 5 节 / characters / plot
+- ❌ tool 主动 read/write 文件（read_file / write_file / search_project）
+- ❌ i18n / vitest / CI / macOS / 协作
+- ❌ 关系图 / 真实图片生成
+
+**依赖**：v0.3+ 全部完成
+
+---
 
 ---
 
@@ -246,6 +313,13 @@
 | 2026-07-29 | v0.1→v0.2 衔接遗留 4 个 bug 全修 | test_provider key / stream_chat emit / reasoning_content 兼容 / log 噪音控制 |
 | 2026-07-29 | v0.2 chat state 8→12 字段 / 8→10 mutations | 仍 < Locus 35 字段一半，反卡顿哲学保留 |
 | 2026-07-29 | session schema v1→v2 加 `last_user_message` | retry 跨 app 重启不丢；老 v0.1 session 兼容读 |
+| 2026-07-29 | 设定图 tab v0.2+ 只实装图库 + prompt 管理 + 占位图 | 不接真生成 / 不做 AI 写 prompt（用户决策）；v0.3 只剩"生成"半边 |
+| 2026-07-29 | 概念 tab（8 号 tab）实装：6 步概念设计漏斗（种子→核心体验→支柱→世界规则→人物功能→三幕）+ LLM 备选 + 每步对话 + chat 宪法注入 | 交互形态用户选定"混合：向导骨架 + 每步可展开对话"；concept/ 目录懒创建，旧项目零迁移；新增非流式 `generate` command（test_provider 骨架泛化） |
+| 2026-07-30 | 概览 tab 从 tab 栏摘除，最后设计（路由 + 文件保留）| 用户决策："概览包含后面所有"方向存疑，先设计分项；概览 vs 概念撞名问题随摘除消解 |
+| 2026-07-30 | 世界 tab 实装（分项 tab 第一站）+ AI 面板组件通用化 | 后端通用 docs 模块（collection 注册表，world = 5 节固定分节）；`components/ai/` props 驱动，concept/world 共用；AI context = 概念宪法 + 分节摘要；世界不做 confirmed 状态机 |
+| 2026-07-30 | v0.4+ tool calling 替代 JSON 数组解析 | 用户提"和 ai 多聊几次，又出现 LLM 的原文了"+ "用 tool 让玩家选"+"类似 locus 的 ask_question"；删 v0.3+ `parseAlternatives` + `polishExpandFailed` 路径；新 3 个 tool schema（`ask_user_question` / `update_doc_item` / `ask_free_text`）；Rust streaming 3 协议都加 tool call 解析；多轮 `sendToolResult` API；Settings tab 加 Locus 风格工具/工具权限 UI |
+| 2026-07-30 | 关闭的 tool 不在 prompt 给 LLM（用户硬要求）| `resolveEnabledTools` 过滤 `enabled=false` → 完全不在 `tools` 字段 + system prompt 描述；跟 Locus 不同（Locus 关了 tool 还能在 system prompt 描述）|
+| 2026-07-30 | 玩家主导默认 `permission = ask` | `ask_user_question` / `ask_free_text` 默认 `auto`（只问不写，直接执行）；`update_doc_item` 默认 `ask`（写编辑器前玩家确认）—— Locus 风格双 sub-tab（工具 / 工具权限）|
 
 **更新规则**：每次 release 完成 / 大决策变更时，更新本表 + 状态总览。
 

@@ -15,6 +15,8 @@
 //   - 修法：teardown() 改 no-op，listener 永久在 store 上；init() 真幂等
 //     （teardown 不再清 initialized），切走期间 stream 继续跑、chunks 继续累积
 //   - 唯一成本：用户切到别的 view 时，chat 仍在累积 currentText，UI 看不到（但 state 是对的）
+// v0.3+：宪法注入 —— sendMessage/retryLast 拼 messages 前现读当前项目 concept/ 摘要，
+//   非空则 append 到 SYSTEM_PROMPT（buildSystemPrompt）；读取失败不阻塞发消息
 
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
@@ -37,7 +39,9 @@ import {
   type SessionFileV2,
 } from '@/lib/llm'
 import { DEFAULT_EFFORT, type EffortLevel } from '@/lib/settings'
+import { getConceptSummary } from '@/lib/concept'
 import type { ChatMessage } from '@/types/chat'
+import { useProjectStore } from './project'
 import { useSettingsStore } from './settings'
 
 const SYSTEM_PROMPT =
@@ -45,7 +49,27 @@ const SYSTEM_PROMPT =
   '核心原则：玩家主导，AI 辅助。AI 给建议，玩家挑+改，AI 永远不自动覆盖玩家内容。' +
   '共创模式：每步给 3-5 个备选让玩家挑。' +
   '保持项目文件夹结构：world/ characters/ plot/ art/ sessions/。' +
-  '输出 markdown 格式，每个文件带 frontmatter 元信息。'
+  '**严格遵循用户消息中指定的输出格式**：\n' +
+  '- 如果用户要求 JSON 数组 → 第一个字符必须是 `[`，**不要**任何额外文字/preamble/思考/解释\n' +
+  '- 如果用户没指定 → 输出 markdown 格式，每个文件带 frontmatter 元信息。'
+
+/** v0.3+ 宪法注入：当前项目有概念内容（concept/ 目录 status != empty 的步骤）→
+ *  append 到 SYSTEM_PROMPT，让 chat 生成内容跟概念保持一致。
+ *  每次 send 现读（6 个小文件，亚毫秒级），不做缓存 —— 玩家刚改完概念立即生效。
+ *  读取失败只 console.error，不阻塞发消息。 */
+async function buildSystemPrompt(): Promise<string> {
+  const project = useProjectStore()
+  if (!project.current) return SYSTEM_PROMPT
+  try {
+    const summary = await getConceptSummary(project.current.folder)
+    if (summary.trim()) {
+      return SYSTEM_PROMPT + '\n\n## 当前项目概念（宪法，生成内容必须与之保持一致）\n' + summary
+    }
+  } catch (e) {
+    console.error('[chat.buildSystemPrompt] getConceptSummary failed:', e)
+  }
+  return SYSTEM_PROMPT
+}
 
 /** v0.2+ 玩家上次 active session id —— 用 localStorage 持久化（重启 app 保留） */
 const ACTIVE_SESSION_KEY = 'plotcraft.chat.activeSessionId'
@@ -288,12 +312,14 @@ export const useChatStore = defineStore('chat', () => {
     console.log('[chat.sendMessage] addUserMessage done, messages count:', state.value.messages.length)
 
     const sessionId = state.value.sessionId ?? 'default'
+    // v0.3+ 宪法注入：拼 messages 前现读 concept 摘要（失败不阻塞）
+    const systemPrompt = await buildSystemPrompt()
     let runId: string
     try {
       console.log('[chat.sendMessage] calling rpcStartChat, model:', selectedModel.value, 'effort:', selectedEffort.value)
       runId = await rpcStartChat(
         [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           ...state.value.messages,
         ],
         {
@@ -320,10 +346,12 @@ export const useChatStore = defineStore('chat', () => {
     console.log('[chat.retryLast] retrying, content length:', last.content.length)
     reduce({ type: 'retry', message: last })
     const sessionId = state.value.sessionId ?? 'default'
+    // v0.3+ 宪法注入：retry 跟 sendMessage 走同一份 system prompt
+    const systemPrompt = await buildSystemPrompt()
     try {
       const runId = await rpcStartChat(
         [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           ...state.value.messages,
         ],
         {

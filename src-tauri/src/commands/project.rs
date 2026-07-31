@@ -8,13 +8,17 @@
 //! - 显式：项目根有 `plot.cat` 文件（JSON，最小空对象 `{}`）
 //! - 隐式（v0.1 兼容）：仅有 `world/` 子目录但缺 `plot.cat` → 自动补一个空 plot.cat
 //!   老项目迁移在 list_projects 触发（玩家点"打开项目"时静默写盘，无感）
+//!
+//! v0.2+ 启动恢复 last project：
+//! - open_project(path) -> 读 plot.cat 拿 ProjectConfig，拼成 ProjectMeta
+//!   不存在 / plot.cat 损坏 -> 返回 Ok(None)（不抛错，让前端降级到"无项目"态）
 
 use std::path::PathBuf;
 use tokio::fs;
 
 use crate::console::console_log;
 use crate::error::{AppError, AppResult};
-use crate::project::templates::{plot_cat_content, starter_files, ProjectMeta, PLOT_CAT_FILE};
+use crate::project::templates::{plot_cat_content, starter_files, ProjectConfig, ProjectMeta, PLOT_CAT_FILE};
 
 /// 玩家新建项目：folder/{name}/ 落 4 个 starter md
 #[tauri::command]
@@ -115,6 +119,82 @@ pub async fn list_projects(
             .then(a.name.cmp(&b.name))
     });
     Ok(projects)
+}
+
+/// v0.2+ 启动恢复 last project —— 给前端 init() 用
+/// - 读 `<path>/plot.cat` 验证 + 拿 ProjectConfig（created_at / created_by）
+/// - 不存在 / plot.cat 损坏 / JSON 解析失败 → `Ok(None)`（不抛错，让前端降级到"无项目"态）
+/// - 成功 → `Ok(Some(ProjectMeta))`
+#[tauri::command]
+pub async fn open_project(
+    app: tauri::AppHandle,
+    path: String,
+) -> AppResult<Option<ProjectMeta>> {
+    let dir = PathBuf::from(&path);
+    let plot_cat = dir.join(PLOT_CAT_FILE);
+
+    if !plot_cat.is_file() {
+        return Ok(None);
+    }
+
+    // 读 plot.cat 内容
+    let content = match tokio::fs::read_to_string(&plot_cat).await {
+        Ok(c) => c,
+        Err(e) => {
+            console_log(
+                &app,
+                "warn",
+                "project",
+                format!("read plot.cat at {}: {}", plot_cat.display(), e),
+            );
+            return Ok(None);
+        }
+    };
+
+    // 解析 JSON
+    let cfg: ProjectConfig = match serde_json::from_str(&content) {
+        Ok(c) => c,
+        Err(e) => {
+            console_log(
+                &app,
+                "warn",
+                "project",
+                format!("parse plot.cat at {}: {}", plot_cat.display(), e),
+            );
+            return Ok(None);
+        }
+    };
+
+    // updated_at = plot.cat 的 fs modified time（最近一次落盘时间 ≈ 玩家最近动项目时间）
+    let updated_at = std::fs::metadata(&plot_cat)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| {
+            let dt: chrono::DateTime<chrono::Utc> = t.into();
+            Some(dt.to_rfc3339())
+        })
+        .unwrap_or_else(|| cfg.created_at.clone());
+
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    console_log(
+        &app,
+        "info",
+        "project",
+        format!("[open_project] restored: {} (created_at={}, updated_at={})", path, cfg.created_at, updated_at),
+    );
+
+    Ok(Some(ProjectMeta {
+        name,
+        folder: path,
+        created_at: cfg.created_at,
+        updated_at,
+        is_plotcraft_project: true,
+    }))
 }
 
 /// v0.2+ PlotCraft 项目识别 + 老项目迁移

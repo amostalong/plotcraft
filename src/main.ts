@@ -9,6 +9,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import { router } from './router'
 import { useSettingsStore } from '@/stores/settings'
+import { useProjectStore } from '@/stores/project'
 import { renderMarkdown } from '@/lib/markdown'
 import { initConsole, installConsoleHook } from '@/lib/console'
 import './style.css'
@@ -31,22 +32,28 @@ installConsoleHook()
 
 // phase 2: 窗口已显示，异步 init（**不**阻塞 UI）
 // - settings.init() → loadConfig() 走 Tauri IPC（~1 roundtrip）
+// - project.init() → 恢复 last project（settings.recentProjects[0] + 后端 open_project 验证）
+//   单独 await 保顺序（依赖 settings.loaded 才能读 recentProjects）
 // - renderMarkdown('# warmup') → 触发 marked + DOMPurify JIT 编译
 // - initConsole() → 拉 console snapshot + 订阅 backend 事件
 // - 任一失败都 fallback 到 default，**不**抛到 UI（用户首次打开也不会因为 config 缺失崩）
 void (async () => {
   const t2 = performance.now()
-  const results = await Promise.allSettled([
-    useSettingsStore().init(),
+  // settings 先 init（project.init 内部依赖 settings.recentProjects）
+  const settingsResult = await Promise.allSettled([useSettingsStore().init()])
+  // 剩下的并行
+  const othersResults = await Promise.allSettled([
     Promise.resolve().then(() => renderMarkdown('# warmup')),
     initConsole(),
+    useProjectStore().init(),
   ])
-  for (const [i, r] of results.entries()) {
-    const label = i === 0 ? 'settings' : i === 1 ? 'markdown' : 'console'
+  const allResults = [...settingsResult, ...othersResults]
+  const labels = ['settings', 'markdown', 'console', 'project']
+  for (const [i, r] of allResults.entries()) {
     if (r.status === 'rejected') {
-      console.error(`[phase2] ${label} failed (using fallback):`, r.reason)
+      console.error(`[phase2] ${labels[i]} failed (using fallback):`, r.reason)
     } else {
-      console.log(`[phase2] ${label} ok`)
+      console.log(`[phase2] ${labels[i]} ok`)
     }
   }
   const t3 = performance.now()

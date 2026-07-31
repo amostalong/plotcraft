@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { Home, Globe, Users, BookOpen, ImageIcon, MessageSquare, Settings as SettingsIcon } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { Globe, Users, BookOpen, Lightbulb, ImageIcon, MessageSquare, Settings as SettingsIcon } from 'lucide-vue-next'
+import { computed, type Component } from 'vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -9,20 +9,22 @@ const router = useRouter()
 interface Tab {
   name: string
   path: string
-  icon: typeof Home
+  icon: Component
 }
 
-// Tab 顺序：会话置首（参考 Locus：chat 是默认落地页）
-// - 路由层 `path: '/'` → `redirect: '/session'` 已经把默认页设到 chat
-// - 这里把 tab bar 顺序也跟上来，开窗即见 chat
-// - 5 个 placeholder 保留可见（v0.2 实装信号）
+// Tab 顺序 = 创作流水线顺序（2026-07-30 用户决策：概念是第一步，放最前）
+// - 概念（宪法）→ 世界 → 人物 → 剧情 → 设定图，会话/设置殿后
+// - 路由层 `path: '/'` → `redirect: '/session'` 不变：新建/打开项目在会话 tab，
+//   默认落地页仍是会话（fresh app 无项目时概念 tab 只有空态）
+// - 概览 tab 已摘除（2026-07-30 决策"概览最后设计"；路由 + OverviewView 保留，将来加回来）
+// - 人物 / 剧情 placeholder 保留可见（v0.3+ 实装信号）
 const tabs: readonly Tab[] = [
-  { name: '会话', path: '/session', icon: MessageSquare },
-  { name: '概览', path: '/overview', icon: Home },
+  { name: '概念', path: '/concept', icon: Lightbulb },
   { name: '世界', path: '/world', icon: Globe },
   { name: '人物', path: '/characters', icon: Users },
   { name: '剧情', path: '/plot', icon: BookOpen },
   { name: '设定图', path: '/art', icon: ImageIcon },
+  { name: '会话', path: '/session', icon: MessageSquare },
   { name: '设置', path: '/settings', icon: SettingsIcon },
 ] as const
 

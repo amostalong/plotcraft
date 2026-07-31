@@ -33,6 +33,7 @@ import {
 import { useChatStore } from '@/stores/chat'
 import { useSettingsStore } from '@/stores/settings'
 import { useProjectStore } from '@/stores/project'
+import { useResizableWidth } from '@/composables/useResizableWidth'
 import { renderMarkdown } from '@/lib/markdown'
 import { getErrorMessage, type PlayerErrorMessage } from '@/lib/error-messages'
 import type { ProjectMeta } from '@/lib/project'
@@ -175,6 +176,7 @@ onMounted(async () => {
   if (!settings.loaded) await settings.init()
   // v0.2+ 注册全局快捷键
   window.addEventListener('keydown', onKeydown)
+  // v0.3+ chat 宽度恢复由 useResizableWidth composable 内部处理 (onMounted 里读 localStorage)
 })
 onUnmounted(() => {
   // v0.2+ chat.teardown() 改 no-op（listener 跟 view 生命周期解耦，避免切 tab 丢 stream）
@@ -331,9 +333,9 @@ function shortTime(iso: string): string {
   }
 }
 
-// 自动滚到底部（streaming 时持续滚）
+// 自动滚到底部（streaming 时持续滚；status 变化也滚 —— 等待气泡出现/消失时）
 watch(
-  [messages, currentText],
+  [messages, currentText, status],
   async () => {
     await nextTick()
     if (transcriptEl.value) {
@@ -342,6 +344,35 @@ watch(
   },
   { deep: true },
 )
+
+// === v0.3+ chat width: 1.5x 默认 + 拖拽调整 ===
+// - 默认 1200px (1.5x 原 800px)
+// - 玩家拖 transcript 右侧手柄改宽度, localStorage 持久化
+// - 双击手柄重置为默认
+// - 范围 [400, 2000], clamp 防越界
+const {
+  width: chatMaxWidth,
+  resizing,
+  onResizeStart: onChatResizeStart,
+  resetWidth: resetChatWidth,
+} = useResizableWidth({
+  storageKey: 'plotcraft.chatMaxWidth',
+  defaultWidth: 1200,
+  min: 400,
+  max: 2000,
+  edge: 'right',
+})
+
+// 拖拽期间不滚到底（避免横向拖动时 transcript scroll 干扰）
+watch(resizing, (v) => {
+  if (v) return
+  // 拖完恢复一次 scroll-to-bottom
+  void nextTick(() => {
+    if (transcriptEl.value) {
+      transcriptEl.value.scrollTop = transcriptEl.value.scrollHeight
+    }
+  })
+})
 </script>
 
 <template>
@@ -431,7 +462,11 @@ watch(
       </div>
     </div>
 
-    <div ref="transcriptEl" class="transcript">
+    <div
+      ref="transcriptEl"
+      class="transcript"
+      :style="{ '--chat-max-width': chatMaxWidth + 'px' }"
+    >
       <div v-if="messages.length === 0 && !currentText && !errorMessage" class="empty">
         <Bot :size="48" :stroke-width="1.5" />
         <h2>开始新对话</h2>
@@ -462,6 +497,19 @@ watch(
       <div v-if="currentText" class="message assistant streaming">
         <Bot :size="16" />
         <div class="content markdown streaming" v-html="renderMd(currentText) + '<span class=\'cursor\'>▍</span>'" />
+      </div>
+
+      <!-- v0.2+ 等待响应效果 —— streaming 但还没收到首 chunk 时显示（LLM 首 token 延迟窗口） -->
+      <div v-else-if="isStreaming" class="message assistant waiting">
+        <Bot :size="16" />
+        <div class="content waiting-content">
+          <span class="waiting-label">正在思考</span>
+          <span class="waiting-dots" aria-hidden="true">
+            <span class="waiting-dot" />
+            <span class="waiting-dot" />
+            <span class="waiting-dot" />
+          </span>
+        </div>
       </div>
 
       <!-- v0.2+ transcript error block（产品级） -->
@@ -518,6 +566,18 @@ watch(
       </div>
 
       <div v-if="status === 'cancelled'" class="cancelled">已停止</div>
+
+      <!-- v0.3+ chat width 拖拽手柄 —— 默认隐藏 (空态), 有消息/streaming/error 时显示 -->
+      <div
+        v-if="messages.length > 0 || currentText || errorMessage || status === 'cancelled'"
+        class="chat-resize-handle"
+        :class="{ active: resizing }"
+        @mousedown="onChatResizeStart"
+        @dblclick="resetChatWidth"
+        title="拖动调整聊天宽度 · 双击重置为 1200px"
+      >
+        <div v-if="resizing" class="chat-resize-tooltip">{{ chatMaxWidth }}px</div>
+      </div>
     </div>
 
     <form class="composer" @submit.prevent="send">
@@ -801,6 +861,7 @@ watch(
   background: transparent;
 }
 .transcript {
+  position: relative; /* v0.3+ 给 .chat-resize-handle 绝对定位用 */
   flex: 1;
   overflow-y: auto;
   padding: 16px 20px;
@@ -837,7 +898,8 @@ watch(
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  max-width: 800px;
+  /* v0.3+ chat width 改成 CSS 变量驱动 + 默认 1.5x (1200px), 玩家可拖手柄调 */
+  max-width: var(--chat-max-width, 1200px);
   padding: 8px 12px;
   border-radius: 8px;
 }
@@ -881,6 +943,50 @@ watch(
   color: var(--text-muted);
   font-style: italic;
   letter-spacing: 0.3px;
+}
+
+/* v0.2+ 等待响应气泡 —— 首 chunk 到达前的占位（三个点逐个跳动） */
+.message.assistant.waiting {
+  border-color: var(--border);
+}
+.waiting-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.waiting-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.waiting-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.waiting-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.35;
+  animation: waiting-bounce 1.2s ease-in-out infinite;
+}
+.waiting-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.waiting-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes waiting-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
 }
 
 .markdown :deep(p) { margin: 0 0 8px; }
@@ -957,7 +1063,8 @@ watch(
 
 /* === v0.2+ 产品级 chat error block（替换 v0.1 的 .error 简单红条）=== */
 .error-block {
-  max-width: 800px;
+  /* v0.3+ 跟 .message 对齐, 用 chat-max-width 变量 */
+  max-width: var(--chat-max-width, 1200px);
   padding: 12px 14px;
   background: rgba(232, 90, 90, 0.08);
   border: 1px solid var(--error, #e53e3e);
@@ -1063,6 +1170,61 @@ watch(
   color: var(--text-muted);
   font-size: 12px;
   font-style: italic;
+}
+
+/* === v0.3+ chat width resize handle ===
+   - 位于 transcript 右侧, 12px 宽 hit area
+   - 默认显示 1px 灰细线 (opacity 0.3) 暗示"这里能拖"
+   - hover / dragging: 2px accent 色粗线, 出现 tooltip 显示当前宽度
+   - 双击重置为 1200px (1.5x 默认)
+*/
+.chat-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: ew-resize;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 自身不可见, ::before 是视觉线 */
+}
+.chat-resize-handle::before {
+  content: '';
+  position: absolute;
+  width: 1px;
+  height: 32px;
+  background: var(--border);
+  border-radius: 1px;
+  opacity: 0.5; /* v0.3+ 从 0.3 提到 0.5, 提升发现性 (之前太隐形) */
+  transition: opacity 0.15s ease, height 0.15s ease, width 0.15s ease, background 0.15s ease;
+}
+.chat-resize-handle:hover::before,
+.chat-resize-handle.active::before {
+  opacity: 1;
+  background: var(--accent);
+  width: 2px;
+  height: 48px;
+}
+.chat-resize-tooltip {
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  user-select: none;
 }
 /* === Composer === */
 .composer {

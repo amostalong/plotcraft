@@ -40,4 +40,4 @@ src-tauri/.tauri/
 # --- V0.1 不写但留位 ---
 # dist-ssr/
 # coverage/
-# *.tsbuildinfo
+*.tsbuildinfo

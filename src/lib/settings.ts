@@ -172,6 +172,21 @@ export interface Config {
    * - null / undefined → 没默认，用 model 自己的 defaultEffort
    */
   effort: EffortLevel | null
+  /**
+   * v0.4+ AI tool calling 开关
+   * - 每个 tool 一个 enabled: false → 那个 tool 不在 LLM request body 的 tools 字段
+   *   → LLM 完全不知道存在（用户硬要求："关闭的tool不要在prompt里面提示给LLM"）
+   * - permission: Locus 风格权限策略（auto = 直接执行 / ask = 弹确认 / deny = 拒绝）
+   *   - ask_user_question / ask_free_text 默认 auto（只问不写）
+   *   - update_doc_item 默认 ask（写编辑器前玩家确认）
+   * - 缺这字段（老 config）→ 前端 normalizeToolsConfig 补全（default）
+   * - 镜像 Rust 端 AppConfig.tools（camelCase）
+   */
+  tools?: {
+    ask_user_question: { enabled: boolean; permission: 'auto' | 'ask' | 'deny' }
+    update_doc_item: { enabled: boolean; permission: 'auto' | 'ask' | 'deny' }
+    ask_free_text: { enabled: boolean; permission: 'auto' | 'ask' | 'deny' }
+  }
 }
 
 // --- Tauri command wrappers ---
@@ -234,4 +249,10 @@ export const DEFAULT_CONFIG: Config = {
   customProviders: [],
   apiFormat: DEFAULT_API_FORMAT,
   effort: null,
+  // v0.4+ tool calling 开关（默认全开 + 玩家主导默认权限）—— 玩家在 Settings tab 控制
+  tools: {
+    ask_user_question: { enabled: true, permission: 'auto' },
+    update_doc_item: { enabled: true, permission: 'ask' },
+    ask_free_text: { enabled: true, permission: 'auto' },
+  },
 }

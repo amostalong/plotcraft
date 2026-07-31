@@ -1,25 +1,26 @@
 <script setup lang="ts">
-// WorldView —— 世界 tab（5 个固定分节 + 编辑区 + AI 面板）
+// ConceptView —— 概念 tab（概念设计漏斗：6 步 stepper + 编辑区 + AI 面板）
 //
-// - 左栏 sections：5 节 + 状态点（exists 橙 / 无 灰），点击切节
-// - 中栏编辑区：标题 + hint + textarea（800ms debounce 自动落盘，对齐 ConceptView 惯例）
-//   + save 状态提示（无 confirmed 按钮 —— 状态机是概念漏斗的语义）
-// - 右栏 AI 面板：单个 AiChatPanel（v0.3+ 重构，备选 + 反思 chip + 自由对话 + 写编辑器）
-//   - presets：每节 2 个 chip（生成备选 / 反思追问），store export SECTION_PRESETS
-//   - step chat 历史内存 per-item，切节保留；切项目全清
-// - 无项目 → 空态（对齐 ConceptView）；加载失败 → 左栏错误 + 重试
-// - 玩家手改 world/ 文件后点「刷新」重扫（不做文件监听）
+// - 左栏 stepper：6 步 + 状态点（empty 灰 / draft 橙 / confirmed 绿），点击切步
+// - 中栏编辑区：标题 + hint + textarea（800ms debounce 自动落盘，对齐 ConceptArtView 惯例）
+//   + 「标记为已确认」切换 + save 状态提示
+// - 右栏 AI 面板：单个 AiChatPanel（替代 v0.2 的 AlternativesPicker + StepChatPanel 两件套）
+//   - presets：每步 2 个 chip（生成备选 / 反思追问），store export STEP_PRESETS
+//   - step chat 历史内存 per-item，切步保留；切项目全清
+// - 无项目 → 空态（对齐 ConceptArtView）
+// - 玩家手改 concept/ 文件后点「刷新」重扫（不做文件监听，对齐 art）
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { FolderOpen, Globe, RefreshCw } from 'lucide-vue-next'
+import { Check, FolderOpen, Lightbulb, RefreshCw } from 'lucide-vue-next'
 
 import AiChatPanel from '@/components/ai/AiChatPanel.vue'
+import { STEP_HINTS, STEP_PRESETS, useConceptStore } from '@/stores/concept'
 import { useProjectStore } from '@/stores/project'
-import { SECTION_HINTS, SECTION_PRESETS, useWorldStore } from '@/stores/world'
 import { useResizableWidth } from '@/composables/useResizableWidth'
+import type { ConceptStepId, ConceptStepStatus } from '@/types/concept'
 import type { AdoptPayload } from '@/types/ai'
 
-const world = useWorldStore()
+const concept = useConceptStore()
 const project = useProjectStore()
 
 // === v0.3+ AI 面板宽度可调 (默认 480px = 1.5x 原 320px) ===
@@ -36,15 +37,22 @@ const {
   edge: 'left',
 })
 
-const currentDoc = computed(() => world.docs.find((d) => d.id === world.currentDocId) ?? null)
-const hint = computed(() => SECTION_HINTS[world.currentDocId] ?? '')
-/** 当前节的 presets（静态配置，响应式跟随 currentDocId 切换） */
-const presets = computed(() => SECTION_PRESETS[world.currentDocId] ?? [])
+const STATUS_LABELS: Record<ConceptStepStatus, string> = {
+  empty: '未开始',
+  confirmed: '已确认',
+}
+
+const currentStep = computed(
+  () => concept.steps.find((s) => s.id === concept.currentStepId) ?? null,
+)
+const hint = computed(() => STEP_HINTS[concept.currentStepId as ConceptStepId] ?? '')
+/** 当前 step 的 presets（静态配置，响应式跟随 currentStepId 切换） */
+const presets = computed(() => STEP_PRESETS[concept.currentStepId as ConceptStepId] ?? [])
 
 /** header 字数（按字符数；中文英文都 1 字符，不分词） */
-const headerWordCount = computed(() => currentDoc.value?.content.length ?? 0)
+const headerWordCount = computed(() => currentStep.value?.content.length ?? 0)
 
-// === 编辑区（debounce 自动落盘 + flush on 切节/卸载，照搬 ConceptView） ===
+// === 编辑区（debounce 自动落盘 + flush on 切步/卸载，对齐 ConceptArtView） ===
 const draft = ref('')
 const original = ref('')
 const saving = ref(false)
@@ -52,94 +60,94 @@ const savedAt = ref<string | null>(null)
 const saveError = ref<string | null>(null)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
-/** docs 变化（load / save 返回）→ 同步编辑器内容 */
+/** steps 变化（load / save 返回）→ 同步编辑器内容 */
 watch(
-  currentDoc,
-  (doc) => {
-    draft.value = doc?.content ?? ''
+  currentStep,
+  (step) => {
+    draft.value = step?.content ?? ''
     original.value = draft.value
-    savedAt.value = doc?.updated ? shortTime(doc.updated) : null
+    savedAt.value = step?.updated ? shortTime(step.updated) : null
     saveError.value = null
   },
   { immediate: true },
 )
 
 watch(draft, (v) => {
-  if (!currentDoc.value || v === original.value) return
+  if (!currentStep.value || v === original.value) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => void doSave(), 800)
 })
 
-/** 保存当前节（采用备选 / debounce 的重复触发防护：无变化跳过） */
+/** 保存当前步（v0.3+ 永远 markConfirmed=true：玩家操作 = 自动 confirmed，不再有"标记为已确认"按钮） */
 async function doSave() {
-  const doc = currentDoc.value
-  if (!doc) return
+  const step = currentStep.value
+  if (!step) return
   if (saveTimer) {
     clearTimeout(saveTimer)
     saveTimer = null
   }
+  // 无变化且状态不变 → 跳过（采用备选的重复触发防护）
   if (draft.value === original.value) return
   saving.value = true
   saveError.value = null
   try {
-    await world.save(doc.id, draft.value)
+    await concept.save(step.id, draft.value, true) // 永远 markConfirmed = true
     original.value = draft.value
     savedAt.value = new Date().toTimeString().slice(0, 5)
   } catch (e) {
-    console.error('[world save] failed:', e)
+    console.error('[concept save] failed:', e)
     saveError.value = '保存失败，请重试'
   } finally {
     saving.value = false
   }
 }
 
-/** 切节 / 刷新 / 卸载前把 pending 的 debounce save 冲掉（fire-and-forget） */
+/** 切步 / 刷新 / 卸载前把 pending 的 debounce save 冲掉（fire-and-forget） */
 function flushSave() {
   if (saveTimer) {
     clearTimeout(saveTimer)
     saveTimer = null
   }
-  const doc = currentDoc.value
-  if (doc && draft.value !== original.value) {
-    void world.save(doc.id, draft.value).catch((e) => console.error('[world flushSave] failed:', e))
+  const step = currentStep.value
+  if (step && draft.value !== original.value) {
+    void concept.save(step.id, draft.value, true).catch((e) => console.error('[concept flushSave] failed:', e))
   }
 }
 
-function onSelectDoc(id: string) {
-  if (id === world.currentDocId) return
+function onSelectStep(id: string) {
+  if (id === concept.currentStepId) return
   flushSave()
-  // v0.3+ 不再 resetStepChat：切节保留 chat 历史（AiChatPanel 派生自动切）
-  world.currentDocId = id
+  // v0.3+ 不再 resetStepChat：切步保留 chat 历史（AiChatPanel 派生自动切）
+  concept.currentStepId = id
 }
 
 async function onRefresh() {
   flushSave()
-  await world.load()
+  await concept.load()
 }
 
 // === AI 面板 adopt 回调（v0.3+ 单事件 + mode 派生） ===
 
 /** AiChatPanel emit({ text, mode })：mode='replace' 替换；mode='append' 追加 */
 function onAdopt(payload: AdoptPayload) {
-  if (!currentDoc.value) return
+  if (!currentStep.value) return
   if (payload.mode === 'replace') {
     // 备选卡片「采用」→ 替换编辑器
     draft.value = payload.text
     void doSave()
   } else {
     // 气泡「写入编辑器」→ 追加到末尾
+    const step = currentStep.value
     const base = draft.value.trim()
     draft.value = base ? base + '\n\n' + payload.text.trim() : payload.text.trim()
     void doSave()
   }
 }
 
-/** ISO → "HH:MM"（跟 ConceptView shortTime 同款简版）
- *  老项目的 overview.md updated 可能是 "TODO" 占位 → Invalid Date 返回空串（不显示保存时间） */
+/** ISO → "HH:MM"（跟 SessionView shortTime 同款简版） */
 function shortTime(iso: string): string {
   try {
     const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return ''
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   } catch {
     return ''
@@ -147,16 +155,30 @@ function shortTime(iso: string): string {
 }
 
 onMounted(() => {
-  void world.init() // 绑 step chat 的 chat:* listener（幂等）
-  void world.load()
+  void concept.init() // 绑 step chat 的 chat:* listener（幂等）
+  void concept.load()
 })
 onUnmounted(() => {
   flushSave()
 })
 
-// 切项目 → 1. flush 老项目 chats  2. 清内存 + 删新项目 .chats/  3. load 新项目
+/** v0.4+ 兜底：load 完 steps 时，如果 currentStepId 不在数组里 → 自动跳到第一个 step
+ *  - 之前 v-if="currentStep" 在 steps 数组里没匹配 id 时整个 AI 面板不显示
+ *  - 现在 load 完保证 currentStep 永远非 null（只要 steps 非空）
+ *  - steps 为空（项目没 concept/ 目录）仍走 v-else 占位（"加载中..."） */
+watch(
+  () => concept.steps,
+  (steps) => {
+    if (steps.length === 0) return
+    if (!steps.find((s) => s.id === concept.currentStepId)) {
+      concept.currentStepId = steps[0].id
+    }
+  },
+)
+
+// 切项目 → 1. flush 老项目 chats（落盘内存里的旧项目 chat） 2. 清内存 + 删新项目 .chats/  3. load 新项目
 // 注意：这里不 flushSave —— project.current 已变，flush 会把旧项目的草稿写进新项目；
-// 未落盘的 debounce 草稿直接丢弃（最多 800ms 窗口，对齐 ConceptView 取舍）
+// 未落盘的 debounce 草稿直接丢弃（最多 800ms 窗口，对齐 art 的"切项目关 modal"取舍）
 watch(
   () => project.current?.folder,
   async (_newFolder, oldFolder) => {
@@ -166,21 +188,21 @@ watch(
     }
     if (oldFolder) {
       // 先落盘老项目 chats（store 内存里仍是老项目的 chat map；flushChatsTo 显式传 oldFolder）
-      await world.flushChatsTo(oldFolder)
+      await concept.flushChatsTo(oldFolder)
     }
-    world.clearAllStepChats() // 清内存 + 删新项目的 .chats/（玩家新项目不应该有 chat 残留）
-    void world.load()
+    concept.clearAllStepChats() // 清内存 + 删新项目的 .chats/（玩家新项目不应该有 chat 残留）
+    void concept.load()
   },
 )
 </script>
 
 <template>
-  <div class="world-view">
-    <!-- 无项目 empty state（对齐 ConceptView） -->
+  <div class="concept-view">
+    <!-- 无项目 empty state（对齐 ConceptArtView） -->
     <div v-if="!project.current" class="empty">
-      <Globe :size="48" :stroke-width="1.5" />
-      <h2>世界</h2>
-      <p>先在会话 tab 打开一个项目 —— 世界设定存在项目的 <code>world/</code> 文件夹里</p>
+      <Lightbulb :size="48" :stroke-width="1.5" />
+      <h2>概念</h2>
+      <p>先在会话 tab 打开一个项目 —— 概念设计存在项目的 <code>concept/</code> 文件夹里</p>
     </div>
 
     <template v-else>
@@ -188,44 +210,42 @@ watch(
         <FolderOpen :size="14" />
         <span class="project-name">{{ project.current.name }}</span>
         <span class="toolbar-spacer" />
-        <button @click="onRefresh" :disabled="world.loading" title="重扫 world/ 文件夹">
-          <RefreshCw :size="12" :class="{ spinning: world.loading }" />
+        <button @click="onRefresh" :disabled="concept.loading" title="重扫 concept/ 文件夹">
+          <RefreshCw :size="12" :class="{ spinning: concept.loading }" />
           <span>刷新</span>
         </button>
       </div>
 
       <div class="columns">
-        <!-- 左栏 sections -->
-        <nav class="sections">
+        <!-- 左栏 stepper -->
+        <nav class="stepper">
           <button
-            v-for="doc in world.docs"
-            :key="doc.id"
+            v-for="(step, i) in concept.steps"
+            :key="step.id"
             type="button"
-            class="section"
-            :class="{ active: doc.id === world.currentDocId }"
-            @click="onSelectDoc(doc.id)"
+            class="step"
+            :class="{ active: step.id === concept.currentStepId }"
+            @click="onSelectStep(step.id)"
           >
-            <span class="section-title">{{ doc.title }}</span>
-            <span
-              class="dot"
-              :class="doc.exists ? 'exists' : 'missing'"
-              :title="doc.exists ? '已有内容' : '还没写'"
-            />
+            <span class="step-index">{{ i + 1 }}</span>
+            <span class="step-title">{{ step.title }}</span>
+            <span class="dot" :class="step.status" :title="STATUS_LABELS[step.status]" />
           </button>
-          <div v-if="world.error" class="sections-error">
-            加载失败：{{ world.error }}
+          <div v-if="concept.error" class="stepper-error">
+            加载失败：{{ concept.error }}
             <button type="button" @click="onRefresh">重试</button>
           </div>
-          <div v-else-if="world.docs.length === 0 && !world.loading" class="sections-empty">
+          <div v-else-if="concept.steps.length === 0 && !concept.loading" class="stepper-empty">
             加载中…
           </div>
         </nav>
 
         <!-- 中栏编辑区 -->
-        <section v-if="currentDoc" class="editor">
+        <section v-if="currentStep" class="editor">
           <div class="editor-header">
-            <h3>{{ currentDoc.title }}</h3>
-            <code class="filename">world/{{ currentDoc.filename }}</code>
+            <h3>{{ currentStep.title }}</h3>
+            <code class="filename">concept/{{ currentStep.filename }}</code>
+            <span class="toolbar-spacer" />
           </div>
           <p class="hint">{{ hint }}</p>
           <textarea v-model="draft" class="editor-input" :placeholder="hint" />
@@ -236,13 +256,16 @@ watch(
           </div>
         </section>
 
-        <!-- 右栏 AI 面板（v0.3+ 统一：单 AiChatPanel，4 chip/section + 自由对话 + 写/替换编辑器）
-             v-if 跟中栏编辑器对齐：docs 没 load 完 / 空时不显示（currentDoc.title 会被读） -->
-        <aside v-if="currentDoc" class="ai-panel" :style="{ width: aiPanelWidth + 'px' }">
+        <!-- 右栏 AI 面板（v0.3+ 统一：单 AiChatPanel，4 chip/step + 自由对话 + 写/替换编辑器）
+             v0.4+ 放宽：v-if 改成「项目打开 + 步骤加载完成」，不再 strict 依赖 currentStep
+             - 老 v-if="currentStep" 在 steps 空 / 加载失败时整个 AI 面板消失，玩家看不到
+             - 新条件：项目打开 + steps 数组 load 完（含空数组也算 load 完），AI 面板始终显示
+             - currentStep 为 null 时 title fallback 到 "概念"，onAdopt 内部再 guard -->
+        <aside v-if="project.current && !concept.loading" class="ai-panel" :style="{ width: aiPanelWidth + 'px' }">
           <AiChatPanel
-            :item-id="world.currentDocId"
-            :title="currentDoc.title"
-            :chat="world.stepChat"
+            :item-id="concept.currentStepId"
+            :title="currentStep?.title ?? '概念'"
+            :chat="concept.stepChat"
             :presets="presets"
             :word-count="headerWordCount"
             @adopt="onAdopt"
@@ -263,7 +286,7 @@ watch(
 </template>
 
 <style scoped>
-.world-view {
+.concept-view {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -351,8 +374,8 @@ watch(
   display: flex;
 }
 
-/* === 左栏 sections === */
-.sections {
+/* === 左栏 stepper === */
+.stepper {
   width: 180px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
@@ -362,7 +385,7 @@ watch(
   gap: 2px;
   overflow-y: auto;
 }
-.section {
+.step {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -376,16 +399,30 @@ watch(
   font-family: inherit;
   text-align: left;
 }
-.section:hover {
+.step:hover {
   background: var(--hover);
   color: var(--text);
 }
-.section.active {
+.step.active {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: var(--accent);
 }
-.section-title {
+.step-index {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 10px;
+}
+.step.active .step-index {
+  border-color: var(--accent);
+}
+.step-title {
   flex: 1;
 }
 .dot {
@@ -394,26 +431,29 @@ watch(
   flex-shrink: 0;
   border-radius: 50%;
 }
-.dot.missing {
+.dot.empty {
   background: var(--text-muted);
   opacity: 0.4;
 }
-.dot.exists {
+.dot.draft {
   background: var(--warning, #d9822b);
 }
-.sections-empty {
+.dot.confirmed {
+  background: var(--success, #3fb950);
+}
+.stepper-empty {
   padding: 12px 10px;
   color: var(--text-muted);
   font-size: 12px;
 }
-.sections-error {
+.stepper-error {
   padding: 12px 10px;
   color: var(--error, #e53e3e);
   font-size: 12px;
   line-height: 1.6;
   word-break: break-all;
 }
-.sections-error button {
+.stepper-error button {
   margin-top: 6px;
   padding: 3px 10px;
   background: transparent;
@@ -424,7 +464,7 @@ watch(
   font-size: 12px;
   font-family: inherit;
 }
-.sections-error button:hover {
+.stepper-error button:hover {
   background: var(--hover);
   color: var(--text);
 }
@@ -448,6 +488,27 @@ watch(
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
+}
+.confirm-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.confirm-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.confirm-btn.confirmed {
+  color: var(--success, #3fb950);
+  border-color: var(--success, #3fb950);
 }
 .hint {
   margin: 0;

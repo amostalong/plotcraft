@@ -3,7 +3,7 @@
 //! 协议：
 //! - POST `{endpoint}/v1/messages`
 //! - Header：`x-api-key: <key>` + `anthropic-version: 2023-06-01`
-//! - 请求体：`{model, max_tokens, system?, messages, stream: true}`
+//! - 请求体：`{model, max_tokens, system?, messages, stream: true, (tools: [...])?}`
 //! - SSE 格式：
 //!   ```
 //!   event: message_start
@@ -16,25 +16,29 @@
 //!   data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
 //!
 //!   event: content_block_delta
-//!   data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}
+//!   data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q"}}
 //!
 //!   event: content_block_stop
 //!   data: {"type":"content_block_stop","index":0}
 //!
 //!   event: message_delta
-//!   data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},...}
+//!   data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},...}
 //!
 //!   event: message_stop
 //!   data: {"type":"message_stop"}
 //!   ```
 //!
 //! v0.1 只关心 `content_block_delta` + `delta.type == "text_delta"`，提取 `delta.text`。
-//! 其他事件（message_start / content_block_start / content_block_stop / message_delta
-//! / message_stop）都跳过。
+//! v0.4+ tool calling 扩：
+//! - `content_block_start` + `content_block.type == "tool_use"` → start tool call（id + name）
+//! - `content_block_delta` + `delta.type == "input_json_delta"` → 累积 arguments
+//! - `content_block_stop` → tool call 结束（前端按 index 标记"完成"）
+//!
+//! 其他事件（message_start / message_delta / message_stop）都跳过。
 //!
 //! 跟 Locus 差异：Locus `anthropic.rs` 是 3300+ 行庞然大物（tool calls / thinking /
-//! OAuth / web search / thinking signature / prompt caching 全栈），PlotCraft v0.1
-//! 简化到只剩流式文本。
+//! OAuth / web search / thinking signature / prompt caching 全栈），PlotCraft v0.4+
+//! 加 tool calls 支持但仍保持精简（只关心 text + tool_use 两种 content_block）。
 //!
 //! 反卡顿模式跟 [streaming] 一致：spawn_blocking 解析 + mpsc 解耦 + 16ms emit 节流。
 
@@ -47,15 +51,15 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::config::LlmConfig;
-use super::streaming::{emit_chat_error, emit_throttled};
-use super::types::{ChatMessage, MessageRole};
+use super::streaming::{emit_chat_error, emit_throttled, StreamEvent, ToolCallPartial};
+use super::types::{ChatMessage, MessageRole, ToolDefinition};
 use crate::error::{AppError, AppResult};
 
 const MESSAGES_PATH: &str = "/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
-/// Anthropic SSE 事件类型（v0.1 只需要识别 `content_block_delta`）
+/// Anthropic SSE 事件类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnthropicEvent {
     MessageStart,
@@ -90,12 +94,15 @@ struct AnthropicSseEvent {
 }
 
 /// 启动 Anthropic Messages API 流式回复
+///
+/// v0.4+ `tools`: 注入到 request body 的 `tools` 字段（Anthropic 协议级）
 pub async fn stream_chat_anthropic(
     app: AppHandle,
     run_id: String,
     config: LlmConfig,
     messages: Vec<ChatMessage>,
     cancel: CancellationToken,
+    tools: Option<Vec<ToolDefinition>>,
 ) -> AppResult<()> {
     // 1. 构造 request
     let api_url = format!(
@@ -109,6 +116,7 @@ pub async fn stream_chat_anthropic(
         system_text.as_deref(),
         &api_messages,
         config.effort,
+        tools.as_deref(),
     );
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
@@ -151,10 +159,9 @@ pub async fn stream_chat_anthropic(
 
     let mut stream = response.bytes_stream();
 
-    // 3. parse / emit 走 mpsc channel
-    let (tx, mut rx) = mpsc::channel::<String>(64);
+    // 3. parse / emit 走 mpsc channel —— v0.4+ channel 改 StreamEvent
+    let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
     let cancel_parse = cancel.clone();
-    // v0.2+ 跟 streaming.rs 对齐 — parse 阶段错误 emit chat:error 给前端
     let app_err = app.clone();
     let run_id_err = run_id.clone();
 
@@ -180,16 +187,16 @@ pub async fn stream_chat_anthropic(
                 let mut buf = buf_clone;
                 let text = String::from_utf8_lossy(&chunk).into_owned();
                 buf.push_str(&text);
-                let deltas = parse_anthropic_sse_buffer(&mut buf);
-                (deltas, buf)
+                let events = parse_anthropic_sse_buffer(&mut buf);
+                (events, buf)
             })
             .await;
 
             match parsed {
-                Ok((deltas, new_buf)) => {
+                Ok((events, new_buf)) => {
                     buffer = new_buf;
-                    for d in deltas {
-                        if tx.send(d).await.is_err() {
+                    for event in events {
+                        if tx.send(event).await.is_err() {
                             return;
                         }
                     }
@@ -223,50 +230,109 @@ pub async fn stream_chat_anthropic(
     Ok(())
 }
 
-/// 解析 Anthropic SSE buffer，返回 text deltas
+/// 解析 Anthropic SSE buffer，返回 StreamEvent 列表
 ///
-/// Anthropic SSE 格式（每事件多行 `key: value`，空行分隔）：
-/// ```
-/// event: content_block_delta
-/// data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
-///
-/// ```
-///
-/// 只关心 `content_block_delta` + `delta.type == "text_delta"`，提取 `delta.text`。
-pub(crate) fn parse_anthropic_sse_buffer(buffer: &mut String) -> Vec<String> {
-    let mut deltas = Vec::new();
+/// v0.4+ 同时解析：
+/// - `content_block_delta.type == "text_delta"` → `Text(delta.text)`
+/// - `content_block_delta.type == "input_json_delta"` → `ToolCalls([{index, args_delta}])`（无 id/name，start 时已存到 tool_uses）
+/// - `content_block_start.type == "tool_use"` → `ToolCalls([{index, id, name, args_delta: ""}])`（start）
+/// - `content_block_stop` → 不发事件，累积状态在 message_stop 时统一 emit
+pub(crate) fn parse_anthropic_sse_buffer(buffer: &mut String) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
     while let Some(end) = buffer.find("\n\n") {
         let event: String = buffer.drain(..end + 2).collect();
         let parsed = parse_sse_event(&event);
-        if let Some(event_type_str) = &parsed.event_type {
-            if AnthropicEvent::parse(event_type_str) != AnthropicEvent::ContentBlockDelta {
-                continue;
-            }
-        }
-        if let Some(data) = &parsed.data {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                // 提取 delta.text （前提是 type == text_delta）
-                let is_text_delta = value
-                    .get("delta")
-                    .and_then(|d| d.get("type"))
-                    .and_then(|t| t.as_str())
-                    == Some("text_delta");
-                if !is_text_delta {
-                    continue;
-                }
-                if let Some(text) = value
-                    .get("delta")
-                    .and_then(|d| d.get("text"))
-                    .and_then(|t| t.as_str())
-                {
-                    if !text.is_empty() {
-                        deltas.push(text.to_string());
+        let Some(event_type_str) = &parsed.event_type else {
+            continue;
+        };
+        let ev_type = AnthropicEvent::parse(event_type_str);
+
+        // v0.4+ content_block_start.tool_use → 拿 id + name
+        if ev_type == AnthropicEvent::ContentBlockStart {
+            if let Some(data) = &parsed.data {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                    let cb_type = value
+                        .get("content_block")
+                        .and_then(|c| c.get("type"))
+                        .and_then(|t| t.as_str());
+                    if cb_type == Some("tool_use") {
+                        let index = value
+                            .get("index")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0)
+                            as usize;
+                        let id = value
+                            .get("content_block")
+                            .and_then(|c| c.get("id"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let name = value
+                            .get("content_block")
+                            .and_then(|c| c.get("name"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        events.push(StreamEvent::ToolCalls(vec![ToolCallPartial {
+                            index,
+                            id,
+                            name,
+                            arguments_delta: String::new(),
+                        }]));
                     }
                 }
             }
+            continue;
         }
+
+        // v0.4+ content_block_delta.input_json_delta → 累积 arguments
+        if ev_type == AnthropicEvent::ContentBlockDelta {
+            if let Some(data) = &parsed.data {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                    let delta_type = value
+                        .get("delta")
+                        .and_then(|d| d.get("type"))
+                        .and_then(|t| t.as_str());
+                    let index = value
+                        .get("index")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        as usize;
+                    if delta_type == Some("input_json_delta") {
+                        let partial = value
+                            .get("delta")
+                            .and_then(|d| d.get("partial_json"))
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !partial.is_empty() {
+                            events.push(StreamEvent::ToolCalls(vec![ToolCallPartial {
+                                index,
+                                id: None,
+                                name: None,
+                                arguments_delta: partial,
+                            }]));
+                        }
+                    } else if delta_type == Some("text_delta") {
+                        let text = value
+                            .get("delta")
+                            .and_then(|d| d.get("text"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !text.is_empty() {
+                            events.push(StreamEvent::Text(text));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // content_block_stop / message_stop / message_delta 等：暂不产生事件
+        // tool_use done 标记暂依赖前端 arguments JSON.parse 成功判定（见 AiChatPanel）
+        // —— 后续 v0.4+ 迭代可以加 StreamEvent::ToolCallComplete(index) 显式 emit
+        let _ = ev_type;
     }
-    deltas
+    events
 }
 
 /// 解析单个 SSE 事件块（多行 `key: value`）成 `{event_type, data}`
@@ -311,18 +377,61 @@ fn build_anthropic_request_body(
     system: Option<&str>,
     messages: &[ChatMessage],
     effort: Option<super::config::EffortLevel>,
+    tools: Option<&[ToolDefinition]>,
 ) -> serde_json::Value {
     let api_messages: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
-            serde_json::json!({
-                "role": match m.role {
-                    MessageRole::System => "user",  // 已 split 走，不会到这里
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                },
-                "content": m.content
-            })
+            // v0.4+ tool result 消息：Anthropic 协议是 content 数组（[{type: "tool_result", tool_use_id, content}]）
+            // 跟 OpenAI 的 role=tool 不同 → 协议层转换
+            match m.role {
+                MessageRole::Tool => {
+                    serde_json::json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                            "content": m.content,
+                        }]
+                    })
+                }
+                MessageRole::User => serde_json::json!({
+                    "role": "user",
+                    "content": m.content
+                }),
+                MessageRole::Assistant => {
+                    // v0.4+ assistant 带 tool_calls 时：content 数组含 text + tool_use 块
+                    if let Some(ref tcs) = m.tool_calls {
+                        let blocks: Vec<serde_json::Value> = std::iter::once(serde_json::json!({
+                            "type": "text",
+                            "text": m.content,
+                        }))
+                        .chain(tcs.iter().map(|tc| {
+                            serde_json::json!({
+                                "type": "tool_use",
+                                "id": tc.id,
+                                "name": tc.name,
+                                "input": serde_json::from_str::<serde_json::Value>(&tc.arguments)
+                                    .unwrap_or(serde_json::Value::Null),
+                            })
+                        }))
+                        .collect();
+                        serde_json::json!({
+                            "role": "assistant",
+                            "content": blocks
+                        })
+                    } else {
+                        serde_json::json!({
+                            "role": "assistant",
+                            "content": m.content
+                        })
+                    }
+                }
+                MessageRole::System => serde_json::json!({
+                    "role": "user", // split 已处理过，不会到这里
+                    "content": m.content
+                }),
+            }
         })
         .collect();
 
@@ -342,141 +451,192 @@ fn build_anthropic_request_body(
             "budget_tokens": budget,
         });
     }
+    // v0.4+ tools：Anthropic 协议级 `tools: [{name, description, input_schema}]`
+    // PlotCraft 统一存 OpenAI 格式 ToolDefinition，这里转 Anthropic schema
+    if let Some(tools) = tools {
+        if !tools.is_empty() {
+            let anthropic_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.function.name,
+                        "description": t.function.description,
+                        "input_schema": t.function.parameters,
+                    })
+                })
+                .collect();
+            body["tools"] = serde_json::Value::Array(anthropic_tools);
+        }
+    }
     body
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::types::ToolFunctionDef;
+
+    fn mk_user(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: content.to_string(),
+            partial: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
 
     #[test]
     fn parse_anthropic_sse_extracts_text_deltas() {
         let mut buf = String::new();
-        // 模拟 3 个事件：content_block_delta(text_delta) + content_block_delta(text_delta) + message_stop（忽略）
         let event1 = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n";
         let event2 = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n";
         let event3 = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
         buf.push_str(event1);
-        let deltas = parse_anthropic_sse_buffer(&mut buf);
-        assert_eq!(deltas, vec!["Hello".to_string()]);
+        let events = parse_anthropic_sse_buffer(&mut buf);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Text(t) => assert_eq!(t, "Hello"),
+            _ => panic!("expected text event"),
+        }
 
         buf.push_str(event2);
-        let deltas = parse_anthropic_sse_buffer(&mut buf);
-        assert_eq!(deltas, vec![" world".to_string()]);
+        let events = parse_anthropic_sse_buffer(&mut buf);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Text(t) => assert_eq!(t, " world"),
+            _ => panic!("expected text event"),
+        }
 
         buf.push_str(event3);
-        let deltas = parse_anthropic_sse_buffer(&mut buf);
-        // message_stop 不产生 delta
-        assert!(deltas.is_empty());
-        // buffer 应被清空
+        let events = parse_anthropic_sse_buffer(&mut buf);
+        // message_stop 不产生事件
+        assert!(events.is_empty());
         assert!(buf.is_empty());
     }
 
     #[test]
-    fn parse_anthropic_sse_ignores_non_text_deltas() {
+    fn parse_anthropic_sse_extracts_tool_use_start() {
         let mut buf = String::new();
-        // input_json_delta 不是 text_delta → 跳过
-        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n";
+        let event = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_abc\",\"name\":\"ask_user_question\"}}\n\n";
         buf.push_str(event);
-        let deltas = parse_anthropic_sse_buffer(&mut buf);
-        assert!(deltas.is_empty());
+        let events = parse_anthropic_sse_buffer(&mut buf);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].index, 0);
+                assert_eq!(calls[0].id.as_deref(), Some("toolu_abc"));
+                assert_eq!(calls[0].name.as_deref(), Some("ask_user_question"));
+                assert_eq!(calls[0].arguments_delta, "");
+            }
+            _ => panic!("expected tool_calls event"),
+        }
     }
 
     #[test]
-    fn parse_anthropic_sse_handles_split_chunks() {
-        // SSE chunk 可能跨多 byte —— buffer 累积
+    fn parse_anthropic_sse_extracts_input_json_delta() {
         let mut buf = String::new();
-        buf.push_str("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"ty");
-        let deltas = parse_anthropic_sse_buffer(&mut buf);
-        // 还没到 \n\n，不该 pop
-        assert!(deltas.is_empty());
-        assert!(!buf.is_empty());
-
-        buf.push_str("pe\":\"text_delta\",\"text\":\"hi\"}}\n\n");
-        let deltas = parse_anthropic_sse_buffer(&mut buf);
-        assert_eq!(deltas, vec!["hi".to_string()]);
+        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\"}}\n\n";
+        buf.push_str(event);
+        let events = parse_anthropic_sse_buffer(&mut buf);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ToolCalls(calls) => {
+                assert_eq!(calls[0].index, 0);
+                assert!(calls[0].id.is_none());
+                assert!(calls[0].name.is_none());
+                assert_eq!(calls[0].arguments_delta, "{\"q");
+            }
+            _ => panic!("expected tool_calls event"),
+        }
     }
 
     #[test]
     fn split_system_messages_separates_system_from_rest() {
-        use super::super::types::MessageRole;
         let messages = vec![
             ChatMessage {
                 role: MessageRole::System,
                 content: "You are helpful".to_string(),
                 partial: None,
+                tool_calls: None,
+                tool_call_id: None,
             },
             ChatMessage {
                 role: MessageRole::User,
                 content: "Hi".to_string(),
                 partial: None,
-            },
-            ChatMessage {
-                role: MessageRole::System,
-                content: "Be concise".to_string(),
-                partial: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                content: "Hello!".to_string(),
-                partial: None,
+                tool_calls: None,
+                tool_call_id: None,
             },
         ];
         let (system, rest) = split_system_messages(&messages);
-        assert_eq!(system, Some("You are helpful\n\nBe concise".to_string()));
-        assert_eq!(rest.len(), 2);
+        assert_eq!(system, Some("You are helpful".to_string()));
+        assert_eq!(rest.len(), 1);
         assert!(matches!(rest[0].role, MessageRole::User));
-        assert!(matches!(rest[1].role, MessageRole::Assistant));
     }
 
     #[test]
     fn build_anthropic_body_no_effort_omits_thinking() {
-        use super::super::config::EffortLevel;
-        let msgs = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "hi".to_string(),
-            partial: None,
-        }];
         let body = build_anthropic_request_body(
             "claude-sonnet-4-5",
             Some("sys"),
-            &msgs,
-            Some(EffortLevel::None),
+            &[mk_user("hi")],
+            Some(super::super::config::EffortLevel::None),
+            None,
         );
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("thinking"), "no thinking field expected: {}", json);
+        assert!(!json.contains("tools"), "no tools field expected when None: {}", json);
     }
 
     #[test]
-    fn build_anthropic_body_includes_thinking_with_budget() {
-        use super::super::config::EffortLevel;
-        let msgs = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "hi".to_string(),
-            partial: None,
+    fn build_anthropic_body_with_tools_adds_anthropic_schema() {
+        let tools = vec![ToolDefinition {
+            r#type: "function".to_string(),
+            function: ToolFunctionDef {
+                name: "ask_user_question".to_string(),
+                description: "ask".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
         }];
-        for (effort, expected_budget) in [
-            (EffortLevel::Low, 1024),
-            (EffortLevel::Medium, 4096),
-            (EffortLevel::High, 16384),
-            (EffortLevel::Xhigh, 32768),
-            (EffortLevel::Max, 65536),
-        ] {
-            let body = build_anthropic_request_body(
-                "claude-sonnet-4-5",
-                None,
-                &msgs,
-                Some(effort),
-            );
-            let json = serde_json::to_string(&body).unwrap();
-            assert!(json.contains("\"type\":\"enabled\""), "missing type enabled: {}", json);
-            assert!(
-                json.contains(&format!("\"budget_tokens\":{}", expected_budget)),
-                "missing budget {} in: {}",
-                expected_budget,
-                json
-            );
-        }
+        let body = build_anthropic_request_body(
+            "claude-sonnet-4-5",
+            None,
+            &[mk_user("hi")],
+            None,
+            Some(&tools),
+        );
+        let json = serde_json::to_string(&body).unwrap();
+        // Anthropic 协议：`tools: [{name, description, input_schema}]` —— 不是 OpenAI 的 nested function
+        assert!(json.contains("\"input_schema\""));
+        assert!(json.contains("\"name\":\"ask_user_question\""));
+        // 不能再有 OpenAI 协议的 "function" 嵌套
+        assert!(!json.contains("\"function\""), "should not have nested function for Anthropic: {}", json);
+    }
+
+    #[test]
+    fn build_anthropic_body_tool_message_uses_content_array() {
+        let tool_msg = ChatMessage {
+            role: MessageRole::Tool,
+            content: "selected A".to_string(),
+            partial: None,
+            tool_calls: None,
+            tool_call_id: Some("toolu_abc".to_string()),
+        };
+        let body = build_anthropic_request_body(
+            "claude-sonnet-4-5",
+            None,
+            &[mk_user("hi"), tool_msg],
+            None,
+            None,
+        );
+        let json = serde_json::to_string(&body).unwrap();
+        // Anthropic tool result 协议：role=user, content=[{type: tool_result, tool_use_id, content}]
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"type\":\"tool_result\""));
+        assert!(json.contains("\"tool_use_id\":\"toolu_abc\""));
+        assert!(json.contains("\"content\":\"selected A\""));
     }
 }

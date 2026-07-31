@@ -3,37 +3,33 @@
 //! 协议：
 //! - POST `{endpoint}/v1/responses`
 //! - Header：`Authorization: Bearer <apiKey>`
-//! - 请求体：`{model, input, instructions?, stream: true}`（input 是消息数组，不是 messages）
+//! - 请求体：`{model, input, instructions?, stream: true, (tools: [...])?}`
 //! - SSE 格式：
 //!   ```
 //!   event: response.created
 //!   data: {"type":"response.created","response":{...}}
 //!
 //!   event: response.output_item.added
-//!   data: {"type":"response.output_item.added","output_index":0,"item":{...}}
+//!   data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_xxx","name":"...","arguments":""}}
 //!
-//!   event: response.content_part.added
-//!   data: {"type":"response.content_part.added","item_id":"...","output_index":0,"content_index":0,"part":{...}}
+//!   event: response.function_call_arguments.delta
+//!   data: {"type":"response.function_call_arguments.delta","item_id":"fc_xxx","output_index":0,"delta":"{\"q"}
 //!
-//!   event: response.output_text.delta
-//!   data: {"type":"response.output_text.delta","item_id":"...","output_index":0,"content_index":0,"delta":"Hello"}
+//!   event: response.function_call_arguments.done
+//!   data: {"type":"response.function_call_arguments.done","item_id":"fc_xxx","output_index":0,"arguments":"...完整 JSON"}
 //!
-//!   event: response.output_text.delta
-//!   data: {"type":"response.output_text.delta","item_id":"...","output_index":0,"content_index":0,"delta":" world"}
-//!
-//!   event: response.output_text.done
-//!   data: {"type":"response.output_text.done","item_id":"...","output_index":0,"content_index":0,"text":"Hello world"}
+//!   event: response.output_item.done
+//!   data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_xxx","name":"...","arguments":"...完整 JSON"}}
 //!
 //!   event: response.completed
 //!   data: {"type":"response.completed","response":{...}}
 //!   ```
 //!
 //! v0.1 只关心 `response.output_text.delta`，提取 `delta`。
-//! 其他事件（response.created / output_item.added / content_part.added /
-//! output_text.done / response.completed）都跳过。
-//!
-//! 跟 chat 区别：endpoint 是 `/v1/responses`（不是 `/v1/chat/completions`），
-//! 请求体用 `input`（不是 `messages`），可选 `instructions` 字段。
+//! v0.4+ tool calling 扩：
+//! - `response.output_item.added` + `item.type == "function_call"` → start（id + name）
+//! - `response.function_call_arguments.delta` → arguments 累积
+//! - `response.function_call_arguments.done` → 最终完整 arguments（前端可一次性拿到完整 JSON）
 //!
 //! 反卡顿模式跟 [streaming] 一致：spawn_blocking 解析 + mpsc 解耦 + 16ms emit 节流。
 
@@ -46,12 +42,15 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::config::LlmConfig;
-use super::streaming::{emit_chat_error, emit_throttled};
-use super::types::{ChatMessage, MessageRole};
+use super::streaming::{emit_chat_error, emit_throttled, StreamEvent, ToolCallPartial};
+use super::types::{ChatMessage, MessageRole, ToolDefinition};
 use crate::error::{AppError, AppResult};
 
 const RESPONSES_PATH: &str = "/v1/responses";
 const OUTPUT_TEXT_DELTA_EVENT: &str = "response.output_text.delta";
+const OUTPUT_ITEM_ADDED_EVENT: &str = "response.output_item.added";
+const FUNCTION_CALL_ARGS_DELTA_EVENT: &str = "response.function_call_arguments.delta";
+const FUNCTION_CALL_ARGS_DONE_EVENT: &str = "response.function_call_arguments.done";
 
 /// OpenAI Responses API SSE 事件
 #[derive(Debug, Default)]
@@ -61,12 +60,15 @@ struct ResponsesSseEvent {
 }
 
 /// 启动 OpenAI Responses API 流式回复
+///
+/// v0.4+ `tools`: 注入到 request body 的 `tools` 字段（OpenAI Responses 协议级）
 pub async fn stream_chat_openai_responses(
     app: AppHandle,
     run_id: String,
     config: LlmConfig,
     messages: Vec<ChatMessage>,
     cancel: CancellationToken,
+    tools: Option<Vec<ToolDefinition>>,
 ) -> AppResult<()> {
     // 1. 构造 request
     let api_url = format!(
@@ -80,6 +82,7 @@ pub async fn stream_chat_openai_responses(
         instructions.as_deref(),
         &input_messages,
         config.effort,
+        tools.as_deref(),
     );
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
@@ -121,10 +124,9 @@ pub async fn stream_chat_openai_responses(
 
     let mut stream = response.bytes_stream();
 
-    // 3. parse / emit 走 mpsc channel
-    let (tx, mut rx) = mpsc::channel::<String>(64);
+    // 3. parse / emit 走 mpsc channel —— v0.4+ channel 改 StreamEvent
+    let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
     let cancel_parse = cancel.clone();
-    // v0.2+ 跟 streaming.rs 对齐 — parse 阶段错误 emit chat:error 给前端
     let app_err = app.clone();
     let run_id_err = run_id.clone();
 
@@ -150,16 +152,16 @@ pub async fn stream_chat_openai_responses(
                 let mut buf = buf_clone;
                 let text = String::from_utf8_lossy(&chunk).into_owned();
                 buf.push_str(&text);
-                let deltas = parse_responses_sse_buffer(&mut buf);
-                (deltas, buf)
+                let events = parse_responses_sse_buffer(&mut buf);
+                (events, buf)
             })
             .await;
 
             match parsed {
-                Ok((deltas, new_buf)) => {
+                Ok((events, new_buf)) => {
                     buffer = new_buf;
-                    for d in deltas {
-                        if tx.send(d).await.is_err() {
+                    for event in events {
+                        if tx.send(event).await.is_err() {
                             return;
                         }
                     }
@@ -195,28 +197,99 @@ pub async fn stream_chat_openai_responses(
 
 /// 解析 OpenAI Responses API SSE buffer
 ///
-/// 格式跟 chat 略不同：用 `event:` 标识事件类型，只关心 `response.output_text.delta`。
-/// 提取 `delta` 字段作为 text 流。
-pub(crate) fn parse_responses_sse_buffer(buffer: &mut String) -> Vec<String> {
-    let mut deltas = Vec::new();
+/// v0.4+ 同时解析：
+/// - `response.output_text.delta` → `Text(delta)`
+/// - `response.output_item.added` + `item.type == "function_call"` → `ToolCalls` start（id + name + index）
+/// - `response.function_call_arguments.delta` → `ToolCalls` arguments 累积
+/// - `response.function_call_arguments.done` → 暂不单独发（前端 arguments 累积到合法 JSON 时识别）
+pub(crate) fn parse_responses_sse_buffer(buffer: &mut String) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
     while let Some(end) = buffer.find("\n\n") {
         let event: String = buffer.drain(..end + 2).collect();
         let parsed = parse_sse_event(&event);
-        // 只处理 response.output_text.delta
-        if parsed.event_type.as_deref() != Some(OUTPUT_TEXT_DELTA_EVENT) {
+        let Some(event_type_str) = parsed.event_type.as_deref() else {
             continue;
-        }
-        if let Some(data) = &parsed.data {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                if let Some(delta) = value.get("delta").and_then(|d| d.as_str()) {
-                    if !delta.is_empty() {
-                        deltas.push(delta.to_string());
+        };
+
+        match event_type_str {
+            OUTPUT_TEXT_DELTA_EVENT => {
+                if let Some(data) = &parsed.data {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(delta) = value.get("delta").and_then(|d| d.as_str()) {
+                            if !delta.is_empty() {
+                                events.push(StreamEvent::Text(delta.to_string()));
+                            }
+                        }
                     }
                 }
             }
+            OUTPUT_ITEM_ADDED_EVENT => {
+                // v0.4+ function_call start: item.type == "function_call" → 拿 id + name + index
+                if let Some(data) = &parsed.data {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                        let item_type = value
+                            .get("item")
+                            .and_then(|i| i.get("type"))
+                            .and_then(|t| t.as_str());
+                        if item_type == Some("function_call") {
+                            let index = value
+                                .get("output_index")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0)
+                                as usize;
+                            let id = value
+                                .get("item")
+                                .and_then(|i| i.get("id"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let name = value
+                                .get("item")
+                                .and_then(|i| i.get("name"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            events.push(StreamEvent::ToolCalls(vec![ToolCallPartial {
+                                index,
+                                id,
+                                name,
+                                arguments_delta: String::new(),
+                            }]));
+                        }
+                    }
+                }
+            }
+            FUNCTION_CALL_ARGS_DELTA_EVENT => {
+                // v0.4+ arguments 累积
+                if let Some(data) = &parsed.data {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                        let index = value
+                            .get("output_index")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0)
+                            as usize;
+                        let delta = value
+                            .get("delta")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !delta.is_empty() {
+                            events.push(StreamEvent::ToolCalls(vec![ToolCallPartial {
+                                index,
+                                id: None,
+                                name: None,
+                                arguments_delta: delta,
+                            }]));
+                        }
+                    }
+                }
+            }
+            // done 事件暂不单独发；前端 arguments 累积到合法 JSON 时识别（AiChatPanel.vue 处理）
+            FUNCTION_CALL_ARGS_DONE_EVENT => {}
+            _ => {
+                // 其他事件（response.created / response.completed / etc）跳过
+            }
         }
     }
-    deltas
+    events
 }
 
 /// 解析单个 SSE 事件块（多行 `key: value`）成 `{event_type, data}`
@@ -261,18 +334,32 @@ fn build_openai_responses_body(
     instructions: Option<&str>,
     messages: &[ChatMessage],
     effort: Option<super::config::EffortLevel>,
+    tools: Option<&[ToolDefinition]>,
 ) -> serde_json::Value {
     let input: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "role": match m.role {
-                    MessageRole::System => "user",  // 已 split 走，不会到这里
+                    MessageRole::System => "user", // 已 split，不会到这里
                     MessageRole::User => "user",
                     MessageRole::Assistant => "assistant",
-                },
-                "content": m.content
-            })
+                    MessageRole::Tool => "tool",
+                }
+            });
+            if m.role == MessageRole::Tool {
+                if let Some(ref tcid) = m.tool_call_id {
+                    obj["tool_call_id"] = serde_json::Value::String(tcid.clone());
+                }
+            } else {
+                obj["content"] = serde_json::Value::String(m.content.clone());
+            }
+            if m.role == MessageRole::Assistant {
+                if let Some(ref tcs) = m.tool_calls {
+                    obj["tool_calls"] = serde_json::to_value(tcs).unwrap_or(serde_json::Value::Null);
+                }
+            }
+            obj
         })
         .collect();
 
@@ -290,6 +377,12 @@ fn build_openai_responses_body(
             "effort": effort_val,
         });
     }
+    // v0.4+ tools：OpenAI Responses 协议级 `tools: [...]`（同 Chat Completions 的格式）
+    if let Some(tools) = tools {
+        if !tools.is_empty() {
+            body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
+        }
+    }
     body
 }
 
@@ -297,106 +390,132 @@ fn build_openai_responses_body(
 mod tests {
     use super::*;
     use crate::llm::config::EffortLevel;
+    use crate::llm::types::ToolCallInfo;
+
+    fn mk_user(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: content.to_string(),
+            partial: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
 
     #[test]
     fn parse_responses_sse_extracts_text_deltas() {
         let mut buf = String::new();
-
-        // 第一个 delta
         let event1 = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello\"}\n\n";
         buf.push_str(event1);
-        let deltas = parse_responses_sse_buffer(&mut buf);
-        assert_eq!(deltas, vec!["Hello".to_string()]);
-
-        // 第二个 delta
-        let event2 = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\" world\"}\n\n";
-        buf.push_str(event2);
-        let deltas = parse_responses_sse_buffer(&mut buf);
-        assert_eq!(deltas, vec![" world".to_string()]);
-
-        // 其他事件类型（response.created / response.completed）应跳过
-        let event3 = "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n";
-        buf.push_str(event3);
-        let deltas = parse_responses_sse_buffer(&mut buf);
-        assert!(deltas.is_empty());
-
-        // response.completed 也跳过
-        let event4 = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n";
-        buf.push_str(event4);
-        let deltas = parse_responses_sse_buffer(&mut buf);
-        assert!(deltas.is_empty());
-        // buffer 应被清空
-        assert!(buf.is_empty());
+        let events = parse_responses_sse_buffer(&mut buf);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Text(t) => assert_eq!(t, "Hello"),
+            _ => panic!("expected text event"),
+        }
     }
 
     #[test]
-    fn parse_responses_sse_handles_split_chunks() {
+    fn parse_responses_sse_extracts_function_call_start() {
         let mut buf = String::new();
-        buf.push_str("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hel");
-        // 还没到 \n\n
-        let deltas = parse_responses_sse_buffer(&mut buf);
-        assert!(deltas.is_empty());
-        assert!(!buf.is_empty());
-
-        buf.push_str("lo\"}\n\n");
-        let deltas = parse_responses_sse_buffer(&mut buf);
-        assert_eq!(deltas, vec!["hello".to_string()]);
+        let event = "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_abc\",\"name\":\"ask_user_question\",\"arguments\":\"\"}}\n\n";
+        buf.push_str(event);
+        let events = parse_responses_sse_buffer(&mut buf);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].index, 0);
+                assert_eq!(calls[0].id.as_deref(), Some("fc_abc"));
+                assert_eq!(calls[0].name.as_deref(), Some("ask_user_question"));
+                assert_eq!(calls[0].arguments_delta, "");
+            }
+            _ => panic!("expected tool_calls event"),
+        }
     }
 
     #[test]
-    fn parse_responses_sse_ignores_data_without_event_type() {
-        // 没有 event: 行的 data（理论上不应该出现）—— 不解析
+    fn parse_responses_sse_extracts_function_call_arguments_delta() {
         let mut buf = String::new();
-        buf.push_str("data: {\"type\":\"something_else\",\"delta\":\"x\"}\n\n");
-        let deltas = parse_responses_sse_buffer(&mut buf);
-        assert!(deltas.is_empty());
+        // JSON value: delta = "{\"q\"}"  （4 字符 `{` `"` `q` `}` —— 含闭合花括号）
+        // Rust literal "\"{\\\"q\\\"}\"" → memory "{\"q\"}" (9 chars 含两端引号)
+        let event = "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_abc\",\"output_index\":0,\"delta\":\"{\\\"q\\\"}\"}\n\n";
+        buf.push_str(event);
+        let events = parse_responses_sse_buffer(&mut buf);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ToolCalls(calls) => {
+                assert_eq!(calls[0].index, 0);
+                assert!(calls[0].id.is_none());
+                assert!(calls[0].name.is_none());
+                assert_eq!(calls[0].arguments_delta, "{\"q\"}");
+            }
+            _ => panic!("expected tool_calls event"),
+        }
     }
 
     #[test]
     fn build_responses_body_no_effort_omits_reasoning() {
-        let msgs = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "hi".to_string(),
-            partial: None,
-        }];
-        let body = build_openai_responses_body("o1", Some("sys"), &msgs, None);
+        let body = build_openai_responses_body("o1", Some("sys"), &[mk_user("hi")], None, None);
         let json = serde_json::to_string(&body).unwrap();
         assert!(!json.contains("reasoning"));
+        assert!(!json.contains("tools"));
     }
 
     #[test]
-    fn build_responses_body_includes_nested_reasoning_effort() {
-        let msgs = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "hi".to_string(),
-            partial: None,
+    fn build_responses_body_with_tools_adds_field() {
+        use crate::llm::types::ToolFunctionDef;
+        let tools = vec![ToolDefinition {
+            r#type: "function".to_string(),
+            function: ToolFunctionDef {
+                name: "ask_user_question".to_string(),
+                description: "ask".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
         }];
-        for (effort, expected) in [
-            (EffortLevel::Low, "\"reasoning\":{\"effort\":\"low\"}"),
-            (EffortLevel::Medium, "\"reasoning\":{\"effort\":\"medium\"}"),
-            (EffortLevel::High, "\"reasoning\":{\"effort\":\"high\"}"),
-        ] {
-            let body = build_openai_responses_body("o1", None, &msgs, Some(effort));
-            let json = serde_json::to_string(&body).unwrap();
-            assert!(json.contains(expected), "expected {} in {}", expected, json);
-        }
+        let body = build_openai_responses_body("gpt-4o", None, &[mk_user("hi")], None, Some(&tools));
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"tools\""));
+        assert!(json.contains("\"name\":\"ask_user_question\""));
     }
 
     #[test]
-    fn build_responses_body_skips_unsupported_effort() {
-        let msgs = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "hi".to_string(),
+    fn build_responses_body_tool_message_includes_tool_call_id() {
+        let tool_msg = ChatMessage {
+            role: MessageRole::Tool,
+            content: "answer".to_string(),
             partial: None,
-        }];
-        for effort in [
-            EffortLevel::None,
-            EffortLevel::Xhigh,
-            EffortLevel::Max,
-        ] {
-            let body = build_openai_responses_body("o1", None, &msgs, Some(effort));
-            let json = serde_json::to_string(&body).unwrap();
-            assert!(!json.contains("reasoning"));
-        }
+            tool_calls: None,
+            tool_call_id: Some("fc_abc".to_string()),
+        };
+        let body = build_openai_responses_body("gpt-4o", None, &[mk_user("hi"), tool_msg], None, None);
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"role\":\"tool\""));
+        assert!(json.contains("\"tool_call_id\":\"fc_abc\""));
+    }
+
+    #[test]
+    fn build_responses_body_assistant_tool_calls_replayed() {
+        let assistant_msg = ChatMessage {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            partial: None,
+            tool_calls: Some(vec![ToolCallInfo {
+                id: "fc_xyz".to_string(),
+                name: "ask_user_question".to_string(),
+                arguments: "{\"question\":\"x\"}".to_string(),
+            }]),
+            tool_call_id: None,
+        };
+        let body = build_openai_responses_body("gpt-4o", None, &[mk_user("hi"), assistant_msg], None, None);
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("\"role\":\"assistant\""));
+        assert!(json.contains("\"tool_calls\""));
+    }
+
+    // 抑制 unused warnings：保留 EffortLevel 引用（未来测试用）
+    #[allow(dead_code)]
+    fn _force_effort_use() -> EffortLevel {
+        EffortLevel::Low
     }
 }

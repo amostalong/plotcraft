@@ -50,3 +50,6 @@ flate2 = "1"
 indexmap = { version = "2", features = ["serde"] }
 # catalog 写盘 + fetched_at ISO 8601 时间戳
 chrono = { version = "0.4", features = ["serde"] }
+
+# v0.2+ 设定图图库 —— read_art_image 把玩家自放的 png/jpg 读成 base64 data URL
+base64 = "0.22"

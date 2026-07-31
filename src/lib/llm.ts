@@ -9,6 +9,8 @@ import type {
   ChatChunkPayload,
   ChatDonePayload,
   ChatErrorPayload,
+  ChatToolCallPayload,
+  ToolDefinition,
 } from '@/types/chat'
 import type { ModelCatalog } from '@/types/catalog'
 import type { ApiFormat, EffortLevel } from './settings'
@@ -19,6 +21,16 @@ import type { ApiFormat, EffortLevel } from './settings'
  *  - `model`：临时覆盖（不写回 settings.config.model）
  *  - `effort`：reasoning effort / thinking level（per run）
  *
+ *  v0.4+ `tools`：注入到 LLM request 的 `tools` 字段（tool calling 协议级）
+ *  - 关闭的 tool 不传（用户硬要求）→ undefined / 空数组 → 整个 tools 字段不下发，LLM 完全不知道存在
+ *  - 概念/世界 store 调用时由 `resolveEnabledTools(settings)` 过滤 Settings 关闭的 tool
+ *  - 协议级注入，Rust 端 build body 时按 api_format 转 schema
+ *
+ *  v0.4+ 取消 v0.3+ 的 `forceJson` 字段：
+ *  - 老逻辑 forceJson=true → 后端 `response_format: json_object` → LLM 返 JSON 字符串
+ *  - v0.4+ 改走 tool calling，schema 本身就是协议级结构化约束，不需要 response_format
+ *  - response_format 跟 tools 在 OpenAI 协议里互斥，强制开 response_format 会让 LLM 忽略 tools
+ *
  *  Rust 端 `ChatRunOptions` 镜像
  */
 export interface ChatRunOptions {
@@ -26,6 +38,10 @@ export interface ChatRunOptions {
   model?: string | null
   /** reasoning effort / thinking level（per run） */
   effort?: EffortLevel | null
+  /** v0.4+ tool calling: 注入到 LLM request 的 tools 字段
+   *  - undefined / 空数组 → Rust 端不写 tools 字段
+   *  - 一般前端走 `resolveEnabledTools(settings)` 过滤 Settings 关闭的 tool */
+  tools?: ToolDefinition[] | null
 }
 
 /** Test connection result
@@ -54,10 +70,15 @@ export async function startChat(
   messages: ChatMessage[],
   options?: ChatRunOptions,
 ): Promise<string> {
+  // 排查 chain 走哪条路径: print 关键选项 (model / tools)
+  console.log(
+    `[startChat] msgs=${messages.length}, model=${options?.model ?? '(default)'}, tools=${options?.tools?.length ?? 0}`,
+  )
   return invoke<string>('start_chat', { messages, options: options ?? null })
 }
 
 export async function cancelChat(runId: string): Promise<void> {
+  console.log(`[cancelChat] ${runId}`)
   await invoke('cancel_chat', { runId })
 }
 
@@ -77,6 +98,44 @@ export async function testProvider(opts: {
   model: string
 }): Promise<TestProviderResult> {
   return invoke<TestProviderResult>('test_provider', { params: opts })
+}
+
+/** Generate result（镜像 Rust `GenerateResult`） */
+export interface GenerateResult {
+  text: string
+}
+
+/** 非流式一次性问答 —— test_provider 骨架的泛化
+ *
+ *  v0.3+ **当前无调用方**（备选走流式 chat + JSON parse 内联进消息，详见
+ *  [docs/AI_PANEL_DESIGN.md]）。保留为 v0.4+ AI 验收类功能（如"批量检
+ *  查所有 step 是否满足宪法"）预留。
+ *
+ *  - 不读 config.json，参数直接传（跟 test_provider 同一模式，调用方从 settings store 取）
+ *  - Rust 端 `GenerateParams` 是 `#[serde(rename_all = "camelCase")]`，
+ *    params 内部字段传 camelCase（跟 testProvider 同款约定）
+ */
+export async function generate(
+  messages: ChatMessage[],
+  options: {
+    endpoint: string
+    apiKey: string
+    apiFormat: ApiFormat
+    model: string
+    maxTokens?: number
+  },
+): Promise<string> {
+  const result = await invoke<GenerateResult>('generate', {
+    params: {
+      endpoint: options.endpoint,
+      apiKey: options.apiKey,
+      apiFormat: options.apiFormat,
+      model: options.model,
+      messages,
+      maxTokens: options.maxTokens ?? null,
+    },
+  })
+  return result.text
 }
 
 /** Get the embedded model catalog (slim models.dev snapshot, ~167 providers)
@@ -169,6 +228,18 @@ export async function onChatChunk(
   handler: (payload: ChatChunkPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<ChatChunkPayload>('chat:chunk', (e) => handler(e.payload))
+}
+
+/** v0.4+ tool call 流式事件订阅
+ *  - 每次 chunk 推一份 ToolCallPartial 列表（按 `index` 区分）
+ *  - 同一 index 多次 chunk：id/name 在 start 才有，后续 None；arguments_delta 累加
+ *  - 完整 tool call 形态：累积到 arguments 是合法 JSON 时（前端 `JSON.parse` 成功）
+ *    视为"done"，入库用 [ToolCallInfo]（前端 AiChatPanel.vue 处理）
+ *  - 详细见 [docs/AI_PANEL_DESIGN.md §3.3] */
+export async function onChatToolCall(
+  handler: (payload: ChatToolCallPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ChatToolCallPayload>('chat:tool_call', (e) => handler(e.payload))
 }
 
 export async function onChatDone(

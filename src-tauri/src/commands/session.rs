@@ -444,17 +444,23 @@ mod tests {
                     role: MessageRole::User,
                     content: "hi".to_string(),
                     partial: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 ChatMessage {
                     role: MessageRole::Assistant,
                     content: "hello!".to_string(),
                     partial: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             last_user_message: Some(ChatMessage {
                 role: MessageRole::User,
                 content: "hi".to_string(),
                 partial: None,
+                tool_calls: None,
+                tool_call_id: None,
             }),
         };
         let json = serde_json::to_vec_pretty(&original).unwrap();

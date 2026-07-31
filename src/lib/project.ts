@@ -39,6 +39,15 @@ export async function listProjects(folder: string): Promise<ProjectMeta[]> {
   return invoke<ProjectMeta[]>('list_projects', { folder })
 }
 
+/**
+ * v0.2+ 启动恢复 last project —— 给 store.init() 用
+ * - 读 `<path>/plot.cat` 验证 + 拿 ProjectConfig
+ * - 不存在 / 损坏 → 返回 null（前端降级到"无项目"态，不弹错）
+ */
+export async function openProject(path: string): Promise<ProjectMeta | null> {
+  return invoke<ProjectMeta | null>('open_project', { path })
+}
+
 /** 弹出系统文件夹选择 dialog，返回选中的绝对路径或 null */
 export async function pickFolder(title = '选择文件夹'): Promise<string | null> {
   const result = await open({ directory: true, multiple: false, title })

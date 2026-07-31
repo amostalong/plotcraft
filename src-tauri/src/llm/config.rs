@@ -295,6 +295,70 @@ pub struct AppConfig {
     /// - 留 None → 用 model 自己的 defaultEffort
     #[serde(default, rename = "effort")]
     pub effort: Option<EffortLevel>,
+    /// v0.4+ AI tool calling 开关（PlotCraft 扩展；Locus 顶层无此字段）
+    /// - 每个 tool 一个 enabled: false → 那个 tool 不在 LLM request body 的 tools 字段
+    ///   → LLM 完全不知道存在（用户硬要求："关闭的tool不要在prompt里面提示给LLM"）
+    /// - 全关 → Rust 端不写 tools 字段，跟 v0.3 行为一致
+    /// - 缺这字段（老 config）→ 反序列化时用 default（全开）
+    #[serde(default, rename = "tools")]
+    pub tools: ToolsConfig,
+}
+
+/// v0.4+ 单个 tool 的开关设置
+///
+/// 关闭的 tool 不传 → LLM 完全不知道存在（详见 AppConfig.tools 注释）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsConfig {
+    /// ask_user_question（给玩家 N 个备选让 ta 选）
+    #[serde(default = "default_tool_enabled")]
+    pub ask_user_question: ToolSetting,
+    /// update_doc_item（让 LLM 把内容自动写入编辑器）
+    #[serde(default = "default_tool_enabled")]
+    pub update_doc_item: ToolSetting,
+    /// ask_free_text（让 LLM 反问玩家一个开放问题）
+    #[serde(default = "default_tool_enabled")]
+    pub ask_free_text: ToolSetting,
+}
+
+/// v0.4+ 单个 tool 的设置
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSetting {
+    /// false → 那个 tool 不传给 LLM（既不在 tools 字段，也不在 system prompt）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// v0.4+ Locus 风格权限策略（玩家主导 + AI 主导 安全机制）
+    /// - `auto`：LLM 调了直接执行（玩家不需要确认）
+    /// - `ask`：LLM 调了前端弹"AI 建议 X，确认吗" → 玩家点确认才执行
+    /// - `deny`：tool 存在 schema 但 LLM 调了直接拒绝 + 返回错误
+    /// - 默认 `ask`（玩家主导原则：写编辑器类 tool 必须 ask）
+    #[serde(default)]
+    pub permission: ToolPermission,
+}
+
+/// v0.4+ Locus 风格 tool 权限策略
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPermission {
+    Auto,
+    #[default]
+    Ask,
+    Deny,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            ask_user_question: ToolSetting { enabled: true, permission: ToolPermission::Auto },
+            update_doc_item: ToolSetting { enabled: true, permission: ToolPermission::Ask },
+            ask_free_text: ToolSetting { enabled: true, permission: ToolPermission::Auto },
+        }
+    }
+}
+
+fn default_tool_enabled() -> ToolSetting {
+    ToolSetting { enabled: true, permission: ToolPermission::Ask }
 }
 
 fn default_true() -> bool {
@@ -343,6 +407,7 @@ impl Default for AppConfig {
             custom_providers: Vec::new(),
             api_format: ApiFormat::default(),
             effort: None,
+            tools: ToolsConfig::default(),
         }
     }
 }

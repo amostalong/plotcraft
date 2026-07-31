@@ -1,3 +1,7 @@
+pub mod art;
+pub mod chats;
+pub mod concept;
+pub mod docs;
 pub mod llm;
 pub mod locus_import;
 pub mod project;

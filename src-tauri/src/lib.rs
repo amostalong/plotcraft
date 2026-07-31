@@ -5,8 +5,12 @@ use mimalloc::MiMalloc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+mod art;
+mod chats;
 mod commands;
+mod concept;
 mod console;
+mod docs;
 mod error;
 mod llm;
 mod model_catalog;
@@ -44,8 +48,21 @@ pub fn run() {
             commands::llm::start_chat,
             commands::llm::cancel_chat,
             commands::llm::test_provider,
+            commands::llm::generate,
             commands::project::create_project,
             commands::project::list_projects,
+            commands::project::open_project,
+            commands::art::list_art,
+            commands::art::create_art_entry,
+            commands::art::save_art_prompt,
+            commands::art::delete_art_entry,
+            commands::art::read_art_image,
+            commands::concept::list_concept_steps,
+            commands::concept::save_concept_step,
+            commands::concept::get_concept_summary,
+            commands::docs::list_docs,
+            commands::docs::save_doc,
+            commands::docs::get_docs_summary,
             commands::settings::load_config,
             commands::settings::save_config,
             commands::locus_import::import_from_locus,
@@ -55,6 +72,10 @@ pub fn run() {
             commands::session::rename_session,
             commands::session::load_session,
             commands::session::save_session,
+            commands::chats::load_chats,
+            commands::chats::save_chat,
+            commands::chats::delete_chat,
+            commands::chats::delete_all_chats,
             model_catalog::get_model_catalog,
             model_catalog::refresh_model_catalog,
             console::get_console_entries,

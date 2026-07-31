@@ -15,12 +15,13 @@
 
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { AlertCircle, RotateCcw, Plug, SlidersHorizontal, Terminal } from 'lucide-vue-next'
+import { AlertCircle, RotateCcw, Plug, SlidersHorizontal, Sparkles, Terminal } from 'lucide-vue-next'
 
 import { useSettingsStore } from '@/stores/settings'
 import ProvidersPanel from '@/components/settings/ProvidersPanel.vue'
 import GeneralSettingsPanel from '@/components/settings/GeneralSettings.vue'
 import ConsoleSettings from '@/components/settings/ConsoleSettings.vue'
+import ToolsSettings from '@/components/settings/ToolsSettings.vue'
 
 const settings = useSettingsStore()
 const route = useRoute()
@@ -39,7 +40,7 @@ watch(
 
 function syncCategoryFromQuery() {
   const tab = route.query.tab
-  if (tab === 'console' || tab === 'general' || tab === 'api') {
+  if (tab === 'console' || tab === 'general' || tab === 'api' || tab === 'tools') {
     activeCategory.value = tab
   }
 }
@@ -54,9 +55,9 @@ watch(
   { immediate: true },
 )
 
-// activeCategory: 'api' | 'general' | 'console' —— v0.1.5+ 加 'console'
+// activeCategory: 'api' | 'general' | 'console' | 'tools' —— v0.1.5+ 加 'console', v0.4+ 加 'tools'
 // （active model 切换完全在 chat tab model selector，settings 只管 provider 库）
-const activeCategory = ref<'api' | 'general' | 'console'>('api')
+const activeCategory = ref<'api' | 'general' | 'console' | 'tools'>('api')
 
 async function onReset() {
   if (window.confirm('确定要重置为默认配置吗？这不会清空项目列表。')) {
@@ -106,6 +107,17 @@ async function onReset() {
           <Terminal :size="14" />
           <span>控制台</span>
         </button>
+
+        <!-- v0.4+ AI 工具开关（玩家主导：默认全开，可关闭任意 tool） -->
+        <div class="sidebar-group-label">AI</div>
+        <button
+          class="sidebar-item"
+          :class="{ active: activeCategory === 'tools' }"
+          @click="activeCategory = 'tools'"
+        >
+          <Sparkles :size="14" />
+          <span>工具</span>
+        </button>
       </div>
     </aside>
 
@@ -127,6 +139,10 @@ async function onReset() {
           v-else-if="activeCategory === 'console'"
           key="console"
           :run-id-filter="consoleRunIdFilter"
+        />
+        <ToolsSettings
+          v-else-if="activeCategory === 'tools'"
+          key="tools"
         />
       </Transition>
 

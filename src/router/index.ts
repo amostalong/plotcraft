@@ -21,6 +21,10 @@ const router = createRouter({
       component: () => import('@/views/PlotView.vue'),
     },
     {
+      path: '/concept',
+      component: () => import('@/views/ConceptView.vue'),
+    },
+    {
       path: '/art',
       component: () => import('@/views/ConceptArtView.vue'),
     },
