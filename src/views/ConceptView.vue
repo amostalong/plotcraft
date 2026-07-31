@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 // ConceptView —— 概念 tab（7 层严格派生模型 + 设计循环 + 编辑区 + AI 面板）
 //
 // v0.5+：6 步漏斗 → 7 层派生模型（seed / pillars / world-rules / locations / character-functions / three-act / core-fantasy）
@@ -35,7 +35,10 @@ import type { AdoptPayload } from '@/types/ai'
 const concept = useConceptStore()
 const project = useProjectStore()
 
-// === v0.3+ AI 面板宽度可调 (默认 480px = 1.5x 原 320px) ===
+// === v0.3+ AI 面板宽度可调 ===
+// v0.5.1 改默认 = 整体窗口的 1/4（函数式 defaultWidth：mount / resetWidth 调一次
+// 取当前窗口尺寸，clamp 到 [320, 800]）。localStorage 已有玩家设的宽度优先 → 不动玩家手设值
+// v0.4.1+ resetOnWindowResize: 窗口尺寸变化（最大化 / 还原 / 拖边缘）自动按比例 reset
 const {
   width: aiPanelWidth,
   resizing: aiPanelResizing,
@@ -43,10 +46,11 @@ const {
   resetWidth: resetAiPanelWidth,
 } = useResizableWidth({
   storageKey: 'plotcraft.aiPanelWidth',
-  defaultWidth: 480,
+  defaultWidth: () => Math.floor(window.innerWidth / 4),
   min: 320,
   max: 800,
   edge: 'left',
+  resetOnWindowResize: true,
 })
 
 const STATUS_LABELS: Record<ConceptStepStatus, string> = {

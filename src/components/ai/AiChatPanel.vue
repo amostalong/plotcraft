@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 // AiChatPanel —— AI 面板右栏统一组件（v0.4+ 重构）
 //
 // v0.3+ 走 JSON 数组解析（parseAlternatives）把备选内联进消息气泡。
@@ -23,11 +23,14 @@
 // 触发 Vue 3.5 `locateNonHydratedAsyncRoot(null)` 崩。
 
 import { computed, nextTick, ref, watch } from 'vue'
-import { Eraser, Loader2, Send, Sparkles } from 'lucide-vue-next'
+import { ChevronDown, ChevronUp, ClipboardCopy, Eraser, Loader2, Send, Sparkles } from 'lucide-vue-next'
 
 import { getErrorMessage } from '@/lib/error-messages'
+import ModelEffortSelector from '@/components/chat/ModelEffortSelector.vue'
+import { useSettingsStore } from '@/stores/settings'
 import type { AdoptPayload, PresetAction, StepChatState } from '@/types/ai'
-import type { ChatMessage, ToolCallInfo } from '@/types/chat'
+import type { ChatErrorDiag, ChatErrorKind, ChatMessage, ToolCallInfo } from '@/types/chat'
+import type { EffortLevel } from '@/lib/settings'
 
 import AltCard from './AltCard.vue'
 import MessageBubble from './MessageBubble.vue'
@@ -58,6 +61,118 @@ const streamError = computed(() => {
   if (!errorRaw.value) return null
   return getErrorMessage(errorKind.value, errorRaw.value)
 })
+
+// v0.4.1+ 错误诊断包（endpoint / model / api_format / request_body_preview）—— 4 字段 optional
+const errorDiag = computed<ChatErrorDiag | null>(() => {
+  // v0.4.1+ 概念 / 世界 store 暴露 errorDiag；老 store 没这字段 → undefined
+  const v = (props.chat as { errorDiag?: { value: ChatErrorDiag | null } }).errorDiag
+  return v?.value ?? null
+})
+/** v0.4.1+ 错误条诊断区展开/折叠（默认展开） */
+const errorExpanded = ref(true)
+/** v0.4.1+ 复制诊断信息按钮状态 */
+const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
+
+// === v0.4.1+ Model 切换（header 集成 ModelEffortSelector）
+// - 跟 chat tab 同款组件，placement=bottom（trigger 在 panel 顶部，popover 往下弹不撞 stepper）
+// - 切 model 时同步 settings.config.base_url / apiKey / apiFormat / model（不写 chat.selectedModel，
+//   概念 / 世界 store 走 resolveLlmConnection 直读 settings.config，不经 chat store）
+const settings = useSettingsStore()
+const aiPanelShortcuts = computed(() =>
+  settings.config.customProviders
+    .filter((p) => p.enabled)
+    .map((p) => {
+      const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+      return { id: p.id, name: p.name, defaultModel: effective }
+    })
+    .filter((p) => p.defaultModel.length > 0),
+)
+const aiPanelUnconfiguredCount = computed(
+  () =>
+    settings.config.customProviders.filter((p) => {
+      if (!p.enabled) return false
+      const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+      return effective === ''
+    }).length,
+)
+/** 当前 panel 用的 model（settings.config.model 实时） */
+const aiPanelModel = computed(() => settings.config.model?.trim() || '')
+/** 当前 panel 的 effort（v0.4.1+ 复用 settings.config.effort，概念 / 世界 tab 不接 effort，先隐藏） */
+const aiPanelEffort = computed(() => settings.config.effort ?? 'none')
+
+/** v0.4.1+ 切 model —— 跟 chat tab onSelectModel 同款逻辑（同步整组 provider 配置）
+ *  - 不写 chat.selectedModel（chat tab 专属字段，概念 / 世界 tab 不经 chat store）
+ *  - 改完 settings.save() → 下次 resolveLlmConnection 走新 model */
+function onSelectModel(id: string) {
+  const cp = settings.config.customProviders.find((p) => {
+    if (!p.enabled) return false
+    const effective = p.defaultModel?.trim() || p.models?.[0]?.id?.trim() || ''
+    return effective === id
+  })
+  if (cp) {
+    settings.config.base_url = cp.baseUrl
+    settings.config.apiKey = cp.apiKey
+    settings.config.apiFormat = cp.apiFormat
+    settings.save().catch((e) => console.error('[AiChatPanel.onSelectModel] save failed:', e))
+  }
+  settings.config.model = id
+  settings.save().catch((e) => console.error('[AiChatPanel.onSelectModel] model save failed:', e))
+}
+
+/** v0.4.1+ 复制诊断信息 —— 跟 SessionView 同款 */
+async function onCopyDiag() {
+  const payload = {
+    kind: errorKind.value ?? 'unknown',
+    error: errorRaw.value ?? '',
+    endpoint: errorDiag.value?.endpoint ?? '',
+    model: errorDiag.value?.model ?? '',
+    api_format: errorDiag.value?.api_format ?? '',
+    request_body_preview: errorDiag.value?.request_body_preview ?? '',
+    run_id: '',
+    item_id: props.itemId,
+    timestamp: new Date().toISOString(),
+  }
+  const text =
+    `PlotCraft chat error diagnostic\n` +
+    `================================\n` +
+    `item_id:     ${payload.item_id}\n` +
+    `kind:        ${payload.kind}\n` +
+    `endpoint:    ${payload.endpoint}\n` +
+    `model:       ${payload.model}\n` +
+    `api_format:  ${payload.api_format}\n` +
+    `timestamp:   ${payload.timestamp}\n` +
+    `--------------------------------\n` +
+    `raw error:\n${payload.error}\n` +
+    `--------------------------------\n` +
+    `request body preview (truncated to 800 chars):\n${payload.request_body_preview}\n` +
+    `================================\n` +
+    `\n--- JSON ---\n` +
+    JSON.stringify(payload, null, 2)
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copyState.value = 'copied'
+    setTimeout(() => {
+      copyState.value = 'idle'
+    }, 1500)
+  } catch (e) {
+    console.error('[AiChatPanel.onCopyDiag] clipboard failed:', e)
+    copyState.value = 'failed'
+    setTimeout(() => {
+      copyState.value = 'idle'
+    }, 2000)
+  }
+}
 
 /** 解析 ask_user_question tool 的 arguments（JSON 字符串）→ {question, options[]}
  *  - 失败 → null（前端走"AI 在想..."占位） */
@@ -90,11 +205,15 @@ function parseAskFreeText(tc: ToolCallInfo): { question: string } | null {
   }
 }
 
-function parseUpdateDocItem(tc: ToolCallInfo): { item_id: string; content: string } | null {
+function parseUpdateDocItem(
+  tc: ToolCallInfo,
+): { item_id: string; content: string; mode: 'replace' | 'append' } | null {
   try {
     const args = JSON.parse(tc.arguments)
     if (typeof args.item_id !== 'string' || typeof args.content !== 'string') return null
-    return { item_id: args.item_id, content: args.content }
+    // v0.4.1+ mode: 默认 'replace'（LLM 不传或传非枚举值都视为 replace）
+    const mode: 'replace' | 'append' = args.mode === 'append' ? 'append' : 'replace'
+    return { item_id: args.item_id, content: args.content, mode }
   } catch {
     return null
   }
@@ -119,6 +238,9 @@ interface Decorated {
   question?: string
   options?: { label: string; preview: string; description?: string }[]
   toolCall?: ToolCallInfo
+  // v0.4.1+ update_doc_item 解析后内容（避免直接显示 JSON 字符串给玩家看）
+  updateContent?: string
+  updateMode?: 'replace' | 'append'
 }
 const decorated = computed<Decorated[]>(() =>
   messages.value.map((msg) => {
@@ -155,6 +277,8 @@ const decorated = computed<Decorated[]>(() =>
             kind: 'assistant-tool-update',
             msg,
             toolCall: tc,
+            updateContent: parsed.content,
+            updateMode: parsed.mode,
           }
         }
       }
@@ -248,17 +372,23 @@ async function onAdoptAltCard(option: { label: string; preview: string }, toolCa
 /** v0.4+ update_doc_item "确认写入" 按钮
  *  - 把 tool result 喂回 LLM（"OK 玩家确认了"）
  *  - emit('adopt', replace) 让 ConceptView 写编辑器
- *  - 这俩并行发：写入不依赖 LLM 响应（LLM 可能想再加一句总结） */
-async function onConfirmUpdate(toolCall: ToolCallInfo | undefined) {
+ *  - 这俩并行发：写入不依赖 LLM 响应（LLM 可能想再加一句总结）
+ *  - **v0.4.1+ mode 区分**:
+ *    - mode='replace' → 「确认覆盖编辑器」（✨）
+ *    - mode='append'  → 「追加到编辑器末尾」（📝） */
+async function onConfirmUpdate(toolCall: ToolCallInfo | undefined, mode: 'replace' | 'append' = 'replace') {
   if (!toolCall) return
   // 1. 写编辑器：emit adopt，ConceptView 处理
   const args = parseUpdateDocItem(toolCall)
   if (!args) return
-  emit('adopt', { text: args.content, mode: 'replace' })
+  emit('adopt', { text: args.content, mode })
   // 2. 喂回 LLM：让 ta 知道玩家确认了（如果没 sendToolResult 也不阻塞，编辑已写）
   if (sendToolResult) {
     try {
-      await sendToolResult(toolCall.id, '玩家已确认写入。')
+      await sendToolResult(
+        toolCall.id,
+        mode === 'append' ? '玩家已确认追加。' : '玩家已确认写入。',
+      )
     } catch (e) {
       console.warn('[AiChatPanel] sendToolResult for confirm failed (editing already done):', e)
     }
@@ -279,6 +409,9 @@ async function onReset() {
 // - block 用 `\n\n` 拼接, 一并 emit 给 view
 // - **跳过 assistant-cards**: v0.3+ 润色/扩展/备选都用 JSON 输出 → 走 AltCard 单选, 不走整体采用条
 //   (整体采用会塞入一坨 JSON 字符串当编辑器内容, 玩家绝对不要这个)
+// - **v0.4.1+ 整轮排除**: 最后一个 user 之后, 只要有任何 tool call (question/freetext/update) 触发,
+//   整轮都不算可采用 block —— 那条流程是"LLM 在问 / 写", 中间夹的反思气泡不是可写编辑器的内容
+//   (用户截图 bug: ask_user_question 流程中反思气泡被误判为可采用 → 底部冒"AI 回复"+"写入编辑器")
 const adoptableBlock = computed(() => {
   const msgs = messages.value
   const dec = decorated.value
@@ -300,15 +433,22 @@ const adoptableBlock = computed(() => {
   // 最新一条还在 streaming → 等
   if (afterUser[afterUser.length - 1].msg.partial) return null
 
-  // 排除规则:
-  // - assistant-tool-question / assistant-tool-update 走单选, 不走整体采用 (LLM 调 tool 是显式问玩家)
+  // v0.4.1+ 整轮排除：这一轮有任何 tool call (question / freetext / update) 触发过
+  // → 整轮不算可采用 block。LLM 在问 / 在写, 中间反思气泡不是可写编辑器的内容。
+  const hasToolCallInRound = afterUser.some(
+    (d) =>
+      d.kind === 'assistant-tool-question' ||
+      d.kind === 'assistant-tool-freetext' ||
+      d.kind === 'assistant-tool-update',
+  )
+  if (hasToolCallInRound) return null
+
+  // 排除规则 (per-message):
   // - partial 还在流式, 等
   // - **polish/expand 一律排除**: 玩家点润色/扩展 chip 是想要"挑一个方向", 整体采用条不能"一键采用"
   //   LLM preamble (还没出 tool call 时说的"让我分析一下..."那种) 是 polish/expand action 但 kind=assistant-bubble
   //   —— 同样排除, 玩家应该等 tool call 出来用 AltCard 挑
   const block = afterUser.filter((d) => {
-    if (d.kind === 'assistant-tool-question') return false
-    if (d.kind === 'assistant-tool-update') return false
     if (d.msg.partial) return false
     if (d.msg.action === 'polish' || d.msg.action === 'expand') return false
     return true
@@ -345,6 +485,18 @@ function onAdoptBlock() {
       <h4>AI 助手 · {{ title }}</h4>
       <span v-if="wordCount != null" class="word-count">{{ wordCount }} 字</span>
       <span class="spacer" />
+      <!-- v0.4.1+ model 切换（复用 chat tab 同款 ModelEffortSelector，effort 隐藏） -->
+      <ModelEffortSelector
+        :custom-provider-shortcuts="aiPanelShortcuts"
+        :unconfigured-provider-count="aiPanelUnconfiguredCount"
+        :selected-id="aiPanelModel"
+        :effort="aiPanelEffort"
+        :effort-supported="false"
+        placement="bottom"
+        align="end"
+        :disabled="streaming"
+        @select-model="onSelectModel"
+      />
       <button
         class="reset-btn"
         type="button"
@@ -382,18 +534,22 @@ function onAdoptBlock() {
           <div class="tool-freetext-prompt">💭 {{ d.question }}</div>
           <div class="tool-freetext-hint">在下方输入框写你的想法，发送后会作为回答继续对话</div>
         </div>
-        <!-- v0.4+ update_doc_item tool → "AI 建议写入 X" + 确认按钮 -->
+        <!-- v0.4+ update_doc_item tool → "AI 建议写入 X" + 确认按钮
+             v0.4.1+ mode 区分：replace = 覆盖（✨），append = 追加（📝）
+             显示 content 而不是原始 JSON arguments（玩家可读性） -->
         <div v-else-if="d.kind === 'assistant-tool-update'" class="tool-update">
-          <div class="tool-update-title">✨ AI 建议写入</div>
-          <div class="tool-update-content">{{ d.toolCall?.arguments }}</div>
+          <div class="tool-update-title">
+            {{ d.updateMode === 'append' ? '📝 AI 建议补充' : '✨ AI 建议覆盖' }}
+          </div>
+          <div class="tool-update-content">{{ d.updateContent }}</div>
           <button
             type="button"
             class="tool-update-btn"
             :disabled="streaming"
-            @click="onConfirmUpdate(d.toolCall)"
+            @click="onConfirmUpdate(d.toolCall, d.updateMode ?? 'replace')"
           >
-            <span class="tool-update-icon">✨</span>
-            <span>确认写入编辑器</span>
+            <span class="tool-update-icon">{{ d.updateMode === 'append' ? '📝' : '✨' }}</span>
+            <span>{{ d.updateMode === 'append' ? '追加到编辑器末尾' : '确认覆盖编辑器' }}</span>
           </button>
         </div>
         <!-- v0.3+ 老路径：polish（流中 placeholder）-->
@@ -444,7 +600,54 @@ function onAdoptBlock() {
     </div>
 
     <div v-if="streamError" class="chat-error">
-      {{ streamError.title }} —— {{ streamError.hint }}
+      <div class="chat-error-header">
+        <span class="chat-error-msg">{{ streamError.title }} —— {{ streamError.hint }}</span>
+        <div class="chat-error-actions">
+          <button
+            type="button"
+            class="chat-error-btn"
+            @click="onCopyDiag"
+            :title="copyState === 'copied' ? '已复制到剪贴板' : '一键复制诊断信息给开发者'"
+          >
+            <ClipboardCopy :size="10" />
+            <span>{{ copyState === 'copied' ? '已复制 ✓' : copyState === 'failed' ? '复制失败' : '复制诊断信息' }}</span>
+          </button>
+          <button
+            type="button"
+            class="chat-error-btn chat-error-expand"
+            @click="errorExpanded = !errorExpanded"
+            :title="errorExpanded ? '收起技术细节' : '展开技术细节'"
+          >
+            <component :is="errorExpanded ? ChevronUp : ChevronDown" :size="10" />
+          </button>
+        </div>
+      </div>
+      <!-- v0.4.1+ 诊断区（默认展开）：4 字段 + raw error 一次性显示 -->
+      <div v-if="errorExpanded" class="chat-error-diag">
+        <div v-if="errorDiag" class="diag-fields">
+          <div v-if="errorDiag.endpoint" class="diag-row">
+            <span class="diag-key">endpoint</span>
+            <span class="diag-val">{{ errorDiag.endpoint }}</span>
+          </div>
+          <div v-if="errorDiag.model" class="diag-row">
+            <span class="diag-key">model</span>
+            <span class="diag-val">{{ errorDiag.model }}</span>
+          </div>
+          <div v-if="errorDiag.api_format" class="diag-row">
+            <span class="diag-key">api_format</span>
+            <span class="diag-val">{{ errorDiag.api_format }}</span>
+          </div>
+          <div v-if="errorDiag.request_body_preview" class="diag-row">
+            <span class="diag-key">body</span>
+            <pre class="diag-body">{{ errorDiag.request_body_preview }}</pre>
+          </div>
+        </div>
+        <div v-else class="diag-empty">（老 backend 没发诊断字段）</div>
+        <div class="diag-raw-section">
+          <div class="diag-key">raw error</div>
+          <pre class="diag-body">{{ streamError.technicalDetails }}</pre>
+        </div>
+      </div>
     </div>
     <div v-if="localError" class="chat-error">{{ localError }}</div>
 
@@ -465,7 +668,7 @@ function onAdoptBlock() {
     <div class="composer">
       <textarea
         v-model="input"
-        rows="2"
+        rows="4"
         placeholder="聊这一步的想法、疑问……（Enter 发送）"
         @keydown.enter.exact.prevent="onEnter"
       />
@@ -565,6 +768,19 @@ function onAdoptBlock() {
   min-height: 0;
   overflow-y: auto;
   padding: 4px 0;
+}
+.msg-list::-webkit-scrollbar {
+  width: 6px;
+}
+.msg-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.msg-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.msg-list::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-soft);
 }
 .chat-hint {
   padding: 12px 10px;
@@ -805,6 +1021,112 @@ function onAdoptBlock() {
   line-height: 1.5;
   color: var(--error, #e53e3e);
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: rgba(232, 90, 90, 0.08);
+  border: 1px solid var(--error, #e53e3e);
+  border-radius: 6px;
+}
+.chat-error-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  justify-content: space-between;
+}
+.chat-error-msg {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+.chat-error-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.chat-error-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+.chat-error-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+.chat-error-expand {
+  padding: 2px 4px;
+}
+.chat-error-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.diag-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.diag-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  word-break: break-all;
+}
+.diag-key {
+  flex-shrink: 0;
+  width: 60px;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 10px;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+}
+.diag-val {
+  color: var(--text);
+  font-size: 10px;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  word-break: break-all;
+}
+.diag-body {
+  margin: 0;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 9px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 150px;
+  overflow-y: auto;
+  flex: 1;
+  min-width: 0;
+}
+.diag-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 10px;
+}
+.diag-raw-section {
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
 }
 .chips {
   display: flex;

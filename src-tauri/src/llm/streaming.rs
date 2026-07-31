@@ -95,6 +95,18 @@ pub struct ChatError {
     /// （不直接暴露原始 OpenSSL / reqwest 错误字符串，玩家永远看不到技术细节）
     /// 跨 Tauri boundary 走 snake_case，TS 端 `ChatErrorKind` 镜像
     pub kind: ChatErrorKind,
+    /// v0.4.1+ 诊断信息：错误条 "复制诊断信息" 按钮一键打包这些字段给开发者
+    /// 玩家默认折叠，复制时整段给出去；不用反复点 "查看详情" 截图
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_format: String,
+    /// OpenAI Chat Completions / Responses / Anthropic 3 个协议 body 序列化前 ~800 字符预览
+    /// 错误时直接显示在诊断信息里 —— 玩家不用再去 Console 翻 body preview log
+    #[serde(default)]
+    pub request_body_preview: String,
 }
 
 /// v0.2+ chat 错误分类（v0.1 之前所有错误都打成原字符串给玩家，体验差）
@@ -172,17 +184,57 @@ fn extract_http_status(err: &str) -> Option<u16> {
     rest[..end].parse().ok()
 }
 
+/// v0.4.1+ 错误诊断上下文 —— 3 个流式实现（openai_chat / openai_responses / anthropic）
+/// 共 12 个 emit_chat_error 调用点统一打包这些字段给玩家错误条用。
+/// 持有 owned String（不用 lifetime 引用）—— 方便跨 `tokio::spawn` 闭包 clone 传。
+#[derive(Clone)]
+pub(crate) struct ChatErrorContext {
+    pub endpoint: String,
+    pub model: String,
+    pub api_format: ApiFormat,
+    /// 已序列化好的请求体前 ~800 字符（错误时直接给玩家看，不用去 Console 翻 log）
+    pub request_body_preview: String,
+}
+
+impl ChatErrorContext {
+    /// 从 `LlmConfig` + body 预览字符串快速构造（3 个流式实现顶部都这么调）
+    pub fn from_config(config: &LlmConfig, body_preview: &str) -> Self {
+        Self {
+            endpoint: config.endpoint.clone(),
+            model: config.effective_model().to_string(),
+            api_format: config.api_format,
+            request_body_preview: body_preview.to_string(),
+        }
+    }
+}
+
 /// v0.2+ 统一 chat:error emit 入口 —— 4 个错误路径共用，自动算 kind
 ///
-/// 调用方只需要给原始 error 字符串，helper 内部调 `classify_error` 算玩家文案
+/// v0.4.1+ 接 `ctx: ChatErrorContext`：把 endpoint / model / api_format / request_body_preview
+/// 一起 emit 到前端 —— 错误条 "复制诊断信息" 按钮一键打包给开发者，不用截图。
+///
+/// 调用方只需要给原始 error 字符串 + ctx，helper 内部调 `classify_error` 算玩家文案
 /// 分类 + emit + 返回 Ok(()) 让调用方继续 return Err。
-pub(crate) fn emit_chat_error(app: &AppHandle, run_id: &str, error_msg: &str) {
+pub(crate) fn emit_chat_error(
+    app: &AppHandle,
+    run_id: &str,
+    ctx: ChatErrorContext,
+    error_msg: &str,
+) {
     let kind = classify_error(error_msg);
+    let api_format_str = match ctx.api_format {
+        ApiFormat::OpenaiChat => "openai_chat",
+        ApiFormat::OpenaiResponses => "openai_responses",
+        ApiFormat::AnthropicMessages => "anthropic_messages",
+    };
     console_log(
         app,
         "error",
         "stream",
-        format!("[emit] chat:error run_id={}, kind={:?}, msg={}", run_id, kind, error_msg),
+        format!(
+            "[emit] chat:error run_id={}, kind={:?}, endpoint={}, model={}, api_format={}\n[emit] body_preview: {}\n[emit] msg: {}",
+            run_id, kind, ctx.endpoint, ctx.model, api_format_str, ctx.request_body_preview, error_msg
+        ),
     );
     let _ = app.emit(
         "chat:error",
@@ -190,6 +242,10 @@ pub(crate) fn emit_chat_error(app: &AppHandle, run_id: &str, error_msg: &str) {
             run_id: run_id.to_string(),
             error: error_msg.to_string(),
             kind,
+            endpoint: ctx.endpoint,
+            model: ctx.model,
+            api_format: api_format_str.to_string(),
+            request_body_preview: ctx.request_body_preview,
         },
     );
 }
@@ -289,8 +345,9 @@ pub async fn stream_chat_openai_chat(
     );
     // v0.4+ tools 诊断: 打印 body 前 400 字符, 玩家在 Console tab
     // 能直接看到 `tools: [...]` 是否真发出去了 (排除协议层 / 端点兼容性问题)
+    // v0.4.1+ 拉长到 800 字符：错误条 "复制诊断信息" 直接给玩家看，少去 Console 翻 log
     let preview = serde_json::to_string(&body)
-        .map(|s| s.chars().take(400).collect::<String>())
+        .map(|s| s.chars().take(800).collect::<String>())
         .unwrap_or_else(|_| "(serialize failed)".to_string());
     console_log(
         &app,
@@ -298,6 +355,9 @@ pub async fn stream_chat_openai_chat(
         "stream",
         format!("[stream] openai_chat body preview: {}", preview),
     );
+    // v0.4.1+ 错误诊断上下文 —— 4 个错误路径（req.send fail / HTTP non-success /
+    // parse stream error / spawn_blocking join）共用，emit chat:error 时打包给玩家
+    let error_ctx = ChatErrorContext::from_config(&config, &preview);
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
 
@@ -336,9 +396,10 @@ pub async fn stream_chat_openai_chat(
         Err(e) => {
             // v0.1+：之前 send 失败只 return Err，前端永远收不到 chat:error event
             // → UI 卡 streaming 状态无任何反馈。改成先 emit chat:error 再 return。
+            // v0.4.1+ 带 error_ctx：玩家点 "复制诊断信息" 一次拿到 endpoint / model / body
             let msg = format!("request failed: {}", e);
             console_log(&app, "error", "stream", format!("[stream] req.send FAILED: {}", e));
-            emit_chat_error(&app, &run_id, &msg);
+            emit_chat_error(&app, &run_id, error_ctx.clone(), &msg);
             return Err(AppError::Llm(msg));
         }
     };
@@ -348,7 +409,8 @@ pub async fn stream_chat_openai_chat(
         let body = response.text().await.unwrap_or_default();
         let err_msg = format!("HTTP {}: {}", status, body);
         console_log(&app, "error", "stream", format!("[stream] HTTP non-success: {}", err_msg));
-        emit_chat_error(&app, &run_id, &err_msg);
+        // v0.4.1+ 把 endpoint / model / body preview 一起 emit（错误条 "复制诊断信息" 用）
+            emit_chat_error(&app, &run_id, error_ctx.clone(), &err_msg);
         return Err(AppError::LlmHttp { status, body });
     }
 
@@ -362,6 +424,9 @@ pub async fn stream_chat_openai_chat(
     // → 前端收不到 chat:error，UI 永远卡 streaming。clone 一份 app + run_id 准备 emit。
     let app_err = app.clone();
     let run_id_err = run_id.clone();
+    // v0.4.1+ parse 闭包内也可能 emit 错误（stream error / spawn_blocking join fail），
+    // 把 error_ctx 也 clone 一份 move 进去 —— 错误条能拿到 endpoint / model / body preview
+    let error_ctx_parse = error_ctx.clone();
 
     let parse_handle = tokio::spawn(async move {
         let mut buffer = String::new();
@@ -380,7 +445,8 @@ pub async fn stream_chat_openai_chat(
                 Some(Err(e)) => {
                     let msg = format!("[parse] stream error: {}", e);
                     eprintln!("{}", msg);
-                    emit_chat_error(&app_err, &run_id_err, &msg);
+                    // v0.4.1+ 带 error_ctx：玩家点 "复制诊断信息" 拿到完整诊断
+                    emit_chat_error(&app_err, &run_id_err, error_ctx_parse.clone(), &msg);
                     break;
                 }
                 None => break,
@@ -421,7 +487,8 @@ pub async fn stream_chat_openai_chat(
                 Err(e) => {
                     let msg = format!("[parse] spawn_blocking join: {}", e);
                     eprintln!("{}", msg);
-                    emit_chat_error(&app_err, &run_id_err, &msg);
+                    // v0.4.1+ 带 error_ctx
+                    emit_chat_error(&app_err, &run_id_err, error_ctx_parse.clone(), &msg);
                     break;
                 }
             }

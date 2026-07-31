@@ -76,17 +76,23 @@ export const ASK_USER_QUESTION_SCHEMA: ToolDefinition = {
 
 /** update_doc_item —— LLM 主动把内容写入某项
  *  - 替代 v0.3+ 的"采用"按钮（玩家点 AltCard 触发写入）
- *  - v0.4+：LLM 自己调这个 tool → 前端弹"AI 建议采用 X，确认写入吗" → 玩家确认
+ *  - v0.4+：LLM 自己调这个 tool → 前端弹"AI 建议覆盖 / 追加 X，确认吗" → 玩家确认
  *  - item_id 枚举：v0.5+ 限 concept 7 步（world 5 节 / characters / plot 等它们自己有 store 再加）
- *  - 玩家可以关闭这个 tool（在 Settings tab）→ LLM 完全不能改编辑器，要改让玩家手动写 */
+ *  - 玩家可以关闭这个 tool（在 Settings tab）→ LLM 完全不能改编辑器，要改让玩家手动写
+ *  - **v0.4.1+ mode 区分**:
+ *    - 'replace' = 覆盖编辑器（默认；完整新立意 / 完整新内容）
+ *    - 'append'  = 追加到编辑器末尾（局部补全 / 一句话 / 一条规则）
+ *    - **不要**在不区分完整度时瞎猜 —— 想清楚是"完整内容"还是"局部补全"再调
+ *    - 反思类输出（"立意的格式来看还缺 3 块"）**不要**调这个 tool，那是说明不是内容 */
 export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
   type: 'function',
   function: {
     name: 'update_doc_item',
     description:
-      '把玩家选定 / 修改后的内容写入文档某一项。这一步会自动覆盖编辑器内容。' +
+      '把玩家选定 / 修改后的内容写入文档某一项。' +
       '**只**在玩家已经明确表达过要这个方案时调（例如玩家问"用 A 改暗版"，或玩家从 ask_user_question 选了一个 option）。' +
       '**不要**在没确认的情况下主动调这个 —— 玩家主导，绝不替玩家做决定。' +
+      '**反思 / 提问 / 解释**类输出**不要**用这个 tool —— 反思用 ask_user_question 或 ask_free_text。' +
       'item_id 当前限定为 concept 7 步：seed / pillars / world-rules / locations / character-functions / three-act / core-fantasy。' +
       'content 是最终内容（玩家改过的优先于 LLM 原始备选）。',
     parameters: {
@@ -104,6 +110,14 @@ export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
             'core-fantasy',
           ],
           description: '要写入的 doc item id',
+        },
+        mode: {
+          type: 'string',
+          enum: ['replace', 'append'],
+          description:
+            '"replace" = 覆盖编辑器（默认；适合完整新内容）;' +
+            '"append" = 追加到末尾（适合局部补全 / 一句话 / 一条规则）。' +
+            '**不传默认 replace**。区分: 整段完整内容 → replace; 只是一句补充 / 一条新规则 → append。',
         },
         content: {
           type: 'string',

@@ -133,9 +133,27 @@ export interface ChatToolCallPayload {
 /** v0.2+ chat:error event payload
  *  - `error`: 原始错误字符串（TLS / reqwest / HTTP body），玩家默认不直接看
  *  - `kind`: 错误分类（玩家文案 key）
+ *  - v0.4.1+ 诊断字段：endpoint / model / api_format / request_body_preview
+ *    玩家错误条 "复制诊断信息" 按钮一键打包给开发者，不用反复截图
  */
 export interface ChatErrorPayload {
   run_id: string
   error: string
   kind: ChatErrorKind
+  endpoint?: string
+  model?: string
+  api_format?: string
+  request_body_preview?: string
+}
+
+/** v0.4.1+ 错误诊断包 —— store 派生给 AiChatPanel 错误条用
+ *  - kind / errorRaw 已在 StepChatState 里独立暴露（玩家文案 + 折叠的 raw）
+ *  - 这里只装 4 个 v0.4.1+ 诊断字段，给"复制诊断信息"按钮
+ *  - 全部 optional：老 session / 老 backend 没有这 4 字段时不报错
+ */
+export interface ChatErrorDiag {
+  endpoint: string
+  model: string
+  api_format: string
+  request_body_preview: string
 }

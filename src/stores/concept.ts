@@ -21,6 +21,14 @@
 // - 黄点消失条件：玩家手动 clearStale(id) 或跑 preset 校准后
 // - 5min cooldown for L7 频繁改动（避免 toast 刷屏）—— store 内部防抖
 //
+// v0.5.1 mtime hash 对比上线（修 v0.5+ "改一下全黄"问题）：
+// - save() 内 oldContent / newContent 字符串对比，oldMaturity / newMaturity 对比
+// - **只有 content 或 maturity 真有变化才 markStale**——避免 debounce 重复触发、纯 markConfirmed
+//   重复保存、maturity 没变但 content 没变等场景
+// - maturity 单独变化也算改（L2 草稿→定型需要重新校准下游）
+// - 错别字/小修 → 标 stale（玩家用 X 手动忽略）；方向大改 → 标 stale（玩家用 ? 跑校准）
+//   之前：不管大小改都"全黄"，玩家无法区分；现在：黄点本身就是"有改动"的信号，区分交回玩家
+//
 // 详细设计见 [docs/AI_PANEL_DESIGN.md] + [docs/CONCEPT_REDESIGN_PLAN.md]
 
 import { defineStore } from 'pinia'
@@ -39,7 +47,7 @@ import {
   startChat as rpcStartChat,
 } from '@/lib/llm'
 import type { PresetAction, StepChatState } from '@/types/ai'
-import type { ChatErrorKind, ChatMessage, ToolCallInfo, ToolCallPartial } from '@/types/chat'
+import type { ChatErrorDiag, ChatErrorKind, ChatMessage, ToolCallInfo, ToolCallPartial } from '@/types/chat'
 import { STEP_IDS, type ConceptStep, type ConceptStepId, type StepMaturity } from '@/types/concept'
 import { useProjectStore } from './project'
 import { useSettingsStore } from './settings'
@@ -48,7 +56,7 @@ import { useSettingsStore } from './settings'
 
 export const STEP_HINTS: Record<ConceptStepId, string> = {
   // L1 立意
-  seed: '立意是故事的根，1 句话核心矛盾 / 主题。格式：「主角在 X 处境下，想要 Y，但 Z 不可越」。例：「个体在强权秩序下的反抗能否保持纯真」。立意很难一次写准——可以反复改，下游会跟着你校准。',
+  seed: '立意 = 故事要讨论的东西。',
   // L2 抽象规则
   pillars: '3-5 条硬约束 / 否决性原则。每条都是「任何方案违反 X 就打回」。这些规则不会一次写完——会在写世界/人物/故事过程中反复回来修改。成熟度：empty / 草稿 v1 / 演进 v2+ / 定型。',
   // L3 世界
@@ -333,7 +341,10 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
  *  - 角色 + 约束 + 玩家主导（v0.3+ 统一骨架）
  *  - 具体的"输出 JSON 数组"约束在 preset.prompt 里（user message），但 v0.3+ system 也强调
  *    "严格遵循用户消息的格式要求"，避免 LLM 默认走 markdown 啰嗦模式
- *  - 默认 markdown 形态；用户消息若要求 JSON 则必须 JSON */
+ *  - 默认 markdown 形态；用户消息若要求 JSON 则必须 JSON
+ *  - **v0.4.1+ 写入模式提示**：调 update_doc_item 时分清 replace vs append —
+ *    整段完整内容 → mode=replace (默认); 局部补全/单条规则/一句话 → mode=append。
+ *    反思/提问/解释类输出**不要**用 update_doc_item, 用 ask_user_question / ask_free_text */
 function stepChatSystemPrompt(step: ConceptStep): string {
   return (
     `你是 PlotCraft 的 AI 编剧搭档，正在帮玩家做「${step.title}」这一步。\n` +
@@ -341,7 +352,10 @@ function stepChatSystemPrompt(step: ConceptStep): string {
     `玩家主导原则：你只给备选/追问/建议，玩家挑+改，绝不替玩家做决定。\n` +
     `**严格遵循用户消息中指定的输出格式**：\n` +
     `- 如果用户要求 JSON 数组 → 第一个字符必须是 \`[\`，**不要**任何额外文字/preamble/思考/解释\n` +
-    `- 如果用户没指定 → 输出 markdown，保持简洁`
+    `- 如果用户没指定 → 输出 markdown，保持简洁\n` +
+    `**写入模式**（调 update_doc_item 时）：整段完整内容 → mode=replace（默认）；` +
+    `局部补全 / 一句话 / 一条规则 → mode=append。` +
+    `反思 / 提问 / 解释 → 用 ask_user_question / ask_free_text，不要用 update_doc_item。`
   )
 }
 
@@ -395,6 +409,8 @@ export const useConceptStore = defineStore('concept', () => {
   /** 保存一步（v0.3+ 永远 markConfirmed=true：玩家操作 = 自动 confirmed，不再有"标记为已确认"按钮）
    *  v0.5+ maturity：仅 L2 pillars 写（其他步骤传 undefined 不写盘）
    *  v0.5+ 设计循环：成功 → markStale(stepId) 触发下游/上游黄点
+   *  v0.5.1 mtime hash 对比：保存前拿 oldContent / oldMaturity，后端返回 newContent / newMaturity，
+   *    真有变化才 markStale——避免 debounce 重复触发、纯 markConfirmed 重复保存等场景下"改一下全黄"
    *  成功用后端返回的 step 替换本地项（shallowRef → 整个数组换新引用）；
    *  失败抛错让 UI 提示 */
   async function save(
@@ -405,6 +421,10 @@ export const useConceptStore = defineStore('concept', () => {
   ): Promise<void> {
     const project = useProjectStore()
     if (!project.current) throw new Error('没有打开的项目')
+    // v0.5.1 拿旧 content / maturity（save 前可能没加载过 steps，oldStep 可能 undefined → 视为变化）
+    const oldStep = steps.value.find((s) => s.id === stepId)
+    const oldContent = oldStep?.content ?? ''
+    const oldMaturity = oldStep?.maturity ?? 'empty'
     const updated = await saveConceptStep(
       project.current.folder,
       stepId,
@@ -413,8 +433,27 @@ export const useConceptStore = defineStore('concept', () => {
       maturity,
     )
     steps.value = steps.value.map((s) => (s.id === stepId ? updated : s))
-    // v0.5+ 设计循环：保存后标记上下游 stale（黄点 ? 提示）
-    markStaleAfterSave(stepId)
+    // v0.5.1 mtime hash 对比：content / maturity 真有变化才 markStale
+    // - 字符串比较（O(n) 但 content 不大，不引入 hash 库）
+    // - maturity 变化时即使 content 没变也要 markStale（L2 成熟度从草稿→定型影响下游判断）
+    // - oldStep undefined（极少见：load 失败但还能 save）→ 视为变化触发 markStale，行为保守
+    const contentChanged = oldContent !== updated.content
+    const maturityChanged = maturity !== undefined && oldMaturity !== updated.maturity
+    if (contentChanged || maturityChanged) {
+      markStaleAfterSave(stepId)
+      // v0.5+ sync：概念 L3/L4 改了 → 通知 world store 标对应 doc stale
+      // - 只 L3/L4 跟世界 tab 有派生关系，其他 5 步不动 world
+      // - dynamic import 避免循环 module 依赖
+      // - 失败不影响保存成功（玩家主导：sync 是软提示）
+      if (stepId === 'world-rules' || stepId === 'locations') {
+        try {
+          const mod = await import('./world')
+          mod.useWorldStore().markStaleFromConcept(stepId)
+        } catch (e) {
+          console.warn('[concept.save] world sync notify failed (non-fatal):', e)
+        }
+      }
+    }
   }
 
   // === step chat v0.3+ per-item Map 化 + 自动落盘 ===
@@ -433,6 +472,9 @@ export const useConceptStore = defineStore('concept', () => {
   const chatStreamings = shallowRef(new Map<string, boolean>())
   const chatErrorKinds = shallowRef(new Map<string, ChatErrorKind | null>())
   const chatErrorRaws = shallowRef(new Map<string, string | null>())
+  // v0.4.1+ 错误诊断包（endpoint / model / api_format / request_body_preview）——
+  // 错误条 "复制诊断信息" 按钮用
+  const chatErrorDiags = shallowRef(new Map<string, ChatErrorDiag | null>())
   const chatRunIds = shallowRef(new Map<string, string | null>())
 
   function mapGet<T>(ref: Ref<Map<string, T>>, key: string, fallback: T): T {
@@ -464,6 +506,9 @@ export const useConceptStore = defineStore('concept', () => {
     mapGet(chatErrorKinds, currentItemKey(), null),
   )
   const errorRaw = computed<string | null>(() => mapGet(chatErrorRaws, currentItemKey(), null))
+  const errorDiag = computed<ChatErrorDiag | null>(() =>
+    mapGet(chatErrorDiags, currentItemKey(), null),
+  )
 
   // === step chat listener 初始化（幂等） ===
 
@@ -619,6 +664,18 @@ export const useConceptStore = defineStore('concept', () => {
         mapSet(chatStreamings, id, false)
         mapSet(chatErrorKinds, id, payload.kind)
         mapSet(chatErrorRaws, id, payload.error)
+        // v0.4.1+ 错误诊断包：endpoint / model / api_format / request_body_preview
+        // 4 字段都 optional（老 backend 没发就 null），复制按钮看到 null 就跳过
+        if (payload.endpoint || payload.model || payload.api_format || payload.request_body_preview) {
+          mapSet(chatErrorDiags, id, {
+            endpoint: payload.endpoint ?? '',
+            model: payload.model ?? '',
+            api_format: payload.api_format ?? '',
+            request_body_preview: payload.request_body_preview ?? '',
+          })
+        } else {
+          mapSet(chatErrorDiags, id, null)
+        }
         mapSetToolCalls(id, new Map())
       }),
     )
@@ -667,6 +724,7 @@ export const useConceptStore = defineStore('concept', () => {
     mapSet(chatHistories, id, [...cur, userMsg])
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
 
     const contextParts: string[] = []
     const ctx = buildContext(steps.value, currentStepId.value)
@@ -724,6 +782,7 @@ export const useConceptStore = defineStore('concept', () => {
     mapSet(chatHistories, id, [...cur, toolMsg])
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
 
     try {
       mapSet(chatStreamings, id, true)
@@ -789,6 +848,7 @@ export const useConceptStore = defineStore('concept', () => {
     mapSet(chatRunIds, id, null)
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
     // 立即删 .chats/concept/<stepId>.json
     const project = useProjectStore()
     if (project.current) {
@@ -808,6 +868,7 @@ export const useConceptStore = defineStore('concept', () => {
     chatRunIds.value = new Map()
     chatErrorKinds.value = new Map()
     chatErrorRaws.value = new Map()
+    chatErrorDiags.value = new Map()
     const project = useProjectStore()
     if (project.current) {
       void deleteAllChats(project.current.folder).catch((e) =>
@@ -931,6 +992,32 @@ export const useConceptStore = defineStore('concept', () => {
     staleFlags.value = new Map()
   }
 
+  /** v0.5+ sync：世界 doc 改了 → 标 concept 哪些 step stale（被 world store 调）
+   *  - overview / history / magic-system / factions 改 → L3 world-rules stale
+   *  - geography 改 → L4 locations stale
+   *  - 复用现有 staleFlags map（不新建）—— 黄点 UI 跟设计循环共用一套
+   *  - 清除：玩家点 ConceptView 黄点 X → clearStale(stepId)（已有） */
+  function markStaleFromWorld(docId: string): void {
+    let affected: ConceptStepId[] = []
+    if (
+      docId === 'overview' ||
+      docId === 'history' ||
+      docId === 'magic-system' ||
+      docId === 'factions'
+    ) {
+      affected = ['world-rules']
+    } else if (docId === 'geography') {
+      affected = ['locations']
+    } else {
+      return
+    }
+    const next = new Map(staleFlags.value)
+    for (const stepId of affected) {
+      next.set(stepId, true)
+    }
+    staleFlags.value = next
+  }
+
   /** 通用 AiChatPanel 用的 step chat 状态包（types/ai.ts StepChatState）
    *  markRaw 必须：store 实例是 reactive 代理，普通对象会被深度 reactive 化、
    *  嵌套的 ref/computed 被自动解包（组件期望 Ref/ComputedRef 却拿到裸值 → .value 崩）*/
@@ -940,6 +1027,7 @@ export const useConceptStore = defineStore('concept', () => {
     streaming,
     errorKind,
     errorRaw,
+    errorDiag,
     send: sendStepChat,
     /** v0.4+ tool result 喂回 LLM（玩家点 AltCard / 确认 update_doc_item 后调） */
     sendToolResult,
@@ -964,5 +1052,7 @@ export const useConceptStore = defineStore('concept', () => {
     staleFlags,
     clearStale,
     clearAllStaleFlags,
+    // v0.5+ sync：被 world store 调
+    markStaleFromWorld,
   }
 })

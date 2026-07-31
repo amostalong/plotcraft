@@ -13,19 +13,26 @@
 // 持久化: localStorage[storageKey] 存当前宽度, 组件挂载时读回
 // 范围: [min, max] clamp 防越界
 //
+// v0.4.1+ resetOnWindowResize: 窗口 resize（最大化 / 还原 / 拖边缘）时自动 reset
+// - 用函数式 defaultWidth 才有意义（固定 defaultWidth 的话 reset 也没变化）
+// - debounce 250ms 避免 resize 持续触发
+//
 // 实现注意:
 // - 用 document.addEventListener 绑 mousemove/mouseup (用户拖出元素也跟手)
 // - 锁 body cursor + userSelect + overflow 防 iOS 滚动
 // - 锁 body 移动端 passive: false 才能 preventDefault
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 
 export type ResizeEdge = 'right' | 'left'
 
 export interface UseResizableWidthOptions {
   /** localStorage key */
   storageKey: string
-  /** 默认宽度 (px) */
-  defaultWidth: number
+  /** 默认宽度 (px)，或懒计算函数（在 mount 时 / resetWidth 时调）
+   *  - 传数字：固定默认（SessionView 用 1200）
+   *  - 传函数：每次需要默认时调（Concept/WorldView 用 `() => window.innerWidth / 4` 跟随窗口）
+   *  - 函数返回值会被 clamp 到 [min, max] */
+  defaultWidth: number | (() => number)
   /** 最小宽度 */
   min: number
   /** 最大宽度 */
@@ -34,10 +41,21 @@ export interface UseResizableWidthOptions {
    *  - 'right': 拖右边缘向右 (主聊天 transcript 在中间, 右边留白) —— 拖右 = 变宽
    *  - 'left' : 拖左边缘向左 (右栏 AI panel) —— 拖左 = 变宽 */
   edge: ResizeEdge
+  /** v0.4.1+ 窗口尺寸变化时自动 reset 到 defaultWidth
+   *  - 适用场景：AI 面板跟着窗口走（最大化 / 还原 / 拖窗口边缘时按比例 reset）
+   *  - 必须配合**函数式** defaultWidth 才有意义（`() => window.innerWidth / 4`）
+   *  - 固定 defaultWidth 时设了也没用（reset 不会变） */
+  resetOnWindowResize?: boolean
+}
+
+/** 求默认宽度（数字直返 / 函数调一下）并 clamp 到 [min, max] */
+function resolveDefaultWidth(opts: UseResizableWidthOptions): number {
+  const raw = typeof opts.defaultWidth === 'function' ? opts.defaultWidth() : opts.defaultWidth
+  return Math.max(opts.min, Math.min(opts.max, Math.round(raw)))
 }
 
 export function useResizableWidth(opts: UseResizableWidthOptions) {
-  const width = ref(opts.defaultWidth)
+  const width = ref(resolveDefaultWidth(opts))
   const resizing = ref(false)
   let dragStartX = 0
   let dragStartWidth = 0
@@ -109,7 +127,29 @@ export function useResizableWidth(opts: UseResizableWidthOptions) {
   }
 
   function resetWidth() {
-    width.value = opts.defaultWidth
+    // 函数式 defaultWidth 时每次重算（玩家 resize 窗口后 reset 也跟当前窗口走）
+    width.value = resolveDefaultWidth(opts)
+  }
+
+  // === v0.4.1+ 窗口尺寸变化时自动 reset ===
+  // - Tauri 2 把窗口 resize 事件转发成 webview 的 `resize` DOM 事件
+  // - 最大化 / 还原 / 拖窗口边缘都会触发
+  // - debounce 250ms（玩家连续拖边缘时最后稳定后调一次 reset）
+  if (opts.resetOnWindowResize) {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    function onWindowResize() {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        resetWidth()
+      }, 250)
+    }
+    onMounted(() => {
+      window.addEventListener('resize', onWindowResize)
+    })
+    onUnmounted(() => {
+      window.removeEventListener('resize', onWindowResize)
+      if (debounceTimer) clearTimeout(debounceTimer)
+    })
   }
 
   return { width, resizing, onResizeStart, resetWidth }

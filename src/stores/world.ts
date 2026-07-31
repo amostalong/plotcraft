@@ -33,7 +33,7 @@ import {
   startChat as rpcStartChat,
 } from '@/lib/llm'
 import type { PresetAction, StepChatState } from '@/types/ai'
-import type { ChatErrorKind, ChatMessage, ToolCallInfo, ToolCallPartial } from '@/types/chat'
+import type { ChatErrorDiag, ChatErrorKind, ChatMessage, ToolCallInfo, ToolCallPartial } from '@/types/chat'
 import { WORLD_COLLECTION, type DocEntry } from '@/types/world'
 import { useProjectStore } from './project'
 import { useSettingsStore } from './settings'
@@ -303,12 +303,64 @@ export const useWorldStore = defineStore('world', () => {
 
   /** 保存一节（view 层 debounce / flush 调这个）
    *  成功用后端返回的 doc 替换本地项（shallowRef → 整个数组换新引用）；
-   *  失败抛错让 UI 提示 */
+   *  失败抛错让 UI 提示
+   *  v0.5+ sync：保存后通知概念 store 标对应 step stale（dynamic import 避免循环） */
   async function save(docId: string, content: string): Promise<void> {
     const project = useProjectStore()
     if (!project.current) throw new Error('没有打开的项目')
     const updated = await saveDoc(project.current.folder, WORLD_COLLECTION, docId, content)
     docs.value = docs.value.map((d) => (d.id === docId ? updated : d))
+    // v0.5+ sync：世界 doc 保存 → 通知概念 store 标 L3/L4 stale
+    // - dynamic import 避免 world ↔ concept 循环 module 依赖
+    // - 失败不影响保存成功（玩家主导：sync 是软提示，不是硬约束）
+    try {
+      const mod = await import('./concept')
+      mod.useConceptStore().markStaleFromWorld(docId)
+    } catch (e) {
+      console.warn('[world.save] concept sync notify failed (non-fatal):', e)
+    }
+  }
+
+  // === v0.5+ sync：概念 step 改了 → 标 world 哪些 doc stale ===
+  //
+  // 派生关系（来自 7 层模型）：
+  // - concept L3 world-rules 改 → world overview + history + magic-system + factions 都可能不一致（世界骨架变了）
+  // - concept L4 locations 改  → world geography 可能不一致（地点细化变了）
+  // - 其他 5 步（L1/L2/L5/L6/L7）跟 world tab 没派生关系，不动 world
+  //
+  // 玩家点 X 关闭黄点 → clearStaleFromConcept；不点黄点 stale flag 一直保留（下次再改同 step 仍标）
+  const conceptStaleDocs = shallowRef(new Set<string>())
+
+  /** 概念 step 改了 → 标对应 world doc stale（被 concept store 调）
+   *  - world-rules → overview + history + magic-system + factions
+   *  - locations → geography
+   *  - 其他 stepId 忽略 */
+  function markStaleFromConcept(stepId: string): void {
+    let affected: string[] = []
+    if (stepId === 'world-rules') {
+      affected = ['overview', 'history', 'magic-system', 'factions']
+    } else if (stepId === 'locations') {
+      affected = ['geography']
+    } else {
+      return
+    }
+    const next = new Set(conceptStaleDocs.value)
+    for (const d of affected) next.add(d)
+    conceptStaleDocs.value = next
+  }
+
+  /** 玩家点 X 忽略某节 stale（view 层调） */
+  function clearStaleFromConcept(docId: string): void {
+    if (!conceptStaleDocs.value.has(docId)) return
+    const next = new Set(conceptStaleDocs.value)
+    next.delete(docId)
+    conceptStaleDocs.value = next
+  }
+
+  /** 切项目时清 stale flags（不同项目 stale 状态不继承） */
+  function clearAllConceptStale(): void {
+    if (conceptStaleDocs.value.size === 0) return
+    conceptStaleDocs.value = new Set()
   }
 
   // === step chat v0.3+ per-item Map 化 + 自动落盘（对称 concept store） ===
@@ -318,6 +370,9 @@ export const useWorldStore = defineStore('world', () => {
   const chatStreamings = shallowRef(new Map<string, boolean>())
   const chatErrorKinds = shallowRef(new Map<string, ChatErrorKind | null>())
   const chatErrorRaws = shallowRef(new Map<string, string | null>())
+  // v0.4.1+ 错误诊断包（endpoint / model / api_format / request_body_preview）——
+  // 错误条 "复制诊断信息" 按钮用
+  const chatErrorDiags = shallowRef(new Map<string, ChatErrorDiag | null>())
   const chatRunIds = shallowRef(new Map<string, string | null>())
 
   function mapGet<T>(ref: Ref<Map<string, T>>, key: string, fallback: T): T {
@@ -347,6 +402,9 @@ export const useWorldStore = defineStore('world', () => {
     mapGet(chatErrorKinds, currentItemKey(), null),
   )
   const errorRaw = computed<string | null>(() => mapGet(chatErrorRaws, currentItemKey(), null))
+  const errorDiag = computed<ChatErrorDiag | null>(() =>
+    mapGet(chatErrorDiags, currentItemKey(), null),
+  )
 
   // === step chat listener 初始化（幂等） ===
 
@@ -488,6 +546,18 @@ export const useWorldStore = defineStore('world', () => {
         mapSet(chatStreamings, id, false)
         mapSet(chatErrorKinds, id, payload.kind)
         mapSet(chatErrorRaws, id, payload.error)
+        // v0.4.1+ 错误诊断包：endpoint / model / api_format / request_body_preview
+        // 4 字段都 optional（老 backend 没发就 null），复制按钮看到 null 就跳过
+        if (payload.endpoint || payload.model || payload.api_format || payload.request_body_preview) {
+          mapSet(chatErrorDiags, id, {
+            endpoint: payload.endpoint ?? '',
+            model: payload.model ?? '',
+            api_format: payload.api_format ?? '',
+            request_body_preview: payload.request_body_preview ?? '',
+          })
+        } else {
+          mapSet(chatErrorDiags, id, null)
+        }
         mapSetToolCalls(id, new Map())
       }),
     )
@@ -532,6 +602,7 @@ export const useWorldStore = defineStore('world', () => {
     mapSet(chatHistories, id, [...cur, userMsg])
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
 
     const parts = await buildContext(project.current.folder, doc)
     const contextStr = parts.join('\n\n')
@@ -574,6 +645,7 @@ export const useWorldStore = defineStore('world', () => {
     mapSet(chatHistories, id, [...cur, toolMsg])
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
 
     try {
       mapSet(chatStreamings, id, true)
@@ -630,6 +702,7 @@ export const useWorldStore = defineStore('world', () => {
     mapSet(chatRunIds, id, null)
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
     const project = useProjectStore()
     if (project.current) {
       void deleteChat(project.current.folder, id).catch((e) =>
@@ -646,6 +719,7 @@ export const useWorldStore = defineStore('world', () => {
     chatRunIds.value = new Map()
     chatErrorKinds.value = new Map()
     chatErrorRaws.value = new Map()
+    chatErrorDiags.value = new Map()
     const project = useProjectStore()
     if (project.current) {
       void deleteAllChats(project.current.folder).catch((e) =>
@@ -708,6 +782,7 @@ export const useWorldStore = defineStore('world', () => {
     streaming,
     errorKind,
     errorRaw,
+    errorDiag,
     send: sendStepChat,
     /** v0.4+ tool result 喂回 LLM（多轮 tool calling） */
     sendToolResult,
@@ -728,5 +803,10 @@ export const useWorldStore = defineStore('world', () => {
     resetStepChat,
     clearAllStepChats,
     flushChatsTo, // 暴露给 view：切项目前调，把内存 chats 写到指定 folder
+    // v0.5+ sync：概念 → 世界（被 concept store 调 + view 调清黄点）
+    conceptStaleDocs,
+    markStaleFromConcept,
+    clearStaleFromConcept,
+    clearAllConceptStale,
   }
 })

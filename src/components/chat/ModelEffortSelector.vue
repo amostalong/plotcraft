@@ -35,6 +35,9 @@ const props = defineProps<{
   effortSupported?: boolean
   /** 弹层对齐：start=左对齐, end=右对齐（默认） */
   align?: 'start' | 'end'
+  /** v0.4.1+ 弹层位置：top=trigger 上方（默认，composer 在底部时用），
+   *  bottom=trigger 下方（header 在 panel 顶部时用，避免撞 stepper / editor） */
+  placement?: 'top' | 'bottom'
   disabled?: boolean
   /** v0.1+ 玩家保存的 custom providers（仅 enabled 且有 defaultModel 的会显示）
    *  TS 端只给名字 + id + defaultModel（不传 apiKey / baseUrl，避免泄露） */
@@ -165,7 +168,7 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
 </script>
 
 <template>
-  <div class="model-effort-selector" :class="{ open, 'align-end': align !== 'start' }" ref="selectorRef">
+  <div class="model-effort-selector" :class="{ open, 'align-end': align !== 'start', 'placement-bottom': placement === 'bottom' }" ref="selectorRef">
     <button
       class="model-effort-trigger"
       :class="{ open, disabled, empty: !selectedId }"
@@ -192,6 +195,7 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
         :class="{
           'has-effort': props.effortSupported !== false,
           'align-end': align !== 'start',
+          'placement-bottom': placement === 'bottom',
         }"
       >
         <div class="model-effort-model-panel">
@@ -358,10 +362,20 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   z-index: 50;
   transform-origin: bottom left;
 }
+/* v0.4.1+ placement=bottom: trigger 在 panel 顶部时（AiChatPanel header）用，
+   popover 弹在 trigger 下方，避免撞 stepper / editor */
+.model-effort-dropdown.placement-bottom {
+  bottom: auto;
+  top: calc(100% + 6px);
+  transform-origin: top left;
+}
 .model-effort-dropdown.align-end {
   left: auto;
   right: 0;
   transform-origin: bottom right;
+}
+.model-effort-dropdown.placement-bottom.align-end {
+  transform-origin: top right;
 }
 .model-effort-dropdown.has-effort {
   width: min(420px, calc(100vw - 24px));

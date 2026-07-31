@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 // SessionView —— chat tab 主 UI
 //
 // v0.1+ model + effort 选择器改用 Locus 同款 `ModelEffortSelector` 组件
@@ -17,6 +17,7 @@ import {
   Bot,
   ChevronDown,
   ChevronUp,
+  ClipboardCopy,
   FolderOpen,
   MessageSquare,
   Pencil,
@@ -59,16 +60,77 @@ const errorKind = computed(() => chat.state.errorKind)
 const isStreaming = computed(() => status.value === 'streaming')
 
 // === v0.2+ chat error feedback：玩家文案 ===
-// - 默认隐藏技术细节（TLS handshake / OpenSSL / reqwest error 字符串）
-// - 点 "查看详情" 才展开 raw error
+// - v0.4.1+ 默认展开诊断区（玩家一上来就看到 endpoint / model / raw error），
+//   配合 "复制诊断信息" 按钮一键给开发者，不用反复点查看详情截图
 const errorMessage = computed<PlayerErrorMessage | null>(() => {
   if (!errorRaw.value) return null
   return getErrorMessage(errorKind.value, errorRaw.value)
 })
-const errorDetailsExpanded = ref(false)
+// v0.4.1+ 错误诊断包（endpoint / model / api_format / request_body_preview）—— 4 字段 optional
+const errorDiag = computed(() => chat.state.errorDiag)
+const errorDetailsExpanded = ref(true)
 
 function toggleErrorDetails() {
   errorDetailsExpanded.value = !errorDetailsExpanded.value
+}
+
+/** v0.4.1+ 复制诊断信息 —— 一键打包 kind + raw + endpoint + model + apiFormat + body preview
+ *  - JSON 格式（结构化，开发者好解析）+ 人类可读 section
+ *  - 失败兜底：navigator.clipboard 不可用时降级用 textarea + execCommand
+ *  - 复制成功：brief 状态反馈（按钮临时变 "已复制 ✓"） */
+const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
+async function onCopyDiag() {
+  const payload = {
+    kind: errorKind.value ?? 'unknown',
+    error: errorRaw.value ?? '',
+    endpoint: errorDiag.value?.endpoint ?? '',
+    model: errorDiag.value?.model ?? '',
+    api_format: errorDiag.value?.api_format ?? '',
+    request_body_preview: errorDiag.value?.request_body_preview ?? '',
+    run_id: chat.state.lastFailedRunId ?? '',
+    timestamp: new Date().toISOString(),
+  }
+  const text =
+    `PlotCraft chat error diagnostic\n` +
+    `================================\n` +
+    `kind:        ${payload.kind}\n` +
+    `endpoint:    ${payload.endpoint}\n` +
+    `model:       ${payload.model}\n` +
+    `api_format:  ${payload.api_format}\n` +
+    `run_id:      ${payload.run_id}\n` +
+    `timestamp:   ${payload.timestamp}\n` +
+    `--------------------------------\n` +
+    `raw error:\n${payload.error}\n` +
+    `--------------------------------\n` +
+    `request body preview (truncated to 800 chars):\n${payload.request_body_preview}\n` +
+    `================================\n` +
+    `\n--- JSON ---\n` +
+    JSON.stringify(payload, null, 2)
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // 兜底：旧浏览器 / 非 HTTPS 环境（dev 跑 tauri 不算 HTTPS）
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copyState.value = 'copied'
+    setTimeout(() => {
+      copyState.value = 'idle'
+    }, 1500)
+  } catch (e) {
+    console.error('[onCopyDiag] clipboard failed:', e)
+    copyState.value = 'failed'
+    setTimeout(() => {
+      copyState.value = 'idle'
+    }, 2000)
+  }
 }
 
 /** v0.2+ retry 上次发送的 user message —— 用 chat store 暴露的 retryLast */
@@ -531,6 +593,16 @@ watch(resizing, (v) => {
             <RefreshCw :size="12" />
             <span>重试</span>
           </button>
+          <!-- v0.4.1+ 复制诊断信息按钮：紧贴重试按钮，最显眼位置 -->
+          <button
+            type="button"
+            class="error-btn copy"
+            @click="onCopyDiag"
+            :title="copyState === 'copied' ? '已复制到剪贴板' : '一键复制诊断信息（kind + raw error + endpoint + model + body）给开发者'"
+          >
+            <ClipboardCopy :size="12" />
+            <span>{{ copyState === 'copied' ? '已复制 ✓' : copyState === 'failed' ? '复制失败' : '复制诊断信息' }}</span>
+          </button>
           <button
             type="button"
             class="error-btn details"
@@ -557,8 +629,37 @@ watch(resizing, (v) => {
             <X :size="12" />
           </button>
         </div>
-        <!-- v0.2+ 技术细节折叠区（默认折叠） -->
-        <pre v-if="errorDetailsExpanded" class="error-block-raw">{{ errorMessage.technicalDetails }}</pre>
+        <!-- v0.4.1+ 诊断区（默认展开）：4 字段 + raw error 一次性显示
+             配合 "复制诊断信息" 按钮一键给开发者，不用反复点查看详情截图 -->
+        <div v-if="errorDetailsExpanded" class="error-block-diag">
+          <!-- v0.4.1+ 4 字段诊断包（endpoint / model / apiFormat / body preview） -->
+          <div v-if="errorDiag" class="diag-fields">
+            <div v-if="errorDiag.endpoint" class="diag-row">
+              <span class="diag-key">endpoint</span>
+              <span class="diag-val">{{ errorDiag.endpoint }}</span>
+            </div>
+            <div v-if="errorDiag.model" class="diag-row">
+              <span class="diag-key">model</span>
+              <span class="diag-val">{{ errorDiag.model }}</span>
+            </div>
+            <div v-if="errorDiag.api_format" class="diag-row">
+              <span class="diag-key">api_format</span>
+              <span class="diag-val">{{ errorDiag.api_format }}</span>
+            </div>
+            <div v-if="errorDiag.request_body_preview" class="diag-row">
+              <span class="diag-key">body preview</span>
+              <pre class="diag-body">{{ errorDiag.request_body_preview }}</pre>
+            </div>
+          </div>
+          <div v-else class="diag-empty">
+            （老 backend 没发诊断字段 —— 升级到 v0.4.1+ 才有 endpoint / model / body preview）
+          </div>
+          <!-- 原始 error 字符串（最底下，给开发者最关键的 raw 信息）-->
+          <div class="diag-raw-section">
+            <div class="diag-key">raw error</div>
+            <pre class="error-block-raw">{{ errorMessage.technicalDetails }}</pre>
+          </div>
+        </div>
       </div>
 
       <div v-if="status === 'cancelled'" class="cancelled">已停止</div>
@@ -1141,6 +1242,73 @@ watch(resizing, (v) => {
 .error-btn.expand,
 .error-btn.dismiss {
   padding: 4px 6px;
+}
+/* v0.4.1+ 复制诊断信息按钮（紧贴重试按钮，错误条最显眼位置） */
+.error-btn.copy {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 500;
+}
+.error-btn.copy:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+/* v0.4.1+ 诊断区（默认展开，4 字段 + raw error） */
+.error-block-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.diag-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.diag-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  word-break: break-all;
+}
+.diag-key {
+  flex-shrink: 0;
+  width: 80px;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+}
+.diag-val {
+  color: var(--text);
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  word-break: break-all;
+}
+.diag-body {
+  margin: 0;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
+  font-size: 10px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.diag-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 10px;
+}
+.diag-raw-section {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
 }
 .error-block-raw {
   margin: 0;

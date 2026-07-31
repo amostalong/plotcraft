@@ -51,8 +51,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::config::LlmConfig;
-use super::streaming::{emit_chat_error, emit_throttled, StreamEvent, ToolCallPartial};
+use super::streaming::{emit_chat_error, emit_throttled, ChatErrorContext, StreamEvent, ToolCallPartial};
 use super::types::{ChatMessage, MessageRole, ToolDefinition};
+use crate::console::console_log;
 use crate::error::{AppError, AppResult};
 
 const MESSAGES_PATH: &str = "/v1/messages";
@@ -118,6 +119,17 @@ pub async fn stream_chat_anthropic(
         config.effort,
         tools.as_deref(),
     );
+    // v0.4.1+ 错误诊断上下文 —— 4 个错误路径共用 + body preview 给玩家复制
+    let body_preview = serde_json::to_string(&body)
+        .map(|s| s.chars().take(800).collect::<String>())
+        .unwrap_or_else(|_| "(serialize failed)".to_string());
+    console_log(
+        &app,
+        "info",
+        "stream",
+        format!("[stream] anthropic body preview: {}", body_preview),
+    );
+    let error_ctx = ChatErrorContext::from_config(&config, &body_preview);
     let request_bytes = serde_json::to_vec(&body)
         .map_err(|e| AppError::Llm(format!("request serialization: {}", e)))?;
 
@@ -144,7 +156,8 @@ pub async fn stream_chat_anthropic(
             // v0.2+：跟 streaming.rs 对齐 — send 失败先 emit chat:error 让前端
             // 看到分类错误玩家文案，再 return Err
             let msg = format!("request failed: {}", e);
-            emit_chat_error(&app, &run_id, &msg);
+            // v0.4.1+ 带 error_ctx（endpoint / model / body preview 给玩家复制）
+            emit_chat_error(&app, &run_id, error_ctx.clone(), &msg);
             return Err(AppError::Llm(msg));
         }
     };
@@ -153,7 +166,8 @@ pub async fn stream_chat_anthropic(
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();
         let err_msg = format!("HTTP {}: {}", status, body);
-        emit_chat_error(&app, &run_id, &err_msg);
+        // v0.4.1+ 带 error_ctx
+        emit_chat_error(&app, &run_id, error_ctx.clone(), &err_msg);
         return Err(AppError::LlmHttp { status, body });
     }
 
@@ -164,6 +178,8 @@ pub async fn stream_chat_anthropic(
     let cancel_parse = cancel.clone();
     let app_err = app.clone();
     let run_id_err = run_id.clone();
+    // v0.4.1+ parse 闭包内也可能 emit 错误，把 error_ctx 也 move 进去
+    let error_ctx_parse = error_ctx.clone();
 
     let parse_handle = tokio::spawn(async move {
         let mut buffer = String::new();
@@ -176,7 +192,8 @@ pub async fn stream_chat_anthropic(
                 Some(Err(e)) => {
                     let msg = format!("[anthropic parse] stream error: {}", e);
                     eprintln!("{}", msg);
-                    emit_chat_error(&app_err, &run_id_err, &msg);
+                    // v0.4.1+ 带 error_ctx
+                    emit_chat_error(&app_err, &run_id_err, error_ctx_parse.clone(), &msg);
                     break;
                 }
                 None => break,
@@ -204,7 +221,8 @@ pub async fn stream_chat_anthropic(
                 Err(e) => {
                     let msg = format!("[anthropic parse] spawn_blocking join: {}", e);
                     eprintln!("{}", msg);
-                    emit_chat_error(&app_err, &run_id_err, &msg);
+                    // v0.4.1+ 带 error_ctx
+                    emit_chat_error(&app_err, &run_id_err, error_ctx_parse.clone(), &msg);
                     break;
                 }
             }

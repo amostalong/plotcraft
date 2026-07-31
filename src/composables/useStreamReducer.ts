@@ -13,9 +13,9 @@
 
 import { shallowRef, type ShallowRef } from 'vue'
 
-import type { ChatErrorKind, ChatMessage, ChatRole, ChatStatus } from '@/types/chat'
+import type { ChatErrorDiag, ChatErrorKind, ChatMessage, ChatRole, ChatStatus } from '@/types/chat'
 
-/** v0.2+ 12 字段 chat state
+/** v0.2+ 12 字段 chat state (v0.4.1+ 13 字段: 加 errorDiag)
  *  v0.1 8 字段 + v0.2 加 4 字段 (errorKind / lastUserMessage / lastFailedRunId / lastErrorAt) */
 export interface ChatState {
   sessionId: string | null
@@ -38,9 +38,14 @@ export interface ChatState {
   lastFailedRunId: string | null
   /** 上次错误时间戳 —— 给 "X 秒前出错" 显示用 */
   lastErrorAt: number | null
+  // ── v0.4.1+ 新增字段 ──
+  /** 错误诊断包（endpoint / model / api_format / request_body_preview）
+   *  - 错误条 "复制诊断信息" 按钮一键打包给开发者，不用反复截图
+   *  - 老 backend 没发这 4 字段 → null（按钮变灰或隐藏） */
+  errorDiag: ChatErrorDiag | null
 }
 
-/** v0.2+ 10 mutations
+/** v0.2+ 10 mutations (v0.4.1+ fail mutation 加 diag 字段)
  *  v0.1 8 + v0.2 加 2 (retry / dismissError)
  *
  *  retry 不在这里调 start_chat —— store 层 retryLast() 调 addUserMessage + start
@@ -50,7 +55,14 @@ export type StreamMutation =
   | { type: 'start'; sessionId: string; runId: string }
   | { type: 'appendChunk'; runId: string; text: string }
   | { type: 'complete'; runId: string; usage?: unknown }
-  | { type: 'fail'; runId: string; error: string; kind?: ChatErrorKind }
+  | {
+      type: 'fail'
+      runId: string
+      error: string
+      kind?: ChatErrorKind
+      /** v0.4.1+ 4 字段诊断包（optional，老 backend 兼容） */
+      diag?: ChatErrorDiag
+    }
   | { type: 'cancel'; runId: string }
   | { type: 'addUserMessage'; message: ChatMessage }
   | {
@@ -79,6 +91,8 @@ const initial: ChatState = {
   lastUserMessage: null,
   lastFailedRunId: null,
   lastErrorAt: null,
+  // ── v0.4.1+ default ──
+  errorDiag: null,
 }
 
 export function createStreamReducer() {
@@ -101,6 +115,8 @@ export function createStreamReducer() {
           errorKind: null,
           lastFailedRunId: null,
           lastErrorAt: null,
+          // v0.4.1+ 错误诊断包也清（玩家点 retry 后旧的 endpoint / model 已过期）
+          errorDiag: null,
           startedAt: now,
           lastEventAt: now,
         }
@@ -151,6 +167,8 @@ export function createStreamReducer() {
           errorKind: m.kind ?? 'unknown',
           lastFailedRunId: m.runId,
           lastErrorAt: now,
+          // v0.4.1+ 错误诊断包（4 字段 optional，老 backend 兼容 null）
+          errorDiag: m.diag ?? null,
         }
         return
       }
@@ -222,6 +240,8 @@ export function createStreamReducer() {
           status: 'idle',
           error: null,
           errorKind: null,
+          // v0.4.1+ 错误诊断包跟着清
+          errorDiag: null,
           lastEventAt: now,
         }
         return

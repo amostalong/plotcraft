@@ -8,7 +8,7 @@
 
 import type { ComputedRef } from 'vue'
 
-import type { ChatErrorKind, ChatMessage } from '@/types/chat'
+import type { ChatErrorDiag, ChatErrorKind, ChatMessage } from '@/types/chat'
 
 /** 预设动作（chip 一键发送）
  *  - label：chip 显示 + user 气泡显示（短，emoji + 几个字）
@@ -67,6 +67,9 @@ export interface StepChatState {
   streaming: ComputedRef<boolean>
   errorKind: ComputedRef<ChatErrorKind | null>
   errorRaw: ComputedRef<string | null>
+  /** v0.4.1+ 错误诊断包（endpoint / model / api_format / request_body_preview）
+   *  - 错误条 "复制诊断信息" 按钮一键打包给开发者，不用反复截图 */
+  errorDiag: ComputedRef<ChatErrorDiag | null>
   send(text: string, preset?: PresetAction, isRetry?: boolean): Promise<void>
   /** v0.4+ tool result 喂回 LLM（多轮 tool calling 核心） */
   sendToolResult?(toolCallId: string, content: string): Promise<void>

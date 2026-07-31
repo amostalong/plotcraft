@@ -249,11 +249,23 @@ export const useChatStore = defineStore('chat', () => {
     )
     unlistenFns.value.push(
       await onChatError((payload) => {
+        // v0.4.1+ 把后端发的 4 字段诊断包塞进 fail mutation
+        // （老 backend 没发 → undefined → reducer 走 null 兜底）
+        const diag =
+          payload.endpoint || payload.model || payload.api_format || payload.request_body_preview
+            ? {
+                endpoint: payload.endpoint ?? '',
+                model: payload.model ?? '',
+                api_format: payload.api_format ?? '',
+                request_body_preview: payload.request_body_preview ?? '',
+              }
+            : undefined
         reduce({
           type: 'fail',
           runId: payload.run_id,
           error: payload.error,
           kind: payload.kind,
+          diag,
         })
       }),
     )

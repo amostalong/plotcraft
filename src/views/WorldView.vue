@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 // WorldView —— 世界 tab（5 个固定分节 + 编辑区 + AI 面板）
 //
 // - 左栏 sections：5 节 + 状态点（exists 橙 / 无 灰），点击切节
@@ -22,7 +22,10 @@ import type { AdoptPayload } from '@/types/ai'
 const world = useWorldStore()
 const project = useProjectStore()
 
-// === v0.3+ AI 面板宽度可调 (默认 480px = 1.5x 原 320px) ===
+// === v0.3+ AI 面板宽度可调 ===
+// v0.5.1 改默认 = 整体窗口的 1/4（函数式 defaultWidth：mount / resetWidth 调一次
+// 取当前窗口尺寸，clamp 到 [320, 800]）。localStorage 已有玩家设的宽度优先 → 不动玩家手设值
+// v0.4.1+ resetOnWindowResize: 窗口尺寸变化（最大化 / 还原 / 拖边缘）自动按比例 reset
 const {
   width: aiPanelWidth,
   resizing: aiPanelResizing,
@@ -30,10 +33,11 @@ const {
   resetWidth: resetAiPanelWidth,
 } = useResizableWidth({
   storageKey: 'plotcraft.aiPanelWidth',
-  defaultWidth: 480,
+  defaultWidth: () => Math.floor(window.innerWidth / 4),
   min: 320,
   max: 800,
   edge: 'left',
+  resetOnWindowResize: true,
 })
 
 const currentDoc = computed(() => world.docs.find((d) => d.id === world.currentDocId) ?? null)
