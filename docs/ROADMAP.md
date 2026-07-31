@@ -12,8 +12,8 @@
 | **v0.1** | ✅ 已完成 | 6 tab 框架 + Chat + Setting 实装 + 真 LLM + 反 Locus 卡顿 | [§v0.1](#v01) |
 | **v0.2** | ✅ 已完成 | 产品级 chat error feedback（8 分类 + 玩家文案 + retry + 详情链接）| [§v0.2](#v02) |
 | **v0.3+** | ✅ 已完成 | AI 面板重构（单 AiChatPanel + presets chips + 备选内联化）+ 概念 tab + 世界 tab + concept/world 通用 store 形状 | [§v0.3+](#v03) |
-| **v0.4+** | 🟡 进行中 | Tool calling 替代 JSON 解析（3 个内置 tool + Settings tab 工具/工具权限 UI + 多轮 send）| [§v0.4+](#v04-tool-calling-替代-json-解析) |
-| v0.5+ | ⬜ 未启动 | 关系图 + 真实图片生成 + macOS 适配 + i18n / vitest / CI | [§v0.5+](#v05) |
+| **v0.4+** | ✅ 已完成 | Tool calling 替代 JSON 解析（3 个内置 tool + Settings tab 工具/工具权限 UI + 多轮 send）| [§v0.4+](#v04-tool-calling-替代-json-解析) |
+| **v0.5+** | ✅ 已完成 | 概念设计 6 步漏斗 → 7 层严格派生模型 + 设计循环（黄点 + 4 校准 preset）+ Path A 方法论索引注入 | [§v0.5+ 7 层概念 + 设计循环](#v05-7-层概念--设计循环) |
 
 **状态图例**：⬜ 未启动 / 🟡 进行中 / ✅ 已完成 / ⏸️ 暂停 / ❌ 取消
 
@@ -179,7 +179,7 @@
 
 ---
 
-## v0.4+（当前）
+## v0.4+ ✅ 已完成
 
 **目标**：tool calling 替代 JSON 数组解析（更可靠 + 多轮"采用 button 类似 ask_question"流程），Settings tab 工具/工具权限 UI。
 
@@ -226,6 +226,70 @@
 **依赖**：v0.3+ 全部完成
 
 ---
+
+## v0.5+ 7 层概念 + 设计循环 ✅ 已完成
+
+**目标**：从 6 步漏斗改造成 7 层严格派生模型 + 螺旋设计循环（改任何层触发全链路反思提示）。Path A 方法论索引注入（不强制玩家使用，LLM 在玩家卡住时自动引用）。
+
+> ⚠️ **2026-07-30 ~ 07-31 用户决策**：v0.5+ 范围重切为"7 层概念设计 + 设计循环"——原计划的"关系图 / 真实图片生成 / i18n / vitest / CI / macOS"继续推迟。
+> 详见 [CONCEPT_REDESIGN_PLAN.md](./CONCEPT_REDESIGN_PLAN.md)（25KB 完整 plan）+ [CONCEPT_OPTIONAL_METHODS.md](./CONCEPT_OPTIONAL_METHODS.md)（6 个方法论参考）。
+
+**核心交付**（v0.5.0）：
+
+- ✅ **概念设计 6 步漏斗 → 7 层严格派生模型**
+  - L1 立意（seed）             → 故事的根，1 句哲学
+  - L2 抽象规则（pillars）      → 设计的硬约束，独立演进（4 态 maturity）
+  - L3 世界（world-rules）      → 宏观设定
+  - L4 地点（locations, 可选）  → 具体空间
+  - L5 人物（character-functions）→ 角色功能（被世界+地点推到位置）
+  - L6 故事（three-act）        → 时间轴上的展开
+  - L7 核心体验（core-fantasy） → 玩家视角的 1 句话总结
+- ✅ **后端 7 层 model + 旧项目兼容**
+  - `src-tauri/src/concept/mod.rs`: STEPS 7 个 + `Group` / `Level` / `Maturity` 字段
+  - `infer_group_level` 自动推断（兼容旧 frontmatter 无 `group`/`level` 字段）
+  - 旧 `core-fantasy.md` 自动归 L7（**关键兼容测试** `legacy_project_6_to_7_compat`）
+  - 旧 `pillars.md` / `seed.md` / `world-rules.md` / `character-functions.md` / `three-act.md` 按 id 推断
+  - 旧项目无 `locations.md` → scan 返 empty（L4 是 v0.5+ 新加）
+  - `concept_summary` 改 7 层分组标签注入（`[L1 立意]` / `[L2 抽象规则（成熟度：演进 v2+）]` / `[L4 地点（可选）]` 等）
+  - 15 个单元测试（含 `scan_and_save_roundtrip` / `legacy_project_6_to_7_compat` / `group_level_mapping` / `step_order_is_derivation_chain` / `only_locations_is_optional` / 5 个 parse_frontmatter 等）
+- ✅ **L2 pillars 4 态成熟度**（`StepMaturity` 类型）
+  - empty / draft / evolving / finalized
+  - 仅 L2 步骤接受 maturity（其他步骤传 maturity 被后端忽略）
+  - 编辑区 maturity chip 一键切换 → 走 `concept.save(stepId, content, true, maturity)` 落盘
+  - maturity 是 frontmatter 字段，独立于 content
+- ✅ **设计循环：mtime → markStale 上下游 → 黄点 ? 提示**
+  - `stores/concept.ts:markStaleAfterSave(stepId)` 按派生链位置 mark
+  - 改 L1 → L2-L7 全 stale（最重）
+  - 改 L2-L6 → 自己 + 上游 + L7 stale
+  - 改 L7 → L1-L6 全 stale（5min cooldown 避免 toast 刷屏）
+  - **绝不自动改**任何内容——黄点是提示，校准由玩家主动触发，LLM 跑预设的"全链路检查"preset **只指出问题，不替玩家改**（玩家主导哲学）
+  - 玩家点黄点 → 切到该步 + 跑校准 chip
+  - 玩家点 X → 忽略黄点（mtime 记录保留，下次再改再出现）
+- ✅ **4 校准 preset + 1 L1 立意专用**（`STEP_PRESETS` 每层 5 chip = 4 基础 + 1 校准）
+  - `RECALIBRATE_DOWNSTREAM_PROMPT`（上游刚改，当前 step 可能不一致）→ L1 立意校准 chip
+  - `RECALIBRATE_UPSTREAM_PROMPT`（你刚改，回看 L1+L2 是否一致）→ L3-L6 上游校准 chip
+  - `PILLAR_REVERSE_CHECK_PROMPT`（用 L3-L6 反推 pillars 是不是写偏了）→ L2 反向检验 chip
+  - `RECALIBRATE_FULL_CHAIN_PROMPT`（L7 改了，6 步全链路一致性检查）→ L7 全链路整合 chip
+  - 校准 chip `action: 'calibrate'`：渲染走 markdown bubble，**不**显示「采用」/「写入编辑器」按钮
+- ✅ **Path A 方法论索引注入**（用户决策"用户自主调用 skill 反而更不靠谱"）
+  - `src/stores/chat.ts:buildSystemPrompt` 末尾拼 `METHODS_HINT` const（~200 中文字符 ≈ 150-200 tokens/每次 chat 固定开销）
+  - 6 条方法论索引：McKee controlling idea / Fullerton Iterative / Fullerton 戏剧元素 / McKee 故事三角 / Playcentric / System Dynamics
+  - 始终注入（不只在概念设计 chat）
+  - 4 条 LLM 行为约束写在 hint 里（不主动推销 / 卡住时引用 / 玩家可弃用 / 不替写原则）
+  - 完整设计见 [CONCEPT_REDESIGN_PLAN.md §13](./CONCEPT_REDESIGN_PLAN.md) + [CONCEPT_OPTIONAL_METHODS.md](./CONCEPT_OPTIONAL_METHODS.md)
+  - B 路径（玩家自主调用 skill 模块）已砍——玩家容易忘、要查工具清单；跟 PlotCraft 玩家主导哲学冲突
+
+**v0.5+ 不做**（推到 v0.6+）：
+- ❌ 关系图（人物 ↔ 事件 ↔ 地点）
+- ❌ 真实图片生成（设定图 tab 当前只占位图）
+- ❌ i18n / vitest / CI
+- ❌ macOS / Linux 适配
+- ❌ 多 LLM provider 抽 `LlmClient` trait
+- ❌ mtime hash 优化（v0.5+ 简化为"每次 save 都 mark stale"）
+- ❌ `permission: 'ask'` modal popup（v0.4+ 用 inline 按钮）
+- ❌ tool schema 扩展到 world 5 节 / characters / plot
+
+**依赖**：v0.4+ 全部完成（tool calling + Settings tab 工具/工具权限 UI）
 
 ---
 
@@ -320,6 +384,11 @@
 | 2026-07-30 | v0.4+ tool calling 替代 JSON 数组解析 | 用户提"和 ai 多聊几次，又出现 LLM 的原文了"+ "用 tool 让玩家选"+"类似 locus 的 ask_question"；删 v0.3+ `parseAlternatives` + `polishExpandFailed` 路径；新 3 个 tool schema（`ask_user_question` / `update_doc_item` / `ask_free_text`）；Rust streaming 3 协议都加 tool call 解析；多轮 `sendToolResult` API；Settings tab 加 Locus 风格工具/工具权限 UI |
 | 2026-07-30 | 关闭的 tool 不在 prompt 给 LLM（用户硬要求）| `resolveEnabledTools` 过滤 `enabled=false` → 完全不在 `tools` 字段 + system prompt 描述；跟 Locus 不同（Locus 关了 tool 还能在 system prompt 描述）|
 | 2026-07-30 | 玩家主导默认 `permission = ask` | `ask_user_question` / `ask_free_text` 默认 `auto`（只问不写，直接执行）；`update_doc_item` 默认 `ask`（写编辑器前玩家确认）—— Locus 风格双 sub-tab（工具 / 工具权限）|
+| 2026-07-30 | 概念设计 6 步漏斗 → 7 层严格派生模型 | 用户 RPG 设计心法（立意第一 + 先抽象规则再有具体世界 + 人物被世界波浪推到位置）；L1 立意 / L2 抽象规则 / L3 世界 / L4 地点（可选） / L5 人物 / L6 故事 / L7 核心体验；L2 pillars 独立演进（4 态 maturity）反映"很难一次设计完整，要不断反馈"；L7 核心体验 = 方案 2 整合层（最后位置）跟 L1 立意是孪生抽象 |
+| 2026-07-31 | 设计循环：mtime → markStale → 黄点 ? 提示 | 改任何 step → 标上下游 stale → 玩家点黄点跑校准 chip → LLM 只指出问题不替改；改 L1 → L2-L7 全 stale；改 L2-L6 → 自己+上游+L7；改 L7 → L1-L6 + 5min cooldown；**绝不自动改**任何内容（玩家主导哲学）|
+| 2026-07-31 | 4 校准 preset 加到 STEP_PRESETS 通用区 | RECALIBRATE_DOWNSTREAM（上游刚改） / RECALIBRATE_UPSTREAM（你刚改回看上游） / PILLAR_REVERSE_CHECK（用 L3-L6 反推 pillars） / RECALIBRATE_FULL_CHAIN（L7 改了全链路）；L1 立意专用（问 3 尖锐问题帮玩家确认"大改方向还是精化措辞"）|
+| 2026-07-31 | 旧项目兼容：旧 core-fantasy 自动归 L7 | 6 步漏斗第 2 步 core-fantasy = L7 核心体验整合层（最抽象+最后写）；`infer_group_level` 推断兼容旧 frontmatter 无 group/level 字段；旧项目无 locations.md → scan 返 empty（L4 是 v0.5+ 新加） |
+| 2026-07-31 | Path A 方法论索引注入，砍 B 路径 | 用户："用户自主调用 skill 反而更不靠谱"——玩家容易忘、要查工具清单；LLM 在 system prompt 里自动可用对应方法论，零玩家成本；~200 字 system prompt 固定开销；4 条 LLM 行为约束写在 hint 里（不主动推销/卡住时引用/玩家可弃用/不替写） |
 
 **更新规则**：每次 release 完成 / 大决策变更时，更新本表 + 状态总览。
 

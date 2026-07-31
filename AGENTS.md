@@ -36,7 +36,7 @@ PlotCraft = 给独立 / 业余 RPG / VN 创作者的 **AI 编剧搭档** 桌面�
 | 设定图 tab（ConceptArtView，art/ 图库 + prompt 管理 + 占位图）| ✅ **实装**（v0.2+，不接真生成 / 不做 AI 写 prompt，用户决策）|
 | 启动恢复 last project（open_project command + recentProjects 持久化）| ✅ **实装**（v0.2+）|
 | chat 等待响应效果（streaming 首 chunk 前 "正在思考" 动画）| ✅ **实装**（v0.2+）|
-| **概念 tab（ConceptView，8 号 tab：6 步概念设计漏斗 + LLM 备选 + 每步对话 + chat 宪法注入）**| ✅ **实装**（v0.2+，v0.3+ 改用单 AiChatPanel）|
+| **概念 tab（ConceptView，8 号 tab：6 步概念设计漏斗 + LLM 备选 + 每步对话 + chat 宪法注入）**| ✅ **实装**（v0.2+，v0.3+ 改用单 AiChatPanel，v0.5+ 改 7 层严格派生模型）|
 | **世界 tab（WorldView，通用 docs 模块第一个 collection：5 节 + LLM 备选/对话带概念宪法 context）**| ✅ **实装**（v0.2+，v0.3+ 改用单 AiChatPanel）|
 | **AI 面板重构：单 AiChatPanel + presets chips + 备选内联化（v0.3+ 替换 v0.2 AlternativesPicker + StepChatPanel 两件套）**| ✅ **实装**（v0.3+）|
 | **非流式 `generate` command（test_provider 骨架泛化；v0.3+ 改为无调用方，保留为 v0.4+ AI 验收类功能）**| ✅ **实装**（v0.2+，v0.3+ 注释标无调用方）|
@@ -45,12 +45,17 @@ PlotCraft = 给独立 / 业余 RPG / VN 创作者的 **AI 编剧搭档** 桌面�
 | **Settings tab 工具/工具权限双 sub-tab（enable 开关 + auto/ask/deny radio；Locus 风格）**| ✅ **实装**（v0.4+）|
 | **多轮 tool calling（玩家点 AltCard → 调 LLM 第二轮 → LLM 调 update_doc_item → 玩家点"确认写入" → 写编辑器；stepChat.sendToolResult API）**| ✅ **实装**（v0.4+）|
 | **resolveEnabledTools 过滤关闭的 tool（用户硬要求：关闭的 tool 不在 prompt 给 LLM）**| ✅ **实装**（v0.4+）|
+| **概念设计 6 步漏斗 → 7 层严格派生模型**（L1 立意 / L2 抽象规则 / L3 世界 / L4 地点可选 / L5 人物 / L6 故事 / L7 核心体验）| ✅ **实装**（v0.5+）|
+| **L2 pillars 4 态成熟度**（empty / draft / evolving / finalized，编辑器 maturity chip 切）| ✅ **实装**（v0.5+）|
+| **设计循环：改任何 step → markStale 上下游 → 黄点 ? 提示 + 校准 chip 触发 LLM**（旧 6 步漏斗自动迁移，core-fantasy 归 L7）| ✅ **实装**（v0.5+）|
+| **4 校准 preset（RECALIBRATE_DOWNSTREAM / RECALIBRATE_UPSTREAM / RECALIBRATE_FULL_CHAIN / PILLAR_REVERSE_CHECK） + L1 立意专用**| ✅ **实装**（v0.5+）|
+| **Path A 方法论索引注入**（McKee controlling idea / Fullerton Iterative / Fullerton 戏剧元素 / McKee 故事三角 / Playcentric / System Dynamics ~200 字 system prompt）| ✅ **实装**（v0.5+）|
 | 概览 tab | ⏸️ 从 tab 栏摘除（2026-07-30 用户决策：最后设计；路由 + 文件保留）|
 | 3 个非 v0.1 tab（人物/剧情 + 概览）| 🟡 Placeholder（"v0.3+ 实装"；v0.3+ AI 面板重构已为它们预留接口）|
 | 关系图 / 图片生成 / 多 provider | ❌ 推到 v0.4+ |
 | i18n / vitest / CI | ❌ 推到 v0.4+ |
 
-完整路线 → `docs/ROADMAP.md`。设计意图 → `docs/DESIGN.md`。v0.1 启动清单 → `docs/CHECKLIST.md`。v0.2 错误反馈设计 → `docs/CHAT_LLM_DESIGN.md §8`。v0.3+ AI 面板重构设计 → `docs/AI_PANEL_DESIGN.md`。**v0.4+ tool calling 设计** → `docs/AI_PANEL_DESIGN.md §6` + `docs/CHAT_LLM_DESIGN.md §9`。
+完整路线 → `docs/ROADMAP.md`。设计意图 → `docs/DESIGN.md`。v0.1 启动清单 → `docs/CHECKLIST.md`。v0.2 错误反馈设计 → `docs/CHAT_LLM_DESIGN.md §8`。v0.3+ AI 面板重构设计 → `docs/AI_PANEL_DESIGN.md`。**v0.4+ tool calling 设计** → `docs/AI_PANEL_DESIGN.md §6` + `docs/CHAT_LLM_DESIGN.md §9`。**v0.5+ 7 层概念设计 + 设计循环** → `docs/CONCEPT_REDESIGN_PLAN.md` + `docs/CONCEPT_OPTIONAL_METHODS.md`（方法论索引参考）。
 
 ---
 
@@ -181,10 +186,14 @@ Locus 实测 4 个卡顿源 → 4 个反制。**学架构思想，不照搬代�
     - Anthropic Messages：转 `tools: [{name, description, input_schema: parameters}]`（`input_schema` 不是 OpenAI 的嵌套 `function`）
     - 工具消息跨协议转换：OpenAI 用 `role: 'tool', tool_call_id`，Anthropic 用 `role: 'user', content: [{type: 'tool_result', tool_use_id, content}]`
     - Assistant 消息带 tool_calls：OpenAI 原样用 `tool_calls` 字段；Anthropic 转 `content: [{type: 'text', text}, {type: 'tool_use', id, name, input}]`
+19. **v0.5+ 概念设计 7 层派生模型**（L1 立意 / L2 抽象规则 / L3 世界 / L4 地点可选 / L5 人物 / L6 故事 / L7 核心体验）：后端 STEPS 7 个固定 + group/level/maturity 字段；旧项目兼容靠 `infer_group_level` 推断（旧 core-fantasy 自动归 L7）；`concept_summary` 改 7 层分组标签注入。**改 frontmatter 必须保留 `group` / `level` 字段**——`build_frontmatter` 写盘是 5 字段固定（title/step/group/level/status/updated/maturity），解析少字段 → 自动走 infer。详见 `docs/CONCEPT_REDESIGN_PLAN.md §2`。
+20. **v0.5+ 设计循环：mtime → markStale 上下游 → 黄点 ? 提示**（核心要求，**绝不自动改**任何内容）：`stores/concept.ts:markStaleAfterSave` 按 step 派生位置 mark 上下游（改 L1 → L2-L7；改 L2-L6 → 自己+上游+L7；改 L7 → L1-L6）。**mtime 误判防护**：v0.5+ 简化为"每次 save 都 mark stale"（hash 优化推到 v0.5.1）。**L7 5min cooldown**：避免 toast 刷屏（`window.__lastL7Stale` 简单防抖）。**黄点消失条件**：(a) 玩家点 X 忽略（mtime 记录保留，下次再改再出现）；(b) 玩家点黄点 ? 跑校准 chip 主动消点。详见 `docs/CONCEPT_REDESIGN_PLAN.md §3.1-§3.4`。
+21. **v0.5+ L2 pillars 4 态成熟度**（empty / draft / evolving / finalized）：仅 L2 步骤接受 maturity 字段，其他步骤传 maturity 被后端忽略（`save_concept_step` Rust 端 `if def.id == "pillars"` 守护）。前端编辑区 UI 走 maturity chip 切换 → 直接走 `concept.save(stepId, content, true, maturity)` 落盘，独立 frontmatter 字段。**maturity 是 frontmatter 字段，不是 content**——切 maturity 不会触发 `onMaturityChange` 误改编辑器。
+22. **v0.5+ 校准 chip 是反思对话，不是写入**：校准 chip（'calibrate' action）走 markdown bubble 渲染，**不**显示「采用」/「写入编辑器」按钮——LLM 输出就是反思，**玩家自己读完照做**。跟 polish/expand（'replace' mode）区分。PresetAction.action 联合类型加了 `'calibrate'`，types/chat.ts ChatMessage.action 也加。
 
 ---
 
-## 8. v0.4+ 推到后面
+## 8. v0.5+ 推到后面
 
 - 人物 / 剧情 tab 实装（v0.3+ 已为它们预留 AiChatPanel + PresetAction 接口；待它们自己有 store 即可接入）
 - 概览 tab 重新设计 / 上 tab 栏（路由 + 文件保留，最后设计）
@@ -243,6 +252,11 @@ release 前必跑 11 项 → `docs/CHECKLIST.md §10`。**核心 3 项**：
 | 启动分阶段实现 | `src/main.ts` |
 | 项目数据模型（9 大类）| `docs/CHAT_LLM_DESIGN.md §5.1` |
 | **v0.4+ tool calling 协议 schema 转（OpenAI ↔ Anthropic）**| `src-tauri/src/llm/streaming.rs:build_openai_request_body (tools)` + `src-tauri/src/llm/streaming_anthropic.rs:build_anthropic_request_body (tools + tool_result + tool_use)` |
+| **v0.5+ 7 层概念模型**（后端 STEPS + 旧项目兼容 + 单元测试 15 个）| `src-tauri/src/concept/mod.rs` (STEPS, infer_group_level, parse_frontmatter) + `src-tauri/src/commands/concept.rs` (save_concept_step 接 maturity) |
+| **v0.5+ 7 层前端子系统**（types + lib + store + view）| `src/types/concept.ts` (STEP_IDS/ConceptGroup/StepMaturity) + `src/lib/concept.ts` (saveConceptStep) + `src/lib/chats.ts` (12 itemKey) + `src/lib/ai-tools.ts` (item_id 7 步) |
+| **v0.5+ 设计循环**（staleFlags + 4 校准 preset + 黄点）| `src/stores/concept.ts` (STEP_HINTS/PRESETS/markStaleAfterSave/clearStale + 4 校准 PROMPT) + `src/views/ConceptView.vue` (7 层 stepper + 黄点 UI + maturity chip) |
+| **v0.5+ Path A 方法论索引**（system prompt 注入 ~200 字）| `src/stores/chat.ts:buildSystemPrompt` (METHODS_HINT const) |
+| **v0.5+ 设计哲学 / 7 层设计 / 设计循环**（完整 plan）| `docs/CONCEPT_REDESIGN_PLAN.md`（§1-§14）+ `docs/CONCEPT_OPTIONAL_METHODS.md`（6 个方法论参考）|
 
 ---
 
