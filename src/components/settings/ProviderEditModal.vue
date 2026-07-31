@@ -372,13 +372,6 @@ function lookupBuiltinContext(id: string): string | null {
   return `${m.context_window} ctx`
 }
 
-function lookupBuiltinEffort(id: string): string | null {
-  ensureCatalogLoaded()
-  const m = findCatalogModel(id)
-  if (!m) return null
-  return m.reasoning ? 'reasoning' : null
-}
-
 async function onTest() {
   // v0.1.3+ 用 effective default model（defaultModel || models[0].id）
   const testModel =

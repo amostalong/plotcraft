@@ -22,7 +22,7 @@
 //   玩家主导，非强规则；LLM 不主动推销，只在玩家明显卡住时引用
 
 import { defineStore } from 'pinia'
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
 import { createStreamReducer } from '@/composables/useStreamReducer'

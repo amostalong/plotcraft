@@ -20,6 +20,7 @@ pub async fn list_concept_steps(project_root: String) -> AppResult<Vec<ConceptSt
 }
 
 /// 保存一步（atomic write；mark_confirmed=true → status "confirmed"，否则 "draft"）
+/// maturity：仅 L2 pillars 写（其他步骤传 None 不写盘）
 /// 懒建 `concept/` 目录 —— 旧项目无目录也能直接 save
 #[tauri::command]
 pub async fn save_concept_step(
@@ -27,10 +28,11 @@ pub async fn save_concept_step(
     step_id: String,
     content: String,
     mark_confirmed: bool,
+    maturity: Option<String>,
 ) -> AppResult<ConceptStep> {
     let root = PathBuf::from(project_root);
     tokio::task::spawn_blocking(move || {
-        save_concept_step_impl(&root, &step_id, &content, mark_confirmed)
+        save_concept_step_impl(&root, &step_id, &content, mark_confirmed, maturity.as_deref())
     })
     .await
     .map_err(|e| AppError::Config(format!("save_concept_step: join: {}", e)))?

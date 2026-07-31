@@ -11,7 +11,7 @@
 //   - "查看详情" 跳 Settings → Console tab，filter by run_id（App.vue / router 配合）
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import {
   AlertCircle,
   Bot,
@@ -47,7 +47,6 @@ const chat = useChatStore()
 const settings = useSettingsStore()
 const project = useProjectStore()
 const router = useRouter()
-const route = useRoute()
 
 const input = ref('')
 const transcriptEl = ref<HTMLElement | null>(null)
@@ -304,9 +303,6 @@ function cancelRename() {
 }
 function startConfirmDelete(s: SessionMeta) {
   confirmingDeleteId.value = s.id
-}
-function cancelDelete() {
-  confirmingDeleteId.value = null
 }
 function commitDelete(s: SessionMeta) {
   confirmingDeleteId.value = null

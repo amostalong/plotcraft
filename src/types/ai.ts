@@ -18,6 +18,8 @@ import type { ChatErrorKind, ChatMessage } from '@/types/chat'
  *    - 'reflect'  ：反思/追问（普通气泡 → 写入编辑器 = 追加）
  *    - 'polish'   ：润色（气泡 → 「采用」= 替换编辑器）
  *    - 'expand'   ：扩展（气泡 → 「采用」= 替换编辑器）
+ *    - 'calibrate'：v0.5+ 设计循环校准（普通气泡 → 不写入编辑器，只是反思提问）
+ *      玩家点 stepper 黄点 ? 触发；UI 上不显示「采用」按钮，只当反思对话
  *
  *  v0.4+ 取消 `output: 'json' | 'markdown'` 字段：
  *  - 老逻辑 `output: 'json'` → 后端 `response_format: json_object` → LLM 返 JSON 字符串
@@ -29,7 +31,7 @@ import type { ChatErrorKind, ChatMessage } from '@/types/chat'
 export interface PresetAction {
   label: string
   prompt: string
-  action: 'generate' | 'reflect' | 'polish' | 'expand'
+  action: 'generate' | 'reflect' | 'polish' | 'expand' | 'calibrate'
 }
 
 /** adopt 事件 payload（v0.3+ 单事件 + mode 派生）

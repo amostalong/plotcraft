@@ -242,7 +242,7 @@ watch(
           <AiChatPanel
             :item-id="world.currentDocId"
             :title="currentDoc.title"
-            :chat="world.stepChat"
+            :chat="(world.stepChat as any)"
             :presets="presets"
             :word-count="headerWordCount"
             @adopt="onAdopt"

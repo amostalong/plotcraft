@@ -37,8 +37,8 @@ const props = defineProps<{
   itemId: string
   /** 显示在 header（"AI 助手 · 种子"） */
   title: string
-  /** per-item 状态（store 组合注入） */
-  chat: StepChatState
+  /** per-item 状态（store 组合注入，markRaw 后内部 ref/computed 不被 Pinia 解包） */
+  chat: StepChatState | { [K in keyof StepChatState]: StepChatState[K] }
   /** 当前 item 的预设 chip 列表（store export STEP_PRESETS[xxx]） */
   presets: PresetAction[]
   /** header 字数显示（"123 字"）；不传就不显示 */
@@ -47,7 +47,7 @@ const props = defineProps<{
 const emit = defineEmits<{ adopt: [payload: AdoptPayload] }>()
 
 // ComputedRef 也是 Ref，解构不丢响应性
-const { messages, text, streaming, errorKind, errorRaw, send, sendToolResult, reset } = props.chat
+const { messages, streaming, errorKind, errorRaw, send, sendToolResult, reset } = props.chat
 
 const input = ref('')
 const listEl = ref<HTMLElement | null>(null)
@@ -217,11 +217,6 @@ function onAdoptReplace(text: string) {
   emit('adopt', { text, mode: 'replace' })
 }
 
-function onAdoptAppend(text: string) {
-  // 普通反思/追问气泡 → 追加到末尾
-  emit('adopt', { text, mode: 'append' })
-}
-
 /** v0.4+ AltCard "采用" 按钮（ask_user_question tool 走这条）
  *  - 不直接写编辑器 —— 走多轮 tool result 喂回 LLM
  *  - LLM 第二轮可能：调 update_doc_item（玩家再点"确认写入"）/ 出 text 总结
@@ -377,7 +372,7 @@ function onAdoptBlock() {
               :text="opt.preview"
               :title="opt.label"
               :description="opt.description"
-              @adopt="(preview: string) => onAdoptAltCard(opt, d.toolCall)"
+              @adopt="() => onAdoptAltCard(opt, d.toolCall)"
             />
           </div>
         </div>

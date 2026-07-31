@@ -3,8 +3,9 @@
 // 数据约定（镜像 Rust `src-tauri/src/chats/mod.rs`，snake_case 跨 boundary）：
 //   <project>/.chats/concept/<stepId>.json
 //   <project>/.chats/world/<docId>.json
-// - 11 个固定 itemKey：concept:seed/core-fantasy/pillars/world-rules/character-functions/three-act
-//                       world:overview/geography/history/magic-system/factions
+// - 12 个固定 itemKey（v0.5+ 7 层模型后）：
+//     concept:seed/pillars/world-rules/locations/character-functions/three-act/core-fantasy
+//     world:overview/geography/history/magic-system/factions
 // - 懒创建目录 —— 旧项目没 .chats/ 也正常 load（返回空）
 // - atomic write（tmp → rename）—— 跨平台稳定
 // - 不做文件监听 —— 玩家手改后点"刷新"重扫（对齐 art/concept 惯例）

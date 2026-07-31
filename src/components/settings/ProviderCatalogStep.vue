@@ -13,7 +13,7 @@
 //  - v0.1 暂不接远端 refresh（snapshot 嵌在 Rust binary 里，rebuild 才会换）
 
 import { computed, onMounted, ref } from 'vue'
-import { BookOpen, Plus, ChevronRight, Search, RefreshCw } from 'lucide-vue-next'
+import { Plus, ChevronRight, Search, RefreshCw } from 'lucide-vue-next'
 import { useModelCatalog } from '@/composables/useModelCatalog'
 import type { CatalogModel, CatalogProvider } from '@/types/catalog'
 

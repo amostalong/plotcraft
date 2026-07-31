@@ -77,7 +77,7 @@ export const ASK_USER_QUESTION_SCHEMA: ToolDefinition = {
 /** update_doc_item —— LLM 主动把内容写入某项
  *  - 替代 v0.3+ 的"采用"按钮（玩家点 AltCard 触发写入）
  *  - v0.4+：LLM 自己调这个 tool → 前端弹"AI 建议采用 X，确认写入吗" → 玩家确认
- *  - item_id 枚举：v0.4+ 限 concept 6 步（world 5 节 / characters / plot 等它们自己有 store 再加）
+ *  - item_id 枚举：v0.5+ 限 concept 7 步（world 5 节 / characters / plot 等它们自己有 store 再加）
  *  - 玩家可以关闭这个 tool（在 Settings tab）→ LLM 完全不能改编辑器，要改让玩家手动写 */
 export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
   type: 'function',
@@ -87,7 +87,7 @@ export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
       '把玩家选定 / 修改后的内容写入文档某一项。这一步会自动覆盖编辑器内容。' +
       '**只**在玩家已经明确表达过要这个方案时调（例如玩家问"用 A 改暗版"，或玩家从 ask_user_question 选了一个 option）。' +
       '**不要**在没确认的情况下主动调这个 —— 玩家主导，绝不替玩家做决定。' +
-      'item_id 当前限定为 concept 6 步：seed / core-fantasy / pillars / world-rules / character-functions / three-act。' +
+      'item_id 当前限定为 concept 7 步：seed / pillars / world-rules / locations / character-functions / three-act / core-fantasy。' +
       'content 是最终内容（玩家改过的优先于 LLM 原始备选）。',
     parameters: {
       type: 'object',
@@ -96,11 +96,12 @@ export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
           type: 'string',
           enum: [
             'seed',
-            'core-fantasy',
             'pillars',
             'world-rules',
+            'locations',
             'character-functions',
             'three-act',
+            'core-fantasy',
           ],
           description: '要写入的 doc item id',
         },

@@ -79,8 +79,9 @@ export interface ChatMessage {
    *  - 'generate'：备选生成（assistant 走卡片组）
    *  - 'reflect'  ：反思/追问（assistant 走普通气泡 + 写入按钮 = append）
    *  - 'polish'   ：润色（assistant 走气泡 + 采用按钮 = replace）
-   *  - 'expand'   ：扩展（assistant 走气泡 + 采用按钮 = replace）*/
-  action?: 'generate' | 'reflect' | 'polish' | 'expand'
+   *  - 'expand'   ：扩展（assistant 走气泡 + 采用按钮 = replace）
+   *  - 'calibrate'：v0.5+ 设计循环校准（assistant 走普通气泡，不写入编辑器，只是反思对话）*/
+  action?: 'generate' | 'reflect' | 'polish' | 'expand' | 'calibrate'
   /** v0.3+ 自动重试标记（前端 only）
    *  - true → 这条 user msg 是 AI 面板自动重试生成的, 不是玩家手动触发
    *  - 用于 findChainOriginalIdx 找 chain 的原始 user msg (跳过 retry 标记的, 找到最早的)

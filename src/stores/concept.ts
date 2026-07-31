@@ -1,4 +1,4 @@
-// concept pinia store —— 概念设计漏斗（6 步）+ LLM 辅助
+// concept pinia store —— 7 层派生模型 + 设计循环 + LLM 辅助（v0.5+）
 //
 // 照搬 stores/art.ts 形状：
 // - steps 用 shallowRef 包（反卡顿惯例：大列表不深 reactive）
@@ -13,7 +13,15 @@
 // - **自动落盘**（v0.3+ 玩家反馈"想保留"）：watch chatHistories → debounce 1s → saveChat
 //   位置 <项目>/.chats/concept/<stepId>.json（详见 [docs/AI_PANEL_DESIGN.md]）
 //
-// 详细设计见 [docs/AI_PANEL_DESIGN.md]
+// 设计循环（v0.5+）：
+// - 改任何 step → markStale 上游 / 下游（黄点 ? 提示）
+// - L1 改 → L2-L7 全标 stale（最重）
+// - L2-L6 改 → 自己 + 上游 + L7 标 stale
+// - L7 改 → L1-L6 全标 stale
+// - 黄点消失条件：玩家手动 clearStale(id) 或跑 preset 校准后
+// - 5min cooldown for L7 频繁改动（避免 toast 刷屏）—— store 内部防抖
+//
+// 详细设计见 [docs/AI_PANEL_DESIGN.md] + [docs/CONCEPT_REDESIGN_PLAN.md]
 
 import { defineStore } from 'pinia'
 import { computed, markRaw, ref, shallowRef, triggerRef, watch, type Ref } from 'vue'
@@ -32,20 +40,77 @@ import {
 } from '@/lib/llm'
 import type { PresetAction, StepChatState } from '@/types/ai'
 import type { ChatErrorKind, ChatMessage, ToolCallInfo, ToolCallPartial } from '@/types/chat'
-import type { ConceptStep, ConceptStepId } from '@/types/concept'
+import { STEP_IDS, type ConceptStep, type ConceptStepId, type StepMaturity } from '@/types/concept'
 import { useProjectStore } from './project'
 import { useSettingsStore } from './settings'
 
-// === 6 步静态定义（hint = 写作引导语，编辑区显示 + 拼 LLM prompt 的说明部分） ===
+// === 7 层静态定义（hint = 写作引导语，编辑区显示 + 拼 LLM prompt 的说明部分） ===
 
 export const STEP_HINTS: Record<ConceptStepId, string> = {
-  seed: '一个画面、一种情绪、一个「如果……会怎样」—— 模糊没关系，先写下来',
-  'core-fantasy': '玩家是谁、在什么处境、做什么 —— 一句话说清核心体验',
-  pillars: '3-5 条设计支柱 —— 每条都要有否决权，「丰富剧情」这种废话不算',
-  'world-rules': '每条写清「是什么 + 造成什么冲突」—— 写不出冲突的规则是可疑的',
-  'character-functions': '每个角色想要什么、为什么得不到 —— 功能是制造冲突',
-  'three-act': '冲突加压序列 —— 一幕比一幕紧，写 3-5 个关键转折点',
+  // L1 立意
+  seed: '立意是故事的根，1 句话核心矛盾 / 主题。格式：「主角在 X 处境下，想要 Y，但 Z 不可越」。例：「个体在强权秩序下的反抗能否保持纯真」。立意很难一次写准——可以反复改，下游会跟着你校准。',
+  // L2 抽象规则
+  pillars: '3-5 条硬约束 / 否决性原则。每条都是「任何方案违反 X 就打回」。这些规则不会一次写完——会在写世界/人物/故事过程中反复回来修改。成熟度：empty / 草稿 v1 / 演进 v2+ / 定型。',
+  // L3 世界
+  'world-rules': '宏观设定——时代 / 物理 / 魔法 / 政治 / 经济。每条 = 是什么 + 造成什么冲突。注意：硬约束（「不能违反」）属于 L2 抽象规则——这里只写普通规则。',
+  // L4 地点（可选）
+  locations: '具体空间——地理 / 氛围 / 物理特征 / 跟立意/世界的连接。这是可选的——密室 / 单场景剧可以跳过。不写 NPC（那是 L5 人物）。',
+  // L5 人物
+  'character-functions': '角色功能——每个人 = 想要什么 + 为什么得不到。人物欲望应追溯到 L3 世界 + L4 地点——不是凭空生成。人物被世界的波浪推到某个位置，他们想要的是对世界压力的回应。',
+  // L6 故事
+  'three-act': '冲突加压序列——每一幕压力比上一幕大，直到终幕爆发。派生 L1-L5——每幕转折点都应服务 L1 立意 + 满足 L2 pillars + 反映 L3 世界 + L4 地点 + L5 人物。',
+  // L7 核心体验
+  'core-fantasy': '玩家视角的 1 句话体验——「你扮演 X，在 Y 处境，做 Z」。所有层设计完才能精准定——可以先写粗版（方向感），其他层定下来再回来精化。',
 }
+
+// === 设计循环校准 prompt（v0.5+ 新增） ===
+// 4 个校准 prompt + 1 个 L1 立意专用，5 个校准 chip 在 STEP_PRESETS 通用区
+// 完整设计见 docs/CONCEPT_REDESIGN_PLAN.md §3.3
+
+const RECALIBRATE_DOWNSTREAM_PROMPT =
+  '上游刚刚改过。' +
+  '当前 step 内容可能与新上游不一致。' +
+  '逐条检查：' +
+  '1. 当前 step 的关键论断是否还被新上游支持？' +
+  '2. 哪些句子需要重写、哪些保留？' +
+  '3. 指出具体段落 + 建议方向（不替玩家写完整版）。'
+
+const RECALIBRATE_UPSTREAM_PROMPT =
+  '当前 step 刚刚改过（或上游有变化）。' +
+  '它可能跟上游 L1 立意 + L2 pillars 不一致。' +
+  '逐条检查：' +
+  '1. 当前 step 是否还服务 L1 立意？' +
+  '2. 当前 step 是否违反 L2 pillars？' +
+  '3. 哪些句子需要回看 L1+L2 才能确定？' +
+  '指出问题点 + 建议方向（不替玩家写完整版）。'
+
+const RECALIBRATE_FULL_CHAIN_PROMPT =
+  'L7 核心体验刚刚改过（或上游关键层有重大变化）。' +
+  '跑全链路一致性检查：' +
+  '1. L1 立意 → L2 pillars：pillars 还服务于立意吗？' +
+  '2. L1+L2 → L3 世界：世界还满足 pillars + 服务立意吗？' +
+  '3. L3 → L4 地点：地点还显形 L3 规则吗？' +
+  '4. L3+L4 → L5 人物：人物欲望还派生自世界+地点吗？' +
+  '5. L1-L5 → L6 故事：三幕还派生整链路吗？' +
+  '6. L1-L6 → L7 核心体验：核心体验还反映整链路吗？' +
+  '指出每层的不一致点 + 建议方向（不替玩家写）。'
+
+const PILLAR_REVERSE_CHECK_PROMPT =
+  '用 L3-L6 现状反推 L2 pillars：' +
+  '1. L3 世界规则里有没有"硬约束"性质但没写进 L2 的？' +
+  '2. L5 人物功能里有没有"贯穿"性质但没写进 L2 的？' +
+  '3. L6 三幕里有没有"不可越线"性质但没写进 L2 的？' +
+  '建议补充哪些 pillars（不替玩家写完整版）。'
+
+/** L1 立意校准 prompt（基于 RECALIBRATE_DOWNSTREAM 模板 + 立意特殊性扩展） */
+const L1_RECALIBRATE_PROMPT =
+  RECALIBRATE_DOWNSTREAM_PROMPT +
+  '\n\n立意特殊性 —— 立意是整个设计的哲学根：' +
+  '问 3 个尖锐问题帮 ta 确认：' +
+  '1. 这次改立意是要「大改方向」还是「精化措辞」？' +
+  '2. 如果是大改方向 —— 玩家准备好 L2-L7 全部重看吗？' +
+  '3. 玩家希望先看 L1 新立意 vs 旧下游的不一致点，还是先继续写 L2+？' +
+  '根据玩家回答决定下一步（不替玩家做决定）。'
 
 // === Preset 共享片段 ===
 
@@ -95,61 +160,54 @@ const EXPAND_INSTRUCTION =
   '- 是完整扩展后的版本（不是扩展说明）\n' +
   '- 长度比原文明显更长（至少 1.5 倍，扩写就是要更厚）'
 
-// === 6 步 × 4 presets 静态配置（chip + 完整 prompt）===
+// === 7 层 × 5 presets 静态配置（chip + 完整 prompt） ===
+// v0.5+ 每层加 1 个校准 chip（设计循环）：4 基础（generate/reflect/polish/expand）+ 1 校准
+// - L1 立意：校准 chip = "🎯 立意校准"（问 3 尖锐问题）
+// - L2 pillars：校准 chip = "🔄 反向检验"（用 L3-L6 反推）
+// - L3-L6：校准 chip = "⬆️ 上游校准"（改本层后回看 L1+L2）
+// - L7 核心体验：校准 chip = "🌀 全链路整合"（汇总裁决）
+
+const STANDARD_PRESETS: PresetAction[] = [
+  {
+    label: '✨ 润色这一步',
+    prompt: POLISH_INSTRUCTION + JSON_TAIL,
+    action: 'polish',
+  },
+  {
+    label: '🌱 扩展这一步',
+    prompt: EXPAND_INSTRUCTION + JSON_TAIL,
+    action: 'expand',
+  },
+]
 
 export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
+  // L1 立意
   seed: [
     {
-      label: '💡 给 3-5 个一句话种子',
+      label: '💡 给 3-5 个立意方向',
       prompt:
-        '根据玩家给的素材，给出 3-5 个不同方向的一句话种子版本（画面感 / 情绪 / "如果..." 各试）。' +
+        '根据玩家给的素材，给出 3-5 个不同方向的 1 句话立意版本（不同核心矛盾 / 不同主题走向）。' +
+        '格式：「主角在 X 处境下，想要 Y，但 Z 不可越」。' +
         JSON_TAIL,
       action: 'generate',
     },
     {
       label: '🔍 反问我 3 个尖锐问题',
-      prompt: '玩家想法模糊时，先反问 3 个尖锐问题逼玩家想清楚（不要急着给答案）。' + REFLECT_TAIL,
+      prompt: '玩家立意模糊时，先反问 3 个尖锐问题逼玩家想清楚（不要急着给答案）。' + REFLECT_TAIL,
       action: 'reflect',
     },
+    ...STANDARD_PRESETS,
     {
-      label: '✨ 润色我的种子',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
-      action: 'polish',
-    },
-    {
-      label: '🌱 扩展我的种子',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
-      action: 'expand',
+      label: '🎯 立意校准',
+      prompt: L1_RECALIBRATE_PROMPT + JSON_TAIL,
+      action: 'calibrate',
     },
   ],
-  'core-fantasy': [
-    {
-      label: '💡 给 3-5 个改写',
-      prompt:
-        '「玩家是___，在___处境，做___」格式。给出 3-5 个改写，每个都要具体到能想象出实际游玩的一分钟。' +
-        JSON_TAIL,
-      action: 'generate',
-    },
-    {
-      label: '🔍 检验这句有没有钩子',
-      prompt: '帮玩家检验他写的核心体验有没有钩子（让玩家想玩下去的张力）。' + REFLECT_TAIL,
-      action: 'reflect',
-    },
-    {
-      label: '✨ 润色核心体验',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
-      action: 'polish',
-    },
-    {
-      label: '🌱 扩展核心体验',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
-      action: 'expand',
-    },
-  ],
+  // L2 抽象规则
   pillars: [
     {
-      label: '💡 从核心体验拆支柱',
-      prompt: '从核心体验拆 3-5 条设计支柱，每条必须有否决权 —— 能用来否决具体方案。' + JSON_TAIL,
+      label: '💡 从立意拆支柱',
+      prompt: '从 L1 立意拆 3-5 条抽象规则（pillars），每条必须有否决权 —— 能用来否决具体方案。' + JSON_TAIL,
       action: 'generate',
     },
     {
@@ -159,45 +217,59 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
         REFLECT_TAIL,
       action: 'reflect',
     },
+    ...STANDARD_PRESETS,
     {
-      label: '✨ 润色支柱',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
-      action: 'polish',
-    },
-    {
-      label: '🌱 扩展支柱',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
-      action: 'expand',
+      label: '🔄 反向检验',
+      prompt: PILLAR_REVERSE_CHECK_PROMPT + JSON_TAIL,
+      action: 'calibrate',
     },
   ],
+  // L3 世界
   'world-rules': [
     {
-      label: '💡 从核心体验推规则',
-      prompt: '从核心体验推 3-5 条世界规则，每条 = 是什么 + 造成什么冲突。' + JSON_TAIL,
+      label: '💡 从立意 + 规则推世界',
+      prompt: '从 L1 立意 + L2 pillars 推 3-5 条世界规则，每条 = 是什么 + 造成什么冲突。' + JSON_TAIL,
       action: 'generate',
     },
     {
-      label: '🔍 检查规则有没有冲突',
+      label: '🔍 检查规则间冲突',
       prompt: '检查玩家写的世界规则有没有规则间冲突 / 压死玩法的情况。' + REFLECT_TAIL,
       action: 'reflect',
     },
+    ...STANDARD_PRESETS,
     {
-      label: '✨ 润色世界规则',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
-      action: 'polish',
-    },
-    {
-      label: '🌱 扩展世界规则',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
-      action: 'expand',
+      label: '⬆️ 上游校准',
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
+      action: 'calibrate',
     },
   ],
+  // L4 地点（可选）
+  locations: [
+    {
+      label: '💡 从世界显形地点',
+      prompt: '从 L3 世界规则在哪些具体空间显形 —— 给出 3-5 个地点（地理 + 氛围 + 立意连接）。' + JSON_TAIL,
+      action: 'generate',
+    },
+    {
+      label: '🔍 地点有没有显形 L3',
+      prompt: '检查玩家写的地点是不是真的显形 L3 世界的某条规则（显不出来的就是装饰）。' + REFLECT_TAIL,
+      action: 'reflect',
+    },
+    ...STANDARD_PRESETS,
+    {
+      label: '⬆️ 上游校准',
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
+      action: 'calibrate',
+    },
+  ],
+  // L5 人物
   'character-functions': [
     {
-      label: '💡 按模式生成人物候选',
+      label: '💡 人物从世界长出来',
       prompt:
-        '按模式生成人物候选：对手 = 支柱的反面人格化；镜子 = 主角的另一种可能；推手 = 推进情节。' +
-        '每个角色写清「想要什么 + 为什么得不到」。' +
+        '按 L3 世界 + L4 地点生成人物候选：' +
+        '每个角色写清「想要什么 + 为什么得不到」+ 追溯到 L3+L4 哪条。' +
+        '模式：对手 = 支柱反面人格化；镜子 = 主角另一种可能；推手 = 推进情节。' +
         JSON_TAIL,
       action: 'generate',
     },
@@ -206,21 +278,18 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
       prompt: '检查玩家写的人物是不是纸片人（缺「想要什么」或「为什么得不到」的打回）。' + REFLECT_TAIL,
       action: 'reflect',
     },
+    ...STANDARD_PRESETS,
     {
-      label: '✨ 润色人物功能',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
-      action: 'polish',
-    },
-    {
-      label: '🌱 扩展人物功能',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
-      action: 'expand',
+      label: '⬆️ 上游校准',
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
+      action: 'calibrate',
     },
   ],
+  // L6 故事
   'three-act': [
     {
       label: '💡 给 3-5 种加压走法',
-      prompt: '给出 3-5 种冲突加压序列的走法，每种写清三幕各自的加压点（一幕比一幕紧）。' + JSON_TAIL,
+      prompt: '派生 L1-L5 给出 3-5 种三幕加压走法，每种写清三幕各自的加压点（一幕比一幕紧）。' + JSON_TAIL,
       action: 'generate',
     },
     {
@@ -228,15 +297,34 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
       prompt: '帮玩家检验三幕骨架的压力有没有递增（第二幕比第一幕紧、第三幕不能塌）。' + REFLECT_TAIL,
       action: 'reflect',
     },
+    ...STANDARD_PRESETS,
     {
-      label: '✨ 润色三幕骨架',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
-      action: 'polish',
+      label: '⬆️ 上游校准',
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
+      action: 'calibrate',
+    },
+  ],
+  // L7 核心体验
+  'core-fantasy': [
+    {
+      label: '💡 给 3-5 个整合版',
+      prompt:
+        '整合 L1-L6 给出 3-5 个核心体验 1 句话版本。' +
+        '格式：「你扮演 X，在 Y 处境，做 Z」。' +
+        '必须反映整链路：立意 + 规则 + 世界 + 地点 + 人物 + 故事。' +
+        JSON_TAIL,
+      action: 'generate',
     },
     {
-      label: '🌱 扩展三幕骨架',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
-      action: 'expand',
+      label: '🔍 核心体验有没有反映整链路',
+      prompt: '检查玩家写的核心体验是不是真的反映 L1-L6 整链路（对不上的就是凭空写）。' + REFLECT_TAIL,
+      action: 'reflect',
+    },
+    ...STANDARD_PRESETS,
+    {
+      label: '🌀 全链路整合',
+      prompt: RECALIBRATE_FULL_CHAIN_PROMPT + JSON_TAIL,
+      action: 'calibrate',
     },
   ],
 }
@@ -305,13 +393,28 @@ export const useConceptStore = defineStore('concept', () => {
   }
 
   /** 保存一步（v0.3+ 永远 markConfirmed=true：玩家操作 = 自动 confirmed，不再有"标记为已确认"按钮）
+   *  v0.5+ maturity：仅 L2 pillars 写（其他步骤传 undefined 不写盘）
+   *  v0.5+ 设计循环：成功 → markStale(stepId) 触发下游/上游黄点
    *  成功用后端返回的 step 替换本地项（shallowRef → 整个数组换新引用）；
    *  失败抛错让 UI 提示 */
-  async function save(stepId: string, content: string, markConfirmed: boolean): Promise<void> {
+  async function save(
+    stepId: ConceptStepId,
+    content: string,
+    markConfirmed: boolean,
+    maturity?: StepMaturity,
+  ): Promise<void> {
     const project = useProjectStore()
     if (!project.current) throw new Error('没有打开的项目')
-    const updated = await saveConceptStep(project.current.folder, stepId, content, markConfirmed)
+    const updated = await saveConceptStep(
+      project.current.folder,
+      stepId,
+      content,
+      markConfirmed,
+      maturity,
+    )
     steps.value = steps.value.map((s) => (s.id === stepId ? updated : s))
+    // v0.5+ 设计循环：保存后标记上下游 stale（黄点 ? 提示）
+    markStaleAfterSave(stepId)
   }
 
   // === step chat v0.3+ per-item Map 化 + 自动落盘 ===
@@ -412,23 +515,6 @@ export const useConceptStore = defineStore('concept', () => {
       }
     }
     mapSetToolCalls(itemId, tc)
-  }
-
-  /** done 时把所有累积的 tool calls 写到 chatHistories 最后一条 assistant message 的 tool_calls 字段 */
-  function flushToolCallsToHistory(itemId: string) {
-    const tcs = mapGetToolCalls(itemId)
-    if (tcs.size === 0) return
-    const tcsArray: ToolCallInfo[] = Array.from(tcs.values())
-    const cur = mapGet(chatHistories, itemId, [])
-    if (cur.length === 0) return
-    // 最后一条 assistant message 加 tool_calls
-    const last = cur[cur.length - 1]
-    if (last.role === 'assistant') {
-      const updated = [...cur.slice(0, -1), { ...last, tool_calls: tcsArray }]
-      mapSet(chatHistories, itemId, updated)
-    }
-    // 清累积状态
-    mapSetToolCalls(itemId, new Map())
   }
 
   async function init(): Promise<void> {
@@ -782,6 +868,69 @@ export const useConceptStore = defineStore('concept', () => {
     scheduleChatSave()
   })
 
+  // === v0.5+ 设计循环：staleFlags + L7 5min cooldown ===
+  //
+  // 改任何 step → markStaleAfterSave 标记上下游 stale
+  //  - L1 改 → L2-L7 全 stale
+  //  - L2-L6 改 → 自己 + 上游 + L7 stale
+  //  - L7 改 → L1-L6 全 stale
+  // 玩家点黄点（或跑完校准 preset）→ clearStale
+  // 5min cooldown for L7 频繁改动（避免 toast 刷屏）
+
+  const staleFlags = shallowRef(new Map<ConceptStepId, boolean>())
+
+  /** 改完一步后标记 stale（设计循环核心）
+   *  - L1 改 → L2-L7 all stale
+   *  - L2-L6 改 → 自己 + 上游 + L7 stale
+   *  - L7 改 → L1-L6 all stale
+   *  - 5min cooldown for L7 频繁改（避免 toast 刷屏） */
+  function markStaleAfterSave(changedId: ConceptStepId): void {
+    const idx = STEP_IDS.indexOf(changedId)
+    if (idx === -1) return
+    const next = new Map(staleFlags.value)
+    if (changedId === 'core-fantasy') {
+      // L7 改 → L1-L6 全 stale（5min cooldown）
+      const now = Date.now()
+      const lastL7Stale = (window as unknown as { __lastL7Stale?: number }).__lastL7Stale ?? 0
+      if (now - lastL7Stale < 5 * 60 * 1000) {
+        // cooldown 内 → 不重复 toast（但不阻止 mark stale —— 黄点还是亮）
+        // 黄点本身已经是 stale，再触发一次没有副作用；这里只跳过 toast 逻辑（toast 在 view 层）
+      } else {
+        ;(window as unknown as { __lastL7Stale?: number }).__lastL7Stale = now
+      }
+      for (let i = 0; i < 6; i++) {
+        next.set(STEP_IDS[i], true)
+      }
+    } else if (changedId === 'seed') {
+      // L1 改 → L2-L7 all stale
+      for (let i = 1; i < STEP_IDS.length; i++) {
+        next.set(STEP_IDS[i], true)
+      }
+    } else {
+      // L2-L6 改 → 自己 + 上游 + L7 stale
+      // 上游：idx 之前的；自己：idx；L7：core-fantasy
+      for (let i = 0; i <= idx; i++) {
+        next.set(STEP_IDS[i], true)
+      }
+      next.set('core-fantasy', true)
+    }
+    staleFlags.value = next
+  }
+
+  /** 玩家手动清除某 step 的 stale 标记（点黄点 X / 跑完校准 preset 后调） */
+  function clearStale(stepId: ConceptStepId): void {
+    if (staleFlags.value.get(stepId)) {
+      const next = new Map(staleFlags.value)
+      next.delete(stepId)
+      staleFlags.value = next
+    }
+  }
+
+  /** 切项目时清空 stale flags（不同项目 stale 状态不继承） */
+  function clearAllStaleFlags(): void {
+    staleFlags.value = new Map()
+  }
+
   /** 通用 AiChatPanel 用的 step chat 状态包（types/ai.ts StepChatState）
    *  markRaw 必须：store 实例是 reactive 代理，普通对象会被深度 reactive 化、
    *  嵌套的 ref/computed 被自动解包（组件期望 Ref/ComputedRef 却拿到裸值 → .value 崩）*/
@@ -805,9 +954,15 @@ export const useConceptStore = defineStore('concept', () => {
     load,
     save,
     init,
-    stepChat,
+    // markRaw 防 Pinia 深度 reactive 化 ref/computed；as unknown as StepChatState 强制 cast
+    // （Pinia 类型在 build 模式严格，暴露 ref/computed 时被解包；runtime 通过 markRaw 保证不丢响应性）
+    stepChat: markRaw(stepChat) as unknown as StepChatState,
     resetStepChat,
     clearAllStepChats,
     flushChatsTo, // 暴露给 view：切项目前调，把内存 chats 写到指定 folder
+    // v0.5+ 设计循环
+    staleFlags,
+    clearStale,
+    clearAllStaleFlags,
   }
 })

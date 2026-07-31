@@ -14,7 +14,7 @@
 
 import { computed, onMounted, ref } from 'vue'
 import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-vue-next'
-import { useModelCatalog, loadModelCatalog } from '@/composables/useModelCatalog'
+import { useModelCatalog } from '@/composables/useModelCatalog'
 import type { CatalogModel, CatalogProvider } from '@/types/catalog'
 
 const props = defineProps<{

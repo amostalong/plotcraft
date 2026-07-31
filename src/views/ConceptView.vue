@@ -1,23 +1,35 @@
 <script setup lang="ts">
-// ConceptView —— 概念 tab（概念设计漏斗：6 步 stepper + 编辑区 + AI 面板）
+// ConceptView —— 概念 tab（7 层严格派生模型 + 设计循环 + 编辑区 + AI 面板）
 //
-// - 左栏 stepper：6 步 + 状态点（empty 灰 / draft 橙 / confirmed 绿），点击切步
-// - 中栏编辑区：标题 + hint + textarea（800ms debounce 自动落盘，对齐 ConceptArtView 惯例）
-//   + 「标记为已确认」切换 + save 状态提示
-// - 右栏 AI 面板：单个 AiChatPanel（替代 v0.2 的 AlternativesPicker + StepChatPanel 两件套）
-//   - presets：每步 2 个 chip（生成备选 / 反思追问），store export STEP_PRESETS
-//   - step chat 历史内存 per-item，切步保留；切项目全清
+// v0.5+：6 步漏斗 → 7 层派生模型（seed / pillars / world-rules / locations / character-functions / three-act / core-fantasy）
+//   - L1 立意 / L2 抽象规则 / L3 世界 / L4 地点（可选） / L5 人物 / L6 故事 / L7 核心体验
+//   - 旧项目兼容：旧 core-fantasy 自动归 L7
+//   - maturity（L2 pillars 专用）：empty / draft / evolving / finalized 4 态
+//
+// v0.5+ 设计循环：改任何 step → markStale 上下游 → 黄点 ? 提示
+//   - 改 L1 → L2-L7 全标 stale（最重）
+//   - 改 L2-L6 → 自己 + 上游 + L7 stale
+//   - 改 L7 → L1-L6 全标 stale（5min cooldown 避免 toast 刷屏）
+//   - 点黄点 → 切到该步 + 跑校准 chip
+//
+// - 左栏 stepper：7 步 + 状态点（empty 灰 / confirmed 绿 / stale 黄 + ? 角标）
+//   - 步序号 = [L1] / [L2] / ...（派生链位置）
+//   - L4 标"（可选）"—— 玩家知道不写也 OK
+// - 中栏编辑区：标题 + L2 maturity 选择器 + hint + textarea
+//   （800ms debounce 自动落盘，对齐 ConceptArtView 惯例）
+// - 右栏 AI 面板：单个 AiChatPanel（每步 5 chip：4 基础 + 1 校准）
+//   - 校准 chip：L1 立意校准 / L2 反向检验 / L3-L6 上游校准 / L7 全链路整合
 // - 无项目 → 空态（对齐 ConceptArtView）
 // - 玩家手改 concept/ 文件后点「刷新」重扫（不做文件监听，对齐 art）
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Check, FolderOpen, Lightbulb, RefreshCw } from 'lucide-vue-next'
+import { FolderOpen, Lightbulb, RefreshCw, X } from 'lucide-vue-next'
 
 import AiChatPanel from '@/components/ai/AiChatPanel.vue'
 import { STEP_HINTS, STEP_PRESETS, useConceptStore } from '@/stores/concept'
 import { useProjectStore } from '@/stores/project'
 import { useResizableWidth } from '@/composables/useResizableWidth'
-import type { ConceptStepId, ConceptStepStatus } from '@/types/concept'
+import type { ConceptStepId, ConceptStepStatus, StepMaturity } from '@/types/concept'
 import type { AdoptPayload } from '@/types/ai'
 
 const concept = useConceptStore()
@@ -126,6 +138,55 @@ async function onRefresh() {
   await concept.load()
 }
 
+// === v0.5+ 设计循环：stale 黄点 + 校准 chip ===
+
+/** 某 step 是否 stale（需要重看） */
+function isStale(stepId: string): boolean {
+  return concept.staleFlags?.get(stepId as ConceptStepId) ?? false
+}
+
+/** 点黄点 → 切到该步 + 跑该步的校准 chip（最后 1 个 action: 'calibrate'） */
+function onStaleClick(stepId: string) {
+  if (stepId !== concept.currentStepId) {
+    flushSave()
+    concept.currentStepId = stepId
+  }
+  // 找该 step 的校准 chip
+  const ps = STEP_PRESETS[stepId as ConceptStepId] ?? []
+  const cal = ps.find((p) => p.action === 'calibrate')
+  if (cal) {
+    // 用校准 chip 作为 user message 触发 LLM 校准
+    void concept.stepChat.send(cal.prompt, cal)
+    // 校准跑起来后清黄点（玩家主动触发了校准）
+    concept.clearStale(stepId as ConceptStepId)
+  }
+}
+
+/** 手动 X 关闭黄点（不跑校准） */
+function onStaleDismiss(stepId: string) {
+  concept.clearStale(stepId as ConceptStepId)
+}
+
+/** L2 pillars maturity 切换（v0.5+ 4 态） */
+const MATURITY_LABELS: Record<StepMaturity, string> = {
+  empty: '空',
+  draft: '草稿 v1',
+  evolving: '演进 v2+',
+  finalized: '定型',
+}
+const MATURITIES: StepMaturity[] = ['empty', 'draft', 'evolving', 'finalized']
+
+async function onMaturityChange(m: StepMaturity) {
+  const step = currentStep.value
+  if (!step || step.id !== 'pillars') return
+  // 立即更新本地 + 落盘（maturity 是 frontmatter 字段，独立于 content）
+  try {
+    await concept.save(step.id, step.content, true, m)
+  } catch (e) {
+    console.error('[concept.maturity] save failed:', e)
+  }
+}
+
 // === AI 面板 adopt 回调（v0.3+ 单事件 + mode 派生） ===
 
 /** AiChatPanel emit({ text, mode })：mode='replace' 替换；mode='append' 追加 */
@@ -137,7 +198,6 @@ function onAdopt(payload: AdoptPayload) {
     void doSave()
   } else {
     // 气泡「写入编辑器」→ 追加到末尾
-    const step = currentStep.value
     const base = draft.value.trim()
     draft.value = base ? base + '\n\n' + payload.text.trim() : payload.text.trim()
     void doSave()
@@ -217,19 +277,40 @@ watch(
       </div>
 
       <div class="columns">
-        <!-- 左栏 stepper -->
+        <!-- 左栏 stepper（v0.5+ 7 层 + 状态点 + 黄点） -->
         <nav class="stepper">
           <button
-            v-for="(step, i) in concept.steps"
+            v-for="step in concept.steps"
             :key="step.id"
             type="button"
             class="step"
-            :class="{ active: step.id === concept.currentStepId }"
+            :class="{ active: step.id === concept.currentStepId, stale: isStale(step.id) }"
             @click="onSelectStep(step.id)"
           >
-            <span class="step-index">{{ i + 1 }}</span>
-            <span class="step-title">{{ step.title }}</span>
+            <span class="step-level">[L{{ step.level }}]</span>
+            <span class="step-title">
+              {{ step.title }}
+              <span v-if="step.optional" class="optional-tag">（可选）</span>
+            </span>
             <span class="dot" :class="step.status" :title="STATUS_LABELS[step.status]" />
+            <!-- v0.5+ 设计循环：黄点 ? 角标 + X 关闭按钮 -->
+            <span
+              v-if="isStale(step.id)"
+              class="stale-badge"
+              :title="step.id === concept.currentStepId ? '本步需要重看（点 X 忽略）' : '点 ? 切到此步并跑校准 / 点 X 忽略'"
+              @click.stop="onStaleClick(step.id)"
+            >
+              <span class="stale-q">?</span>
+            </span>
+            <button
+              v-if="isStale(step.id)"
+              type="button"
+              class="stale-dismiss"
+              title="忽略本黄点（mtime 记录保留，下次再有改动会再出现）"
+              @click.stop="onStaleDismiss(step.id)"
+            >
+              <X :size="10" />
+            </button>
           </button>
           <div v-if="concept.error" class="stepper-error">
             加载失败：{{ concept.error }}
@@ -243,9 +324,24 @@ watch(
         <!-- 中栏编辑区 -->
         <section v-if="currentStep" class="editor">
           <div class="editor-header">
-            <h3>{{ currentStep.title }}</h3>
+            <h3>[L{{ currentStep.level }}] {{ currentStep.title }}</h3>
             <code class="filename">concept/{{ currentStep.filename }}</code>
             <span class="toolbar-spacer" />
+            <!-- v0.5+ L2 pillars maturity 选择器（仅 pillars 步骤显示） -->
+            <div v-if="currentStep.id === 'pillars'" class="maturity-selector">
+              <span class="maturity-label">成熟度：</span>
+              <button
+                v-for="m in MATURITIES"
+                :key="m"
+                type="button"
+                class="maturity-chip"
+                :class="{ active: (currentStep.maturity || 'empty') === m }"
+                :title="`切换到 ${MATURITY_LABELS[m]}`"
+                @click="onMaturityChange(m)"
+              >
+                {{ MATURITY_LABELS[m] }}
+              </button>
+            </div>
           </div>
           <p class="hint">{{ hint }}</p>
           <textarea v-model="draft" class="editor-input" :placeholder="hint" />
@@ -265,7 +361,7 @@ watch(
           <AiChatPanel
             :item-id="concept.currentStepId"
             :title="currentStep?.title ?? '概念'"
-            :chat="concept.stepChat"
+            :chat="(concept.stepChat as any)"
             :presets="presets"
             :word-count="headerWordCount"
             @adopt="onAdopt"
@@ -408,22 +504,99 @@ watch(
   background: var(--accent-soft);
   border-color: var(--accent);
 }
-.step-index {
-  width: 18px;
-  height: 18px;
+/* v0.5+ stale step 边框变黄 + 微弱背景（不抢主色） */
+.step.stale {
+  border-color: var(--warning, #d9822b);
+  background: rgba(217, 130, 43, 0.06);
+}
+.step.stale.active {
+  /* active + stale 共存时：active 仍主色，stale 边框保留 */
+  border-color: var(--warning, #d9822b);
+}
+.step-level {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: ui-monospace, 'Cascadia Code', Menlo, monospace;
   flex-shrink: 0;
+  min-width: 32px;
+}
+.step.active .step-level {
+  color: var(--accent);
+}
+.optional-tag {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+/* v0.5+ 黄点 ? 角标 */
+.stale-badge {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border);
+  background: var(--warning, #d9822b);
+  color: #fff;
   border-radius: 50%;
   font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  user-select: none;
 }
-.step.active .step-index {
+.stale-badge:hover {
+  background: #b56a1a;
+}
+.stale-q {
+  line-height: 1;
+}
+.stale-dismiss {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+}
+.stale-dismiss:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+  background: var(--hover);
+}
+/* v0.5+ L2 pillars maturity 选择器 */
+.maturity-selector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.maturity-label {
+  color: var(--text-muted);
+}
+.maturity-chip {
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.maturity-chip:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+.maturity-chip.active {
+  background: var(--accent);
+  color: #fff;
   border-color: var(--accent);
-}
-.step-title {
-  flex: 1;
 }
 .dot {
   width: 8px;

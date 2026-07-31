@@ -164,8 +164,6 @@ export async function refreshModelCatalog(): Promise<ModelCatalog> {
 //
 // v0.1 简化：单 session 不切换（v0.2+ 多 session + 按项目分组）
 
-import type { ChatMessage } from '@/types/chat'
-
 /** v0.2+ session metadata —— 存 _index.json，不存 messages（messages 在 <id>.json） */
 export interface SessionMeta {
   /** session id（= 文件名 stem，比如 "default" / "abc12345"） */

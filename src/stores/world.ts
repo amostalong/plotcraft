@@ -534,13 +534,14 @@ export const useWorldStore = defineStore('world', () => {
     mapSet(chatErrorRaws, id, null)
 
     const parts = await buildContext(project.current.folder, doc)
+    const contextStr = parts.join('\n\n')
 
     try {
       mapSet(chatStreamings, id, true)
       const conn = await resolveLlmConnection()
       // v0.4+ 走 tool calling：runChatRound 内部自动 resolveEnabledTools 注入 tools 字段，
       // LLM 收到 schema 强制调 ask_user_question / update_doc_item 返结构化数据
-      await runChatRound({ id, conn })
+      await runChatRound({ id, conn, contextStr })
     } catch (e) {
       mapSet(chatStreamings, id, false)
       console.error('[world.sendStepChat] startChat FAILED:', e)
@@ -590,8 +591,9 @@ export const useWorldStore = defineStore('world', () => {
   async function runChatRound(opts: {
     id: string
     conn: Awaited<ReturnType<typeof resolveLlmConnection>>
+    contextStr?: string
   }): Promise<void> {
-    const { id, conn } = opts
+    const { id, conn, contextStr } = opts
     const settings = useSettingsStore()
     if (!settings.loaded) await settings.init()
     const tools = resolveEnabledTools(settings.config)
@@ -599,6 +601,7 @@ export const useWorldStore = defineStore('world', () => {
     if (!doc) throw new Error('未知分节')
     const systemContent =
       sectionChatSystemPrompt(doc) +
+      (contextStr ? '\n\n' + contextStr : '') +
       (doc.content.trim() ? `\n\n当前「${doc.title}」已有的内容：\n${doc.content.trim()}` : '')
     const runId = await rpcStartChat(
       [
@@ -719,7 +722,9 @@ export const useWorldStore = defineStore('world', () => {
     load,
     save,
     init,
-    stepChat,
+    // markRaw 防 Pinia 深度 reactive 化 ref/computed；as unknown as StepChatState 强制 cast
+    // （Pinia 类型在 build 模式严格，暴露 ref/computed 时被解包；runtime 通过 markRaw 保证不丢响应性）
+    stepChat: markRaw(stepChat) as unknown as StepChatState,
     resetStepChat,
     clearAllStepChats,
     flushChatsTo, // 暴露给 view：切项目前调，把内存 chats 写到指定 folder
