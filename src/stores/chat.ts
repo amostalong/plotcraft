@@ -17,6 +17,9 @@
 //   - 唯一成本：用户切到别的 view 时，chat 仍在累积 currentText，UI 看不到（但 state 是对的）
 // v0.3+：宪法注入 —— sendMessage/retryLast 拼 messages 前现读当前项目 concept/ 摘要，
 //   非空则 append 到 SYSTEM_PROMPT（buildSystemPrompt）；读取失败不阻塞发消息
+// v0.5+：方法论索引注入 —— METHODS_HINT 始终 append 到 SYSTEM_PROMPT 末尾，
+//   让 LLM 在玩家卡住时自动引用对应方法论（McKee/Fullerton/Playcentric 等）。
+//   玩家主导，非强规则；LLM 不主动推销，只在玩家明显卡住时引用
 
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
@@ -53,22 +56,40 @@ const SYSTEM_PROMPT =
   '- 如果用户要求 JSON 数组 → 第一个字符必须是 `[`，**不要**任何额外文字/preamble/思考/解释\n' +
   '- 如果用户没指定 → 输出 markdown 格式，每个文件带 frontmatter 元信息。'
 
+/** v0.5+ 方法论索引：让 LLM 在玩家卡住时自动引用对应方法论。
+ *  始终注入（不只在概念设计 chat），对人物/剧情/设定图等场景同样适用。
+ *  ~200 中文字符 ≈ 150-200 tokens / 每次 chat 调用的固定开销。
+ *  完整设计见 `docs/CONCEPT_REDESIGN_PLAN.md §13`。 */
+const METHODS_HINT =
+  '[可选方法论索引 — 玩家主导，非强规则]\n' +
+  '- 立意卡住 → McKee controlling idea（1 句价值走向，如"正义必胜"或"纯真会失去"）\n' +
+  '- 设计卡住 → Fullerton Iterative（概念→原型→测试→修订，先粗糙再迭代）\n' +
+  '- 不知道缺什么 → Fullerton 戏剧元素清单（玩家/目标/冲突/输入/边界/反馈/输出/控制）\n' +
+  '- 不知道故事类型 → McKee 故事三角（经典/最小主义/反结构，对应不同美学）\n' +
+  '- 玩家要 AI 替写完整内容 → 违反 Playcentric，必须指出"我不替玩家写完整版"\n' +
+  '- 玩家做沙盒/涌现式游戏 → 跳过 L6 三幕；只设计 L1-L5 物理规则\n' +
+  '这些是参考方法，玩家可弃用。你（AI）不主动推销方法论，' +
+  '只在玩家明显卡住 / 表达困惑时引用对应方法。'
+
 /** v0.3+ 宪法注入：当前项目有概念内容（concept/ 目录 status != empty 的步骤）→
  *  append 到 SYSTEM_PROMPT，让 chat 生成内容跟概念保持一致。
  *  每次 send 现读（6 个小文件，亚毫秒级），不做缓存 —— 玩家刚改完概念立即生效。
  *  读取失败只 console.error，不阻塞发消息。 */
 async function buildSystemPrompt(): Promise<string> {
   const project = useProjectStore()
-  if (!project.current) return SYSTEM_PROMPT
-  try {
-    const summary = await getConceptSummary(project.current.folder)
-    if (summary.trim()) {
-      return SYSTEM_PROMPT + '\n\n## 当前项目概念（宪法，生成内容必须与之保持一致）\n' + summary
+  let base = SYSTEM_PROMPT
+  if (project.current) {
+    try {
+      const summary = await getConceptSummary(project.current.folder)
+      if (summary.trim()) {
+        base = base + '\n\n## 当前项目概念（宪法，生成内容必须与之保持一致）\n' + summary
+      }
+    } catch (e) {
+      console.error('[chat.buildSystemPrompt] getConceptSummary failed:', e)
     }
-  } catch (e) {
-    console.error('[chat.buildSystemPrompt] getConceptSummary failed:', e)
   }
-  return SYSTEM_PROMPT
+  // v0.5+ 方法论索引：始终拼接，让 LLM 在玩家卡住时自动引用对应方法论
+  return base + '\n\n' + METHODS_HINT
 }
 
 /** v0.2+ 玩家上次 active session id —— 用 localStorage 持久化（重启 app 保留） */
