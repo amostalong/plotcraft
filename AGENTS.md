@@ -125,15 +125,18 @@ PlotCraft/
     ├── tauri.conf.json
     ├── build.rs
     ├── capabilities/      ← Tauri 2 permission 配置
-    └── src/
+    └── src/                # 模块风格 B：<dir>.rs 入口 + <dir>/ 子模块（Rust 2018+ edition，Cargo edition = "2021"）
         ├── main.rs / lib.rs
         ├── error.rs       ← thiserror + AppError enum
-        ├── commands/      ← Tauri command 入口（llm / project / settings / art / concept / docs / session）
-        ├── llm/           ← LLM client（config / streaming / types）
-        ├── art/           ← 设定图图库 IO（art/ 目录扫描 + prompt 读写）
-        ├── concept/       ← 概念漏斗 6 步定义 + concept/ 目录 IO + 宪法摘要
-        ├── docs/          ← 通用"固定分节文档集合"（collection 注册表，第一个 = world 5 节）
-        └── project/       ← 项目文件夹 IO + 5 个 starter 文件（4 md + plot.cat 标记）
+        ├── commands/      ← Tauri command 入口（llm / project / settings / art / concept / docs / session / chats / locus_import）
+        ├── llm/           ← LLM client（config / streaming / streaming_anthropic / streaming_openai_responses / types）
+        ├── project/       ← 项目文件夹 IO + 5 个 starter 文件（子模块 templates）
+        ├── art.rs         ← 设定图图库 IO（art/ 目录扫描 + prompt 读写）
+        ├── chats.rs       ← 会话存档 IO
+        ├── concept.rs     ← 概念漏斗 7 步定义 + concept/ 目录 IO + 宪法摘要
+        ├── docs.rs        ← 通用"固定分节文档集合"（collection 注册表，第一个 = world 5 节）
+        ├── console.rs
+        └── model_catalog.rs
 ```
 
 **前后端 boundary**：
@@ -234,11 +237,11 @@ release 前必跑 11 项 → `docs/CHECKLIST.md §10`。**核心 3 项**：
 | 5 个 starter 文件（4 md + plot.cat） | `src-tauri/src/project/templates.rs` |
 | PlotCraft 项目识别规则 | `src-tauri/src/commands/project.rs:check_or_migrate_plot_cat`（plot.cat 存在；老项目 world/ 自动补 plot.cat 迁移）|
 | 启动恢复 last project | `src/stores/project.ts:init` + `src-tauri/src/commands/project.rs:open_project` |
-| 设定图图库 | `src-tauri/src/art/` + `src-tauri/src/commands/art.rs` + `src/stores/art.ts` + `src/views/ConceptArtView.vue` |
-| 概念设计漏斗（6 步 + LLM 辅助）| `src-tauri/src/concept/` + `src-tauri/src/commands/concept.rs` + `src/stores/concept.ts` + `src/views/ConceptView.vue` |
+| 设定图图库 | `src-tauri/src/art.rs` + `src-tauri/src/commands/art.rs` + `src/stores/art.ts` + `src/views/ConceptArtView.vue` |
+| 概念设计漏斗（7 层 + LLM 辅助）| `src-tauri/src/concept.rs` + `src-tauri/src/commands/concept.rs` + `src/stores/concept.ts` + `src/views/ConceptView.vue` |
 | 非流式 generate command | `src-tauri/src/commands/llm.rs:generate`（test_provider 骨架泛化）+ `src/lib/llm.ts:generate` |
-| chat 宪法注入（concept 摘要进 system prompt）| `src/stores/chat.ts:buildSystemPrompt` + `src-tauri/src/concept/mod.rs:concept_summary` |
-| 世界 tab（分项集合模式）| `src-tauri/src/docs/` + `src-tauri/src/commands/docs.rs` + `src/stores/world.ts` + `src/views/WorldView.vue` |
+| chat 宪法注入（concept 摘要进 system prompt）| `src/stores/chat.ts:buildSystemPrompt` + `src-tauri/src/concept.rs:concept_summary` |
+| 世界 tab（分项集合模式）| `src-tauri/src/docs.rs` + `src-tauri/src/commands/docs.rs` + `src/stores/world.ts` + `src/views/WorldView.vue` |
 | 通用 AI 面板（v0.3+ 单 AiChatPanel：消息列表 + presets chips + composer；备选走流式 + JSON parse 内联）| `src/components/ai/AiChatPanel.vue` + `src/components/ai/AltCard.vue` + `src/types/ai.ts`（PresetAction / StepChatState）+ `src/lib/alternatives.ts` + `src/lib/llm-connection.ts` |
 | **v0.4+ tool calling schema 定义 + BUILTIN_TOOLS + resolveEnabledTools**| `src/lib/ai-tools.ts`（前端 schema） + `src-tauri/src/llm/types.rs:ToolDefinition/ToolCallInfo`（后端类型）|
 | **v0.4+ tool call 流式解析（3 协议）**| `src-tauri/src/llm/streaming.rs:parse_openai_sse_buffer` + `streaming_anthropic.rs:parse_anthropic_sse_buffer` + `streaming_openai_responses.rs:parse_responses_sse_buffer` |
@@ -252,7 +255,7 @@ release 前必跑 11 项 → `docs/CHECKLIST.md §10`。**核心 3 项**：
 | 启动分阶段实现 | `src/main.ts` |
 | 项目数据模型（9 大类）| `docs/CHAT_LLM_DESIGN.md §5.1` |
 | **v0.4+ tool calling 协议 schema 转（OpenAI ↔ Anthropic）**| `src-tauri/src/llm/streaming.rs:build_openai_request_body (tools)` + `src-tauri/src/llm/streaming_anthropic.rs:build_anthropic_request_body (tools + tool_result + tool_use)` |
-| **v0.5+ 7 层概念模型**（后端 STEPS + 旧项目兼容 + 单元测试 15 个）| `src-tauri/src/concept/mod.rs` (STEPS, infer_group_level, parse_frontmatter) + `src-tauri/src/commands/concept.rs` (save_concept_step 接 maturity) |
+| **v0.5+ 7 层概念模型**（后端 STEPS + 旧项目兼容 + 单元测试 15 个）| `src-tauri/src/concept.rs` (STEPS, infer_group_level, parse_frontmatter) + `src-tauri/src/commands/concept.rs` (save_concept_step 接 maturity) |
 | **v0.5+ 7 层前端子系统**（types + lib + store + view）| `src/types/concept.ts` (STEP_IDS/ConceptGroup/StepMaturity) + `src/lib/concept.ts` (saveConceptStep) + `src/lib/chats.ts` (12 itemKey) + `src/lib/ai-tools.ts` (item_id 7 步) |
 | **v0.5+ 设计循环**（staleFlags + 4 校准 preset + 黄点）| `src/stores/concept.ts` (STEP_HINTS/PRESETS/markStaleAfterSave/clearStale + 4 校准 PROMPT) + `src/views/ConceptView.vue` (7 层 stepper + 黄点 UI + maturity chip) |
 | **v0.5+ Path A 方法论索引**（system prompt 注入 ~200 字）| `src/stores/chat.ts:buildSystemPrompt` (METHODS_HINT const) |
