@@ -178,7 +178,6 @@ function onStaleDismiss(stepId: string) {
 // - L2 核心故事 不需要"演进型"——它是"什么"层，不是"怎么约束"层
 // - MATURITY_LABELS / MATURITIES / onMaturityChange 全部删除
 // - 模板里 v-if="currentStep.id === 'pillars'" 的 maturity selector UI 也删
-}
 
 // === AI 面板 adopt 回调（v0.3+ 单事件 + mode 派生） ===
 
