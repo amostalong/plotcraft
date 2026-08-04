@@ -41,21 +41,23 @@ PlotCraft = 给独立 / 业余 RPG / VN 创作者的 **AI 编剧搭档** 桌面�
 | **AI 面板重构：单 AiChatPanel + presets chips + 备选内联化（v0.3+ 替换 v0.2 AlternativesPicker + StepChatPanel 两件套）**| ✅ **实装**（v0.3+）|
 | **非流式 `generate` command（test_provider 骨架泛化；v0.3+ 改为无调用方，保留为 v0.4+ AI 验收类功能）**| ✅ **实装**（v0.2+，v0.3+ 注释标无调用方）|
 | **Tool calling 协议级支持（OpenAI Chat Completions + OpenAI Responses + Anthropic 3 协议；channel 改 StreamEvent enum + emit 分发 chat:chunk / chat:tool_call）**| ✅ **实装**（v0.4+）|
-| **3 个内置 tool schema（ask_user_question / update_doc_item / ask_free_text）+ 玩家主导默认权限（ask_user_question/ask_free_text = auto, update_doc_item = ask）**| ✅ **实装**（v0.4+）|
+| **3 个内置 tool schema（v0.5+ 重命名：ask_choose_option 给选项 / update_doc_item 写编辑器 / ask_user_question 反问开放问题）+ 玩家主导默认权限（ask_choose_option/ask_user_question = auto, update_doc_item = ask）**| ✅ **实装**（v0.4+，v0.5+ 重命名）|
 | **Settings tab 工具/工具权限双 sub-tab（enable 开关 + auto/ask/deny radio；Locus 风格）**| ✅ **实装**（v0.4+）|
 | **多轮 tool calling（玩家点 AltCard → 调 LLM 第二轮 → LLM 调 update_doc_item → 玩家点"确认写入" → 写编辑器；stepChat.sendToolResult API）**| ✅ **实装**（v0.4+）|
+| **ask_user_question (v0.5+ 旧名 ask_free_text) 强制回复（"就地输入" 模式 → v0.4.4.1+ 整合到 composer：bubble 显示问题 + 锁 chip 但解锁 composer，玩家在 composer 打字回车发 function_call_output）**| ✅ **实装**（v0.4.4+，v0.4.4.1+ UX 整合到 composer）|
 | **resolveEnabledTools 过滤关闭的 tool（用户硬要求：关闭的 tool 不在 prompt 给 LLM）**| ✅ **实装**（v0.4+）|
 | **概念设计 6 步漏斗 → 7 层严格派生模型**（L1 立意 / L2 抽象规则 / L3 世界 / L4 地点可选 / L5 人物 / L6 故事 / L7 核心体验）| ✅ **实装**（v0.5+）|
-| **L2 pillars 4 态成熟度**（empty / draft / evolving / finalized，编辑器 maturity chip 切）| ✅ **实装**（v0.5+）|
+| **L2 pillars 4 态成熟度**（empty / draft / evolving / finalized，编辑器 maturity chip 切）| ✅ **实装**（v0.5+）→ ❌ **删除**（v0.5.3+）|
 | **设计循环：改任何 step → markStale 上下游 → 黄点 ? 提示 + 校准 chip 触发 LLM**（旧 6 步漏斗自动迁移，core-fantasy 归 L7）| ✅ **实装**（v0.5+）|
 | **4 校准 preset（RECALIBRATE_DOWNSTREAM / RECALIBRATE_UPSTREAM / RECALIBRATE_FULL_CHAIN / PILLAR_REVERSE_CHECK） + L1 立意专用**| ✅ **实装**（v0.5+）|
+| **概念设计 7 层 → 6 层抽象蒸馏 + 3 tab 完整展开路线**（L2 抽象规则 + L6 故事 合并为 L2 核心故事；L7 核心体验 合并入 L6 核心玩法；v0.6+ 3 tab：剧情 / 人物 / 玩法）| ✅ **实装**（v0.5.3+，6 层；3 tab 路线见 CONCEPT_REDESIGN_PLAN.md §9）|
 | **Path A 方法论索引注入**（McKee controlling idea / Fullerton Iterative / Fullerton 戏剧元素 / McKee 故事三角 / Playcentric / System Dynamics ~200 字 system prompt）| ✅ **实装**（v0.5+）|
 | 概览 tab | ⏸️ 从 tab 栏摘除（2026-07-30 用户决策：最后设计；路由 + 文件保留）|
 | 3 个非 v0.1 tab（人物/剧情 + 概览）| 🟡 Placeholder（"v0.3+ 实装"；v0.3+ AI 面板重构已为它们预留接口）|
 | 关系图 / 图片生成 / 多 provider | ❌ 推到 v0.4+ |
 | i18n / vitest / CI | ❌ 推到 v0.4+ |
 
-完整路线 → `docs/ROADMAP.md`。设计意图 → `docs/DESIGN.md`。v0.1 启动清单 → `docs/CHECKLIST.md`。v0.2 错误反馈设计 → `docs/CHAT_LLM_DESIGN.md §8`。v0.3+ AI 面板重构设计 → `docs/AI_PANEL_DESIGN.md`。**v0.4+ tool calling 设计** → `docs/AI_PANEL_DESIGN.md §6` + `docs/CHAT_LLM_DESIGN.md §9`。**v0.5+ 7 层概念设计 + 设计循环** → `docs/CONCEPT_REDESIGN_PLAN.md` + `docs/CONCEPT_OPTIONAL_METHODS.md`（方法论索引参考）。
+完整路线 → `docs/ROADMAP.md`。设计意图 → `docs/DESIGN.md`。v0.1 启动清单 → `docs/CHECKLIST.md`。v0.2 错误反馈设计 → `docs/CHAT_LLM_DESIGN.md §8`。v0.3+ AI 面板重构设计 → `docs/AI_PANEL_DESIGN.md`。**v0.4+ tool calling 设计** → `docs/AI_PANEL_DESIGN.md §6` + `docs/CHAT_LLM_DESIGN.md §9`。**v0.5.3+ 6 层概念设计 + 3 tab 完整展开路线** → `docs/CONCEPT_REDESIGN_PLAN.md`（完整 plan）+ `docs/CONCEPT_OPTIONAL_METHODS.md`（方法论索引参考）。
 
 ---
 
@@ -181,8 +183,8 @@ Locus 实测 4 个卡顿源 → 4 个反制。**学架构思想，不照搬代�
 12. **v0.3+ PresetAction 的 prompt 拼在 user message，不拼在 system**（concept/world store 踩过）：system message 永远讲 markdown 对话规则 + 玩家主导；具体"输出 JSON 数组"等形态约束放在 preset.prompt（user message），由 `preset.output: 'json' | 'markdown'` 决定流完渲染分支。`ChatMessage.preset?: string` 字段（label only）**前端 UI 用，发后端前必须 strip**（后端 Rust ChatMessage 不加这个字段）。
 13. **v0.4+ 关闭的 tool 不传给 LLM**（用户 2026-07-30 硬要求）：`lib/ai-tools.ts:resolveEnabledTools(config)` 过滤 `enabled=false` 的 tool → Rust 端 `start_chat` 接 `tools: Option<Vec<ToolDefinition>>`，build body 时 `if let Some(tools) = tools` 才写 `tools` 字段，**不写 = LLM 不知道存在**（既不在 schema 也不在 system prompt 描述）。Settings tab 工具 sub-tab 关掉的 tool → 不进 `tools` 数组。
 14. **v0.4+ tool calling 跨 request 回放必须带 tool_calls / tool_call_id**（OpenAI 协议要求）：LLM 调 tool 后，前端把玩家选择作为 `role: 'tool', tool_call_id: callId, content: "玩家选 X"` 加到 messages 再调 LLM 第二轮。`stepChat.sendToolResult(toolCallId, content)` API（concept/world store 都实现）。`store.send` 拼 messages 时**必须透传** `tool_calls` / `tool_call_id` 字段——漏传 LLM 看到 tool_use 上下文丢失。
-15. **v0.4+ 玩家主导默认 permission = ask**（写编辑器类 tool）：`ask_user_question` / `ask_free_text` 默认 `auto`（只问不写，直接执行）；`update_doc_item` 默认 `ask`（写编辑器前玩家确认——AiChatPanel 走"AI 建议写入 X" + 确认按钮）。**v0.4+ permission 'ask' 用 inline 确认按钮实现**（不用 modal popup，跟 v0.3+ 整体采用条一致风格）。
-16. **v0.4+ AltCard 加 `title` / `description` props**（替代 v0.3+ 仅 `text`）：`ask_user_question` tool 的每个 option 有 label（10 字内 header）+ description（hover tooltip） + preview（采用后内容）。v0.3+ 老路径（polish/expand markdown bubble）不传这俩 props，AltCard header 不显示（保持 v0.3+ 视觉一致）。
+15. **v0.4+ 玩家主导默认 permission = ask**（写编辑器类 tool）：`ask_choose_option` / `ask_user_question` (v0.5+ 旧名 `ask_free_text`) 默认 `auto`（只问不写，直接执行）；`update_doc_item` 默认 `ask`（写编辑器前玩家确认——AiChatPanel 走"AI 建议写入 X" + 确认按钮）。**v0.4+ permission 'ask' 用 inline 确认按钮实现**（不用 modal popup，跟 v0.3+ 整体采用条一致风格）。
+16. **v0.4+ AltCard 加 `title` / `description` props**（替代 v0.3+ 仅 `text`）：`ask_choose_option` (v0.5+ 旧名 `ask_user_question`) tool 的每个 option 有 label（10 字内 header）+ description（hover tooltip） + preview（采用后内容）。v0.3+ 老路径（polish/expand markdown bubble）不传这俩 props，AltCard header 不显示（保持 v0.3+ 视觉一致）。
 17. **v0.4+ LLM 流式通道改 StreamEvent enum**（不只是 text）：`pub enum StreamEvent { Text(String), ToolCalls(Vec<ToolCallPartial>) }`，mpsc 通道改 `StreamEvent` 而非 `String`。`emit_throttled` 分发：text 走 16ms rAF 节流 → `chat:chunk`；tool calls 不节流 → `chat:tool_call`。三个 streaming 实现（OpenAI Chat / OpenAI Responses / Anthropic）都解析对应协议格式（`delta.tool_calls[]` / `output_item.added` + `function_call_arguments.delta` / `content_block_start.tool_use` + `input_json_delta`）。
 18. **v0.4+ 三协议 schema 自动转**：`lib/ai-tools.ts` 统一存 OpenAI 格式 `ToolDefinition`（`{type: function, function: {name, description, parameters}}`）。Rust 端 build body 时按 `api_format` 转：
     - **OpenAI Chat Completions**：原样用 `tools: [{type, function: {name, description, parameters}}]`
@@ -190,10 +192,30 @@ Locus 实测 4 个卡顿源 → 4 个反制。**学架构思想，不照搬代�
     - **Anthropic Messages**：转 `tools: [{name, description, input_schema: parameters}]`（`input_schema` 不是 OpenAI 的嵌套 `function`）
     - 工具消息跨协议转换：OpenAI 用 `role: 'tool', tool_call_id`，Anthropic 用 `role: 'user', content: [{type: 'tool_result', tool_use_id, content}]`
     - Assistant 消息带 tool_calls：OpenAI 原样用 `tool_calls` 字段；Anthropic 转 `content: [{type: 'text', text}, {type: 'tool_use', id, name, input}]`
-19. **v0.5+ 概念设计 7 层派生模型**（L1 立意 / L2 抽象规则 / L3 世界 / L4 地点可选 / L5 人物 / L6 故事 / L7 核心体验）：后端 STEPS 7 个固定 + group/level/maturity 字段；旧项目兼容靠 `infer_group_level` 推断（旧 core-fantasy 自动归 L7）；`concept_summary` 改 7 层分组标签注入。**改 frontmatter 必须保留 `group` / `level` 字段**——`build_frontmatter` 写盘是 5 字段固定（title/step/group/level/status/updated/maturity），解析少字段 → 自动走 infer。详见 `docs/CONCEPT_REDESIGN_PLAN.md §2`。
-20. **v0.5+ 设计循环：mtime → markStale 上下游 → 黄点 ? 提示**（核心要求，**绝不自动改**任何内容）：`stores/concept.ts:markStaleAfterSave` 按 step 派生位置 mark 上下游（改 L1 → L2-L7；改 L2-L6 → 自己+上游+L7；改 L7 → L1-L6）。**v0.5.1 mtime hash 对比上线**（修"改一下全黄"问题）：`save()` 内 oldContent / newContent 字符串对比 + oldMaturity / newMaturity 对比，**真有变化才 markStale**——避免 debounce 重复触发、纯 markConfirmed 重复保存、纯 markConfirmed 切步等场景。maturity 单独变化也算改（L2 草稿→定型要重新校准下游）。**黄点本身就是"有改动"的信号**，大小改区分交回玩家：错别字 X 忽略，方向大改 ? 跑校准。**L7 5min cooldown**：避免 toast 刷屏（`window.__lastL7Stale` 简单防抖）。**黄点消失条件**：(a) 玩家点 X 忽略（mtime 记录保留，下次再改再出现）；(b) 玩家点黄点 ? 跑校准 chip 主动消点。详见 `docs/CONCEPT_REDESIGN_PLAN.md §3.1-§3.4`。
-21. **v0.5+ L2 pillars 4 态成熟度**（empty / draft / evolving / finalized）：仅 L2 步骤接受 maturity 字段，其他步骤传 maturity 被后端忽略（`save_concept_step` Rust 端 `if def.id == "pillars"` 守护）。前端编辑区 UI 走 maturity chip 切换 → 直接走 `concept.save(stepId, content, true, maturity)` 落盘，独立 frontmatter 字段。**maturity 是 frontmatter 字段，不是 content**——切 maturity 不会触发 `onMaturityChange` 误改编辑器。
+    - **OpenAI Responses function_call / function_call_output 三重 id 兼容**（v0.4.4+）：`function_call` 写 `id` + `call_id`；`function_call_output` 写 `id` + `call_id` + `tool_call_id`（三个同值）。OpenAI Responses 2025-09+ 标准用 `call_id`；deepseek openai_responses 中转 + 早期 Responses 用 `id` 关联；`tool_call_id` 是 Chat Completions 风格兼容别名。**三者必须全写**——只写 `call_id` 不够，玩家 2026-08-02 撞 deepseek "No tool output found for tool call call_00_xxx"（v0.4.2+ function_call_output 漏 `id` 字段，bug 漏到 v0.4.3，老测试也只 assert `call_id`/`tool_call_id` 没 assert `id`）
+19. **v0.5.3+ 概念设计 6 层抽象蒸馏模型**（L1 立意 / L2 核心故事 / L3 世界规则 / L4 地点可选 / L5 人物 / L6 核心玩法）：后端 STEPS 6 个固定 + group/level 字段；旧 v0.5+ 7 步 → v0.5.3+ 6 步 文件级迁移靠 `migrate_legacy_concept`（旧 pillars+three-act → 合并为 core-story；旧 core-fantasy → 改名为 core-gameplay）；`concept_summary` 改 6 层分组标签注入。**改 frontmatter 必须保留 `group` / `level` 字段**——`build_frontmatter` 写盘是 5 字段固定（title/step/group/level/status/updated），解析少字段 → 自动走 infer。详见 `docs/CONCEPT_REDESIGN_PLAN.md §2 + §8`。
+20. **v0.5+ 设计循环：mtime → markStale 上下游 → 黄点 ? 提示**（核心要求，**绝不自动改**任何内容）：`stores/concept.ts:markStaleAfterSave` 按 step 派生位置 mark 上下游（改 L1 → L2-L6；改 L2-L5 → 自己+上游+L6；改 L6 → L1-L5）。**v0.5.1 mtime hash 对比上线**（修"改一下全黄"问题）：`save()` 内 oldContent / newContent 字符串对比，**真有变化才 markStale**——避免 debounce 重复触发、纯 markConfirmed 重复保存、纯 markConfirmed 切步等场景。**v0.5.3+ 删 maturity 对比**（旧 L2 pillars 4 态成熟度删除）。**黄点本身就是"有改动"的信号**，大小改区分交回玩家：错别字 X 忽略，方向大改 ? 跑校准。**L6 5min cooldown**：避免 toast 刷屏（`window.__lastL6Stale` 简单防抖）。**黄点消失条件**：(a) 玩家点 X 忽略（mtime 记录保留，下次再改再出现）；(b) 玩家点黄点 ? 跑校准 chip 主动消点。详见 `docs/CONCEPT_REDESIGN_PLAN.md §3.1-§3.4`。
+21. **v0.5+ L2 pillars 4 态成熟度**（empty / draft / evolving / finalized）**v0.5.3+ 删除**：旧 L2 抽象规则 已被合并入 L2 核心故事（叙事脊柱 + 戏剧结构）；L2 核心故事 不需要"演进型"——它是"什么"层，不是"怎么约束"层。`save_concept_step` Rust 端 `if def.id == "pillars"` 守护已删除，signature 不再接 maturity 参数。前端 UI maturity chip / onMaturityChange / MATURITY_LABELS / MATURITIES 全删。**v0.5.3+ 删 StepMaturity 类型**（types/concept.ts）。
 22. **v0.5+ 校准 chip 是反思对话，不是写入**：校准 chip（'calibrate' action）走 markdown bubble 渲染，**不**显示「采用」/「写入编辑器」按钮——LLM 输出就是反思，**玩家自己读完照做**。跟 polish/expand（'replace' mode）区分。PresetAction.action 联合类型加了 `'calibrate'`，types/chat.ts ChatMessage.action 也加。
+23. **v0.5+ ask_user_question (旧名 ask_free_text) 强制回复协议（**UX 整合到 composer**，1 个问题版）**：
+    - **v0.5+ 工具重命名**（玩家 2026-08-03 反馈）：旧 `ask_user_question`（给选项）→ `ask_choose_option`；旧 `ask_free_text`（反问）→ `ask_user_question`。**完全 breaking**：settings.config.tools 字段 / 老 .chats/ 落盘数据 / LLM 调用历史不兼容
+    - **v0.4.4.1+ 重大 UX 改动**（玩家 2026-08-03 反馈）：之前是"bubble 内嵌 N 个 input + 锁 composer"模式，"上下一对输入框看着冗余"。现在改成 REFLECT_TAIL 钉死 **1 个问题**（不编号多问），**UX 整合到下方 composer**——player 在 composer 打字回车作为 answer，UX 跟普通聊天一致
+    - **核心区别于普通聊天**：`ask_user_question` 不是"普通聊天的 tool 包装"，是**强制回复**——玩家当前 composer 内容会作为 tool_result 喂回 LLM（不是 user message），所以协议层 1 round 1 ask_user_question → 1 tool_result 配对保留
+    - **composer 路由**：`AiChatPanel.onSend` 检测 `askFreeTextPending.size > 0` → 走 `sendAllAskFreeTextAnswers(playerText)` 路径而不是 `send(text)`（普通 user message 路径）
+    - **composer 不再 lock**：v0.4.4.1+ ask_user_question pending 时 composer **解锁**（让玩家打字），placeholder 改成 `回答「<LLM 问题>」（回车发送）`；ask_choose_option / update_doc_item 仍然 lock composer
+    - **bubble 只显示问题文本**：`assistant-tool-freetext` bubble 不再嵌入 `AskFreeTextInput`，只显示"💭 等待你的回答（下方输入框）"提示 + 等待玩家在 composer 打字
+    - **状态机**：`askFreeTextPending: Map<toolCallId, { question, answer? }>` per-item
+      - LLM 调 ask_user_question → `onChatDone` 写入 `question`（answer=undefined）
+      - 玩家在 composer 打字 → 回车时 `sendAllAskFreeTextAnswers(playerText)` 内部把 playerText 写 pending.answer + 加 1 条 tool message 到 chatHistories → `runChatRound` 发 LLM
+      - `setAskFreeTextAnswer` / `askFreeTextAllAnswered` / `askFreeTextAnsweredCount` 等 v0.4.4+ 老 API 保留字段，**v0.4.4.1+ 未用**（bubble 不再需要 per-input 实时同步）
+    - **REFLECT_TAIL 钉死用法**（v0.4.4.1+ 单问题版）：`concept.ts:REFLECT_TAIL` 现在强制 LLM 调 ask_user_question **1 次**，question 字段**只写 1 个问题**（不编号多问）。**不**调多次 / **不**调 ask_choose_option / **不**调 update_doc_item
+    - **`AskFreeTextInput.vue` 组件废弃**：文件保留作 reference（顶部注释标 v0.4.4.1+ 废弃），不再被 `AiChatPanel` import / render
+    - **相关 API**（`src/stores/concept.ts` + `src/stores/world.ts` 都有）：
+      - state: `askFreeTextPending: ComputedRef<Map<toolCallId, { question, answer? }>>`
+      - state: `askFreeTextAllAnswered: ComputedRef<boolean>`（v0.4.4.1+ 保留，未用）
+      - action: `setAskFreeTextAnswer(toolCallId, answer): void`（v0.4.4.1+ 保留，未用）
+      - action: `sendAllAskFreeTextAnswers(playerText?: string): Promise<void>`（v0.4.4.1+ 改接 playerText 参数）
+      - 类型在 `types/ai.ts:StepChatState`（v0.4.4+ 加 4 个 optional 字段，v0.4.4.1+ 更新 sendAllAskFreeTextAnswers 签名）
 
 ---
 
@@ -239,7 +261,7 @@ release 前必跑 11 项 → `docs/CHECKLIST.md §10`。**核心 3 项**：
 | PlotCraft 项目识别规则 | `src-tauri/src/commands/project.rs:check_or_migrate_plot_cat`（plot.cat 存在；老项目 world/ 自动补 plot.cat 迁移）|
 | 启动恢复 last project | `src/stores/project.ts:init` + `src-tauri/src/commands/project.rs:open_project` |
 | 设定图图库 | `src-tauri/src/art.rs` + `src-tauri/src/commands/art.rs` + `src/stores/art.ts` + `src/views/ConceptArtView.vue` |
-| 概念设计漏斗（7 层 + LLM 辅助）| `src-tauri/src/concept.rs` + `src-tauri/src/commands/concept.rs` + `src/stores/concept.ts` + `src/views/ConceptView.vue` |
+| 概念设计漏斗（v0.5.3+ 6 层 + LLM 辅助）| `src-tauri/src/concept.rs` + `src-tauri/src/commands/concept.rs` + `src/stores/concept.ts` + `src/views/ConceptView.vue` |
 | 非流式 generate command | `src-tauri/src/commands/llm.rs:generate`（test_provider 骨架泛化）+ `src/lib/llm.ts:generate` |
 | chat 宪法注入（concept 摘要进 system prompt）| `src/stores/chat.ts:buildSystemPrompt` + `src-tauri/src/concept.rs:concept_summary` |
 | 世界 tab（分项集合模式）| `src-tauri/src/docs.rs` + `src-tauri/src/commands/docs.rs` + `src/stores/world.ts` + `src/views/WorldView.vue` |
@@ -249,6 +271,7 @@ release 前必跑 11 项 → `docs/CHECKLIST.md §10`。**核心 3 项**：
 | **v0.4+ tool call 事件订阅**| `src/lib/llm.ts:onChatToolCall` + `src/types/chat.ts:ChatToolCallPayload` |
 | **v0.4+ per-item tool call 累积（concept + world store）**| `src/stores/concept.ts:chatToolCalls / accumulateToolCallPartial` + `src/stores/world.ts`（同款）|
 | **v0.4+ 多轮 tool calling（sendToolResult API）**| `src/stores/concept.ts:sendStepChat + sendToolResult + runChatRound` + `src/stores/world.ts`（同款） |
+| **v0.5+ ask_user_question (旧名 ask_free_text) 强制回复（"就地输入" → v0.4.4.1+ 整合到 composer）**| `src/components/ai/AskFreeTextInput.vue` (v0.4.4.1+ 废弃保留作 reference) + `src/stores/concept.ts:askFreeTextPending / sendAllAskFreeTextAnswers` + `src/stores/world.ts`（同款）|
 | **v0.4+ Settings tab 工具 / 工具权限 sub-tab**| `src/components/settings/ToolsSettings.vue` |
 | config.json schema | `src/lib/settings.ts`（前端） + `src-tauri/src/llm/config.rs`（后端）|
 | AppError 枚举 | `src-tauri/src/error.rs` |
@@ -256,11 +279,11 @@ release 前必跑 11 项 → `docs/CHECKLIST.md §10`。**核心 3 项**：
 | 启动分阶段实现 | `src/main.ts` |
 | 项目数据模型（9 大类）| `docs/CHAT_LLM_DESIGN.md §5.1` |
 | **v0.4+ tool calling 协议 schema 转（OpenAI ↔ Anthropic）**| `src-tauri/src/llm/streaming.rs:build_openai_request_body (tools)` + `src-tauri/src/llm/streaming_anthropic.rs:build_anthropic_request_body (tools + tool_result + tool_use)` |
-| **v0.5+ 7 层概念模型**（后端 STEPS + 旧项目兼容 + 单元测试 15 个）| `src-tauri/src/concept.rs` (STEPS, infer_group_level, parse_frontmatter) + `src-tauri/src/commands/concept.rs` (save_concept_step 接 maturity) |
-| **v0.5+ 7 层前端子系统**（types + lib + store + view）| `src/types/concept.ts` (STEP_IDS/ConceptGroup/StepMaturity) + `src/lib/concept.ts` (saveConceptStep) + `src/lib/chats.ts` (12 itemKey) + `src/lib/ai-tools.ts` (item_id 7 步) |
-| **v0.5+ 设计循环**（staleFlags + 4 校准 preset + 黄点）| `src/stores/concept.ts` (STEP_HINTS/PRESETS/markStaleAfterSave/clearStale + 4 校准 PROMPT) + `src/views/ConceptView.vue` (7 层 stepper + 黄点 UI + maturity chip) |
+| **v0.5.3+ 6 层概念模型**（后端 STEPS 6 个 + v0.5+ 7 步文件级迁移 + 单元测试）| `src-tauri/src/concept.rs` (STEPS, infer_group_level, parse_frontmatter, migrate_legacy_concept) + `src-tauri/src/commands/concept.rs` (save_concept_step 不接 maturity) |
+| **v0.5.3+ 6 层前端子系统**（types + lib + store + view）| `src/types/concept.ts` (STEP_IDS 6 步 / ConceptGroup 6 个 / 去 StepMaturity) + `src/lib/concept.ts` (saveConceptStep 去 maturity) + `src/lib/chats.ts` (itemKey 旧 7 概念 → 新 6 概念) + `src/lib/ai-tools.ts` (item_id enum 7→6) |
+| **v0.5.3+ 设计循环**（staleFlags + 3 校准 preset + 黄点 + 4→3 校准 prompt 简化）| `src/stores/concept.ts` (STEP_HINTS 6 / PRESETS 6 × 5 chip / markStaleAfterSave 6 层适配 / 3 校准 PROMPT) + `src/views/ConceptView.vue` (6 层 stepper + 黄点 UI / 去 maturity chip) |
 | **v0.5+ Path A 方法论索引**（system prompt 注入 ~200 字）| `src/stores/chat.ts:buildSystemPrompt` (METHODS_HINT const) |
-| **v0.5+ 设计哲学 / 7 层设计 / 设计循环**（完整 plan）| `docs/CONCEPT_REDESIGN_PLAN.md`（§1-§14）+ `docs/CONCEPT_OPTIONAL_METHODS.md`（6 个方法论参考）|
+| **v0.5.3+ 设计哲学 / 6 层设计 / 设计循环 / 3 tab 路线**（完整 plan）| `docs/CONCEPT_REDESIGN_PLAN.md`（§1-§10：6 层抽象 + 3 tab 完整展开路线）+ `docs/CONCEPT_OPTIONAL_METHODS.md`（6 个方法论参考）|
 
 ---
 

@@ -1,24 +1,27 @@
 ﻿<script setup lang="ts">
-// ConceptView —— 概念 tab（7 层严格派生模型 + 设计循环 + 编辑区 + AI 面板）
+// ConceptView —— 概念 tab（6 层抽象蒸馏模型 + 设计循环 + 编辑区 + AI 面板）
 //
-// v0.5+：6 步漏斗 → 7 层派生模型（seed / pillars / world-rules / locations / character-functions / three-act / core-fantasy）
-//   - L1 立意 / L2 抽象规则 / L3 世界 / L4 地点（可选） / L5 人物 / L6 故事 / L7 核心体验
-//   - 旧项目兼容：旧 core-fantasy 自动归 L7
-//   - maturity（L2 pillars 专用）：empty / draft / evolving / finalized 4 态
+// v0.5.3+：7 层（seed / pillars / world-rules / locations / character-functions / three-act / core-fantasy）
+//   → 6 层（seed / core-story / world-rules / locations / character-functions / core-gameplay）
+//   - L2 抽象规则 + L6 故事 合并为 L2 核心故事（叙事脊柱 + 戏剧结构）
+//   - L7 核心体验 合并入 L6 核心玩法（核心机制 + 1 句话体验）
+//   - 旧项目兼容：v0.5+ 7 步 → v0.5.3+ 6 步 文件级迁移在 Rust 端 scan_concept 入口自动跑
+//     - 旧 pillars.md + three-act.md → 合并为 core-story.md
+//     - 旧 core-fantasy.md → 改名为 core-gameplay.md
+//   - v0.5.3+ 删 v0.5+ 旧 L2 pillars 4 态成熟度（empty/draft/evolving/finalized）
 //
 // v0.5+ 设计循环：改任何 step → markStale 上下游 → 黄点 ? 提示
-//   - 改 L1 → L2-L7 全标 stale（最重）
-//   - 改 L2-L6 → 自己 + 上游 + L7 stale
-//   - 改 L7 → L1-L6 全标 stale（5min cooldown 避免 toast 刷屏）
+//   - 改 L1 → L2-L6 全标 stale（最重）
+//   - 改 L2-L5 → 自己 + 上游 + L6 stale
+//   - 改 L6 → L1-L5 全标 stale（5min cooldown 避免 toast 刷屏）
 //   - 点黄点 → 切到该步 + 跑校准 chip
 //
-// - 左栏 stepper：7 步 + 状态点（empty 灰 / confirmed 绿 / stale 黄 + ? 角标）
+// - 左栏 stepper：6 步 + 状态点（empty 灰 / confirmed 绿 / stale 黄 + ? 角标）
 //   - 步序号 = [L1] / [L2] / ...（派生链位置）
 //   - L4 标"（可选）"—— 玩家知道不写也 OK
-// - 中栏编辑区：标题 + L2 maturity 选择器 + hint + textarea
-//   （800ms debounce 自动落盘，对齐 ConceptArtView 惯例）
+// - 中栏编辑区：标题 + hint + textarea（800ms debounce 自动落盘，对齐 ConceptArtView 惯例）
 // - 右栏 AI 面板：单个 AiChatPanel（每步 5 chip：4 基础 + 1 校准）
-//   - 校准 chip：L1 立意校准 / L2 反向检验 / L3-L6 上游校准 / L7 全链路整合
+//   - 校准 chip：L1 立意校准 / L2-L5 上游校准 / L6 全链路整合
 // - 无项目 → 空态（对齐 ConceptArtView）
 // - 玩家手改 concept/ 文件后点「刷新」重扫（不做文件监听，对齐 art）
 
@@ -29,7 +32,7 @@ import AiChatPanel from '@/components/ai/AiChatPanel.vue'
 import { STEP_HINTS, STEP_PRESETS, useConceptStore } from '@/stores/concept'
 import { useProjectStore } from '@/stores/project'
 import { useResizableWidth } from '@/composables/useResizableWidth'
-import type { ConceptStepId, ConceptStepStatus, StepMaturity } from '@/types/concept'
+import type { ConceptStepId, ConceptStepStatus } from '@/types/concept'
 import type { AdoptPayload } from '@/types/ai'
 
 const concept = useConceptStore()
@@ -171,24 +174,10 @@ function onStaleDismiss(stepId: string) {
   concept.clearStale(stepId as ConceptStepId)
 }
 
-/** L2 pillars maturity 切换（v0.5+ 4 态） */
-const MATURITY_LABELS: Record<StepMaturity, string> = {
-  empty: '空',
-  draft: '草稿 v1',
-  evolving: '演进 v2+',
-  finalized: '定型',
-}
-const MATURITIES: StepMaturity[] = ['empty', 'draft', 'evolving', 'finalized']
-
-async function onMaturityChange(m: StepMaturity) {
-  const step = currentStep.value
-  if (!step || step.id !== 'pillars') return
-  // 立即更新本地 + 落盘（maturity 是 frontmatter 字段，独立于 content）
-  try {
-    await concept.save(step.id, step.content, true, m)
-  } catch (e) {
-    console.error('[concept.maturity] save failed:', e)
-  }
+// v0.5.3+ 删除 v0.5+ 旧 L2 pillars 4 态成熟度（empty/draft/evolving/finalized）：
+// - L2 核心故事 不需要"演进型"——它是"什么"层，不是"怎么约束"层
+// - MATURITY_LABELS / MATURITIES / onMaturityChange 全部删除
+// - 模板里 v-if="currentStep.id === 'pillars'" 的 maturity selector UI 也删
 }
 
 // === AI 面板 adopt 回调（v0.3+ 单事件 + mode 派生） ===
@@ -331,21 +320,7 @@ watch(
             <h3>[L{{ currentStep.level }}] {{ currentStep.title }}</h3>
             <code class="filename">concept/{{ currentStep.filename }}</code>
             <span class="toolbar-spacer" />
-            <!-- v0.5+ L2 pillars maturity 选择器（仅 pillars 步骤显示） -->
-            <div v-if="currentStep.id === 'pillars'" class="maturity-selector">
-              <span class="maturity-label">成熟度：</span>
-              <button
-                v-for="m in MATURITIES"
-                :key="m"
-                type="button"
-                class="maturity-chip"
-                :class="{ active: (currentStep.maturity || 'empty') === m }"
-                :title="`切换到 ${MATURITY_LABELS[m]}`"
-                @click="onMaturityChange(m)"
-              >
-                {{ MATURITY_LABELS[m] }}
-              </button>
-            </div>
+            <!-- v0.5.3+ 删 v0.5+ 旧 L2 pillars maturity 选择器（L2 核心故事 不再有 4 态成熟度） -->
           </div>
           <p class="hint">{{ hint }}</p>
           <textarea v-model="draft" class="editor-input" :placeholder="hint" />
@@ -573,35 +548,7 @@ watch(
   border-color: var(--text-muted);
   background: var(--hover);
 }
-/* v0.5+ L2 pillars maturity 选择器 */
-.maturity-selector {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-}
-.maturity-label {
-  color: var(--text-muted);
-}
-.maturity-chip {
-  padding: 2px 8px;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  border-radius: 4px;
-  font-size: 10px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.maturity-chip:hover {
-  border-color: var(--text-muted);
-  color: var(--text);
-}
-.maturity-chip.active {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
+/* v0.5.3+ 删 v0.5+ 旧 L2 pillars maturity 选择器 CSS（.maturity-selector / .maturity-label / .maturity-chip） */
 .dot {
   width: 8px;
   height: 8px;

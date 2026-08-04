@@ -1,15 +1,19 @@
 // PlotCraft 概念设计（concept/ 目录）类型
 //
-// 镜像 Rust `src-tauri/src/concept/mod.rs`（snake_case 跨 boundary）：
-//   <project>/concept/<filename> —— 一步一个 md 文件（frontmatter 存 status/updated/group/level/maturity）
-// 7 层严格派生模型（v0.5+）：
+// 镜像 Rust `src-tauri/src/concept.rs`（snake_case 跨 boundary）：
+//   <project>/concept/<filename> —— 一步一个 md 文件（frontmatter 存 status/updated/group/level）
+// 6 层抽象蒸馏模型（v0.5.3+）：
 //   L1 立意（seed）             → 故事的根，1 句哲学
-//   L2 抽象规则（pillars）      → 设计的硬约束，独立演进
-//   L3 世界（world-rules）      → 宏观设定
+//   L2 核心故事（core-story）   → 叙事脊柱 + 戏剧结构（吸收 v0.5+ 旧 L2 pillars + L6 three-act）
+//   L3 世界规则（world-rules）  → 宏观设定 + 运作法则
 //   L4 地点（locations, 可选）  → 具体空间
 //   L5 人物（character-functions）→ 角色功能
-//   L6 故事（three-act）        → 时间轴上的展开
-//   L7 核心体验（core-fantasy） → 玩家视角的 1 句话总结
+//   L6 核心玩法（core-gameplay）→ 核心机制 + 1 句话玩家体验（吸收 v0.5+ 旧 L7 core-fantasy + 新增核心机制）
+//
+// v0.5.3+ 删除 v0.5+ 旧 L2 pillars 4 态成熟度（empty/draft/evolving/finalized）
+// - L2 核心故事 不需要"演进型"——它是"什么"层，不是"怎么约束"层
+// - ConceptStep.maturity 字段删除
+// - StepMaturity 类型删除
 
 /** 步骤状态（v0.3+ 简化：empty / confirmed 2 态）
  *  - empty：内容为空（无文件或空内容，灰色）
@@ -19,41 +23,26 @@
  *    前端 v0.3+ 永远传 true */
 export type ConceptStepStatus = 'empty' | 'confirmed'
 
-/** 步骤分组（v0.5+ 加 group 字段，跨层逻辑归类）
- *  - theme: L1 立意
- *  - principles: L2 抽象规则
- *  - world: L3 世界
- *  - locations: L4 地点
- *  - character: L5 人物
- *  - story: L6 故事
- *  - core-fantasy: L7 核心体验 */
+/** 步骤分组（v0.5.3+ 6 个 group；v0.5+ 旧 principles/story/core-fantasy 删除，
+ *  新增 core-story / core-gameplay，world → world-rules） */
 export type ConceptGroup =
   | 'theme'
-  | 'principles'
-  | 'world'
+  | 'core-story'
+  | 'world-rules'
   | 'locations'
   | 'character'
-  | 'story'
-  | 'core-fantasy'
+  | 'core-gameplay'
 
-/** pillars 成熟度（仅 L2 pillars 用；其他步骤 maturity 为空串）
- *  - empty：还没写
- *  - draft：玩家初稿（v1）
- *  - evolving：演进中（v2+）—— LLM 跑"反向检验"用 L3-L6 现状反推
- *  - finalized：定型 —— 当硬约束用，注入 LLM 用作 veto */
-export type StepMaturity = 'empty' | 'draft' | 'evolving' | 'finalized'
-
-/** 7 层 step id 联合类型 */
+/** 6 层 step id 联合类型（v0.5+ 旧 pillars/three-act/core-fantasy 替换为 core-story/core-gameplay） */
 export type ConceptStepId =
   | 'seed'
-  | 'pillars'
+  | 'core-story'
   | 'world-rules'
   | 'locations'
   | 'character-functions'
-  | 'three-act'
-  | 'core-fantasy'
+  | 'core-gameplay'
 
-/** 镜像 Rust `ConceptStep`（snake_case） */
+/** 镜像 Rust `ConceptStep`（snake_case；v0.5.3+ 删 maturity 字段） */
 export interface ConceptStep {
   /** 步骤 id（见 ConceptStepId） */
   id: ConceptStepId
@@ -61,9 +50,9 @@ export interface ConceptStep {
   title: string
   /** concept/ 下的文件名（如 "seed.md"） */
   filename: string
-  /** 分组（theme / principles / world / locations / character / story / core-fantasy） */
+  /** 分组（theme / core-story / world-rules / locations / character / core-gameplay） */
   group: ConceptGroup
-  /** 层级 1-7（派生链位置） */
+  /** 层级 1-6（派生链位置） */
   level: number
   /** empty | confirmed */
   status: ConceptStepStatus
@@ -71,21 +60,18 @@ export interface ConceptStep {
   content: string
   /** RFC3339；empty 步骤为空串 */
   updated: string
-  /** maturity：仅 L2 pillars 用；其他步骤为空串 */
-  maturity: string
   /** optional：仅 L4 locations = true；其他步骤为 false */
   optional: boolean
 }
 
-/** 7 步固定顺序（按派生链：L1 → L2 → L3 → L4 → L5 → L6 → L7） */
+/** 6 步固定顺序（按派生链：L1 → L2 → L3 → L4 → L5 → L6） */
 export const STEP_IDS: readonly ConceptStepId[] = [
   'seed',
-  'pillars',
+  'core-story',
   'world-rules',
   'locations',
   'character-functions',
-  'three-act',
-  'core-fantasy',
+  'core-gameplay',
 ] as const
 
 /** 派生关系 helper：判断 step X 是否依赖 step Y（即 Y 是 X 的上游） */

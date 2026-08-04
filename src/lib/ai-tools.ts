@@ -1,9 +1,14 @@
 // PlotCraft v0.4+ AI tool schema 定义 + resolveEnabledTools
 //
-// 三个内置 tool（玩家主导原则下 LLM 可调的工具集）：
-// - ask_user_question: 给玩家 N 个备选让 ta 选
+// 三个内置 tool（玩家主导原则下 LLM 可调的工具集，v0.5+ 重命名）：
+// - ask_choose_option: 给玩家 N 个备选让 ta 选（v0.5+ 旧名 ask_user_question）
 // - update_doc_item: LLM 主动把内容写入某项（替代 v0.3+ 的"采用"按钮）
-// - ask_free_text: LLM 反问玩家一个开放问题（反思类 chip 用）
+// - ask_user_question: LLM 反问玩家一个开放问题（v0.5+ 旧名 ask_free_text）
+//
+// **v0.5+ 重命名（玩家 2026-08-03 反馈）**：
+// - 旧 `ask_user_question`（给选项） → `ask_choose_option`（名字更准确：是"让玩家挑选项"不是"问问题"）
+// - 旧 `ask_free_text`（反问） → `ask_user_question`（这个名字才符合"向用户问问题"语义）
+// - 完全 breaking：settings.config.tools 字段 / 老 .chats/ 落盘数据 / LLM 调用历史**不兼容**
 //
 // **关键设计**：关闭的 tool 不在 prompt 里给 LLM（用户硬要求）
 // - 工具不在 tools schema 字段 → LLM 完全不知道存在
@@ -22,16 +27,20 @@ import type { ToolDefinition } from '@/types/chat'
 
 // === 单个 tool schema 定义 ===
 
-/** ask_user_question —— 给玩家 N 个备选让 ta 选
+/** ask_choose_option —— 让玩家从 N 个备选项里挑一个（v0.5+ 旧名 ask_user_question）
  *  - 替代 v0.3+ 的 JSON 数组解析（LLM 不再返 [A, B, C] 文本，改走 tool call）
  *  - 强制 2-5 项 options（schema min/max 约束，LLM 调时 schema 强制）
  *  - 每个 option: label (10字内) + preview (完整备选内容) + description (可选，hover 显示)
- *  - 跟 Locus ask_user_question 类似但去掉了 "always allow custom input" 限制
- *    （PlotCraft v0.4+ 玩家主导，custom input 通过普通 composer 输入，不在 option 里） */
-export const ASK_USER_QUESTION_SCHEMA: ToolDefinition = {
+ *  - 跟 Locus 类似但去掉了 "always allow custom input" 限制
+ *    （PlotCraft v0.4+ 玩家主导，custom input 通过普通 composer 输入，不在 option 里）
+ *  - **v0.5+ 重命名**：旧 `ask_user_question`（这个名字不准确："问问题"应该是反问开放问题不是给选项）
+ *    改为 `ask_choose_option`，语义更直接——"让玩家挑选项"
+ *    - breaking：老 .chats/ 落盘数据 / 老 settings.config.tools 字段全失效
+ *    - 跨 store 同步（concept + world + AiChatPanel 全要改 tc.name 判断） */
+export const ASK_CHOOSE_OPTION_SCHEMA: ToolDefinition = {
   type: 'function',
   function: {
-    name: 'ask_user_question',
+    name: 'ask_choose_option',
     description:
       '向玩家提出一个多选问题，提供 2-5 个互斥的备选方案让 ta 选。' +
       '适合给方向、选项、取舍。' +
@@ -77,7 +86,7 @@ export const ASK_USER_QUESTION_SCHEMA: ToolDefinition = {
 /** update_doc_item —— LLM 主动把内容写入某项
  *  - 替代 v0.3+ 的"采用"按钮（玩家点 AltCard 触发写入）
  *  - v0.4+：LLM 自己调这个 tool → 前端弹"AI 建议覆盖 / 追加 X，确认吗" → 玩家确认
- *  - item_id 枚举：v0.5+ 限 concept 7 步（world 5 节 / characters / plot 等它们自己有 store 再加）
+ *  - item_id 枚举：v0.5.3+ 限 concept 6 步（world 5 节 / characters / plot / gameplay 等它们自己有 store 再加）
  *  - 玩家可以关闭这个 tool（在 Settings tab）→ LLM 完全不能改编辑器，要改让玩家手动写
  *  - **v0.4.1+ mode 区分**:
  *    - 'replace' = 覆盖编辑器（默认；完整新立意 / 完整新内容）
@@ -90,10 +99,10 @@ export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
     name: 'update_doc_item',
     description:
       '把玩家选定 / 修改后的内容写入文档某一项。' +
-      '**只**在玩家已经明确表达过要这个方案时调（例如玩家问"用 A 改暗版"，或玩家从 ask_user_question 选了一个 option）。' +
+      '**只**在玩家已经明确表达过要这个方案时调（例如玩家问"用 A 改暗版"，或玩家从 ask_choose_option 选了一个 option）。' +
       '**不要**在没确认的情况下主动调这个 —— 玩家主导，绝不替玩家做决定。' +
-      '**反思 / 提问 / 解释**类输出**不要**用这个 tool —— 反思用 ask_user_question 或 ask_free_text。' +
-      'item_id 当前限定为 concept 7 步：seed / pillars / world-rules / locations / character-functions / three-act / core-fantasy。' +
+      '**反思 / 提问 / 解释**类输出**不要**用这个 tool —— 反思用 ask_user_question（开放问题）或 ask_choose_option（让玩家挑选项）。' +
+      'item_id 当前限定为 concept 6 步（v0.5.3+）：seed / core-story / world-rules / locations / character-functions / core-gameplay。' +
       'content 是最终内容（玩家改过的优先于 LLM 原始备选）。',
     parameters: {
       type: 'object',
@@ -102,12 +111,11 @@ export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
           type: 'string',
           enum: [
             'seed',
-            'pillars',
+            'core-story',
             'world-rules',
             'locations',
             'character-functions',
-            'three-act',
-            'core-fantasy',
+            'core-gameplay',
           ],
           description: '要写入的 doc item id',
         },
@@ -129,20 +137,22 @@ export const UPDATE_DOC_ITEM_SCHEMA: ToolDefinition = {
   },
 }
 
-/** ask_free_text —— LLM 反问玩家一个开放问题
+/** ask_user_question —— LLM 向玩家反问一个开放问题（v0.5+ 旧名 ask_free_text）
  *  - 反思类 chip 用（"反问我 3 个尖锐问题"、"检查规则有没有冲突"）
  *  - LLM 不给选项，让玩家自己想
- *  - 跟 ask_user_question 区别：ask_user_question 强制 2-5 个选项（备选场景），
- *    ask_free_text 是开放问题（"你怎么理解 X"） */
-export const ASK_FREE_TEXT_SCHEMA: ToolDefinition = {
+ *  - **v0.5+ 重命名**：旧 `ask_free_text`（这个名字不准确：玩家主导的设计里"问问题"才是核心动作）→
+ *    改为 `ask_user_question`，语义更直接——"向用户问问题"
+ *  - 跟 ask_choose_option 区别：ask_choose_option 强制 2-5 个选项让玩家挑；
+ *    ask_user_question 是开放问题（"你怎么理解 X"） */
+export const ASK_USER_QUESTION_SCHEMA: ToolDefinition = {
   type: 'function',
   function: {
-    name: 'ask_free_text',
+    name: 'ask_user_question',
     description:
       '向玩家提出一个需要 ta 自己想清楚的开放问题。' +
       '**不要**给选项 —— 这种问题没有标准答案，要让玩家自己想。' +
       '适合反思类追问（"你的核心体验里"什么"是什么" / "这条规则实际怎么运作"）' +
-      '跟 ask_user_question 的区别：ask_user_question 给方向性备选，ask_free_text 是真正需要玩家自己想的。',
+      '跟 ask_choose_option 的区别：ask_choose_option 给方向性备选让玩家挑；ask_user_question 是真正需要玩家自己想的开放问题。',
     parameters: {
       type: 'object',
       properties: {
@@ -160,10 +170,13 @@ export const ASK_FREE_TEXT_SCHEMA: ToolDefinition = {
 
 /** v0.4+ 内置 tool 全集 —— 顺序就是 UI 显示顺序
  *  - Settings tab 工具列表从这取
- *  - resolveEnabledTools 从这过滤 */
+ *  - resolveEnabledTools 从这过滤
+ *  - **v0.5+ 重命名**：
+ *    - 旧 `ask_user_question` (给选项) → `ask_choose_option`
+ *    - 旧 `ask_free_text` (反问) → `ask_user_question` */
 export interface BuiltinToolMeta {
   /** tool name（跟 schema.name 一致） */
-  name: 'ask_user_question' | 'update_doc_item' | 'ask_free_text'
+  name: 'ask_choose_option' | 'update_doc_item' | 'ask_user_question'
   /** UI 显示名（短） */
   label: string
   /** UI 描述（一行，hover 显示） */
@@ -176,11 +189,11 @@ export interface BuiltinToolMeta {
 
 export const BUILTIN_TOOLS: BuiltinToolMeta[] = [
   {
-    name: 'ask_user_question',
-    label: 'Ask User Question',
-    description: '让 LLM 给你 2-5 个备选让你选',
+    name: 'ask_choose_option',
+    label: 'Ask Choose Option',
+    description: '让 LLM 给你 2-5 个备选让你挑',
     risk: 'low',
-    schema: ASK_USER_QUESTION_SCHEMA,
+    schema: ASK_CHOOSE_OPTION_SCHEMA,
   },
   {
     name: 'update_doc_item',
@@ -190,11 +203,11 @@ export const BUILTIN_TOOLS: BuiltinToolMeta[] = [
     schema: UPDATE_DOC_ITEM_SCHEMA,
   },
   {
-    name: 'ask_free_text',
-    label: 'Ask Free Text',
-    description: '让 LLM 反问你一个开放问题',
+    name: 'ask_user_question',
+    label: 'Ask User Question',
+    description: '让 LLM 向你反问一个开放问题',
     risk: 'low',
-    schema: ASK_FREE_TEXT_SCHEMA,
+    schema: ASK_USER_QUESTION_SCHEMA,
   },
 ]
 
@@ -202,7 +215,7 @@ export const BUILTIN_TOOLS: BuiltinToolMeta[] = [
 
 /** v0.4+ tool 权限策略（Locus 风格，玩家主导 + AI 主导 安全机制）
  *  - `auto`：LLM 调了直接执行（玩家不需要确认）
- *    - 适合只读 / 只问类 tool（ask_user_question / ask_free_text 默认值）
+ *    - 适合只读 / 只问类 tool（ask_choose_option / ask_user_question 默认值）
  *  - `ask`：LLM 调了前端弹"AI 建议 X，确认吗" → 玩家点确认才执行
  *    - 适合会改编辑器 / 删文件 / 调外部 API 类 tool（update_doc_item 默认值）
  *  - `deny`：tool 存在 schema 但 LLM 调了前端 reject + 返回错误消息
@@ -218,23 +231,25 @@ export interface ToolSetting {
   permission: ToolPermission
 }
 
-/** settings.config.tools 完整结构 */
+/** settings.config.tools 完整结构（v0.5+ 字段名重命名） */
 export interface ToolsConfig {
-  ask_user_question: ToolSetting
+  ask_choose_option: ToolSetting
   update_doc_item: ToolSetting
-  ask_free_text: ToolSetting
+  ask_user_question: ToolSetting
 }
 
 export function defaultToolsConfig(): ToolsConfig {
   return {
-    ask_user_question: { enabled: true, permission: 'auto' },
+    ask_choose_option: { enabled: true, permission: 'auto' },
     update_doc_item: { enabled: true, permission: 'ask' },
-    ask_free_text: { enabled: true, permission: 'auto' },
+    ask_user_question: { enabled: true, permission: 'auto' },
   }
 }
 
 /** 把 settings.config.tools 标准化（缺字段补 default）—— 老 config 没这字段时
- *  loadConfig 返的对象也没这字段；调用方调这函数保证结构完整 */
+ *  loadConfig 返的对象也没这字段；调用方调这函数保证结构完整
+ *  - v0.5+ 完全 breaking：老 config 的 ask_choose_option / ask_user_question 字段**不读**——
+ *    用户手改的 .chats 历史 / settings.json 会重置成 default */
 export function normalizeToolsConfig(raw: unknown): ToolsConfig {
   const def = defaultToolsConfig()
   if (!raw || typeof raw !== 'object') return def
@@ -244,9 +259,9 @@ export function normalizeToolsConfig(raw: unknown): ToolsConfig {
     permission: r[k]?.permission ?? def[k].permission,
   })
   return {
-    ask_user_question: merge('ask_user_question'),
+    ask_choose_option: merge('ask_choose_option'),
     update_doc_item: merge('update_doc_item'),
-    ask_free_text: merge('ask_free_text'),
+    ask_user_question: merge('ask_user_question'),
   }
 }
 
@@ -267,3 +282,11 @@ export function resolveEnabledTools(config: Config | null | undefined): ToolDefi
   const tools = normalizeToolsConfig(raw.tools)
   return BUILTIN_TOOLS.filter((t) => tools[t.name]?.enabled).map((t) => t.schema)
 }
+// === v0.4.4.1+ ask_free_text 单问题版：之前的"多问题版 helper"全部删除 ===
+// - 旧 helper：parseAskFreeTextSubQuestions / buildAskFreeTextToolMessage / isAllAskFreeTextAnswered
+//   都假设 question 字段是 "1. xxx\n2. yyy\n3. zzz" 格式
+// - v0.4.4.1+ REFLECT_TAIL 钉死单问题（不编号），UX 整合到 composer，playerText 直接作为 answer
+//   store 内部不再做"组合 N 个 answer" / "判断 N 个都填了"，所以这 3 个 helper + SUB_Q_REGEX 都 dead code
+// - **兼容性**：老 .chats/concept/*.json 里 ask_free_text 答案如果是 "1. xxx" 格式，落盘后
+//   v0.4.4.1+ 渲染时直接当单行字符串展示（不再用 split('\n') 拆），老的 "1. " 前缀会显示在文本里
+//   —— 边界 case（只有老存档有），下个版本清理时统一 .chats 迁移可顺便处理

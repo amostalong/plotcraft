@@ -1,4 +1,4 @@
-// concept pinia store —— 7 层派生模型 + 设计循环 + LLM 辅助（v0.5+）
+// concept pinia store —— 6 层抽象蒸馏模型 + 设计循环 + LLM 辅助（v0.5.3+）
 //
 // 照搬 stores/art.ts 形状：
 // - steps 用 shallowRef 包（反卡顿惯例：大列表不深 reactive）
@@ -13,19 +13,18 @@
 // - **自动落盘**（v0.3+ 玩家反馈"想保留"）：watch chatHistories → debounce 1s → saveChat
 //   位置 <项目>/.chats/concept/<stepId>.json（详见 [docs/AI_PANEL_DESIGN.md]）
 //
-// 设计循环（v0.5+）：
+// 设计循环（v0.5+，6 层沿用）：
 // - 改任何 step → markStale 上游 / 下游（黄点 ? 提示）
-// - L1 改 → L2-L7 全标 stale（最重）
-// - L2-L6 改 → 自己 + 上游 + L7 标 stale
-// - L7 改 → L1-L6 全标 stale
+// - L1 改 → L2-L6 全标 stale（最重）
+// - L2-L5 改 → 自己 + 上游 + L6 标 stale
+// - L6 改 → L1-L5 全标 stale
 // - 黄点消失条件：玩家手动 clearStale(id) 或跑 preset 校准后
-// - 5min cooldown for L7 频繁改动（避免 toast 刷屏）—— store 内部防抖
+// - 5min cooldown for L6 频繁改动（避免 toast 刷屏）—— store 内部防抖
 //
 // v0.5.1 mtime hash 对比上线（修 v0.5+ "改一下全黄"问题）：
-// - save() 内 oldContent / newContent 字符串对比，oldMaturity / newMaturity 对比
-// - **只有 content 或 maturity 真有变化才 markStale**——避免 debounce 重复触发、纯 markConfirmed
-//   重复保存、maturity 没变但 content 没变等场景
-// - maturity 单独变化也算改（L2 草稿→定型需要重新校准下游）
+// - save() 内 oldContent / newContent 字符串对比
+// - **只有 content 真有变化才 markStale**——避免 debounce 重复触发、纯 markConfirmed 重复保存等场景
+// - v0.5.3+ 删 maturity 对比（旧 L2 pillars 4 态成熟度删除）
 // - 错别字/小修 → 标 stale（玩家用 X 手动忽略）；方向大改 → 标 stale（玩家用 ? 跑校准）
 //   之前：不管大小改都"全黄"，玩家无法区分；现在：黄点本身就是"有改动"的信号，区分交回玩家
 //
@@ -48,102 +47,119 @@ import {
 } from '@/lib/llm'
 import type { PresetAction, StepChatState } from '@/types/ai'
 import type { ChatErrorDiag, ChatErrorKind, ChatMessage, ToolCallInfo, ToolCallPartial } from '@/types/chat'
-import { STEP_IDS, type ConceptStep, type ConceptStepId, type StepMaturity } from '@/types/concept'
+import { STEP_IDS, type ConceptStep, type ConceptStepId } from '@/types/concept'
 import { useProjectStore } from './project'
 import { useSettingsStore } from './settings'
 
-// === 7 层静态定义（hint = 写作引导语，编辑区显示 + 拼 LLM prompt 的说明部分） ===
+// === 6 层静态定义（hint = 写作引导语，编辑区显示 + 拼 LLM prompt 的说明部分） ===
 
 export const STEP_HINTS: Record<ConceptStepId, string> = {
   // L1 立意
   seed: '立意 = 故事要讨论的东西。',
-  // L2 抽象规则
-  pillars: '3-5 条硬约束 / 否决性原则。每条都是「任何方案违反 X 就打回」。这些规则不会一次写完——会在写世界/人物/故事过程中反复回来修改。成熟度：empty / 草稿 v1 / 演进 v2+ / 定型。',
-  // L3 世界
-  'world-rules': '宏观设定——时代 / 物理 / 魔法 / 政治 / 经济。每条 = 是什么 + 造成什么冲突。注意：硬约束（「不能违反」）属于 L2 抽象规则——这里只写普通规则。',
+  // L2 核心故事（v0.5.3+ 新名；吸收旧 L2 抽象规则 + L6 故事）
+  'core-story':
+    'L2 核心故事 = 这条故事的叙事脊柱 + 戏剧结构。1-2 段话级别。' +
+    '模板：弧线（1 句话）+ 3 幕压力走向（每幕 1 句话）。' +
+    '派生 L1 立意——把「主题要表达什么」转成「故事要演什么」。',
+  // L3 世界规则（v0.5.3+ 改名；强调"设定 + 法则"是同一件事）
+  'world-rules':
+    '世界规则 = 宏观设定 + 运作法则。每条 = 是什么 + 怎么运作 + 造成什么冲突。' +
+    '派生 L1 立意 + L2 核心故事。',
   // L4 地点（可选）
   locations: '具体空间——地理 / 氛围 / 物理特征 / 跟立意/世界的连接。这是可选的——密室 / 单场景剧可以跳过。不写 NPC（那是 L5 人物）。',
   // L5 人物
   'character-functions': '角色功能——每个人 = 想要什么 + 为什么得不到。人物欲望应追溯到 L3 世界 + L4 地点——不是凭空生成。人物被世界的波浪推到某个位置，他们想要的是对世界压力的回应。',
-  // L6 故事
-  'three-act': '冲突加压序列——每一幕压力比上一幕大，直到终幕爆发。派生 L1-L5——每幕转折点都应服务 L1 立意 + 满足 L2 pillars + 反映 L3 世界 + L4 地点 + L5 人物。',
-  // L7 核心体验
-  'core-fantasy': '玩家视角的 1 句话体验——「你扮演 X，在 Y 处境，做 Z」。所有层设计完才能精准定——可以先写粗版（方向感），其他层定下来再回来精化。',
+  // L6 核心玩法（v0.5.3+ 新名；吸收旧 L7 核心体验 + 新增核心机制）
+  'core-gameplay':
+    'L6 核心玩法 = 玩家玩什么 + 怎么玩 + 感受到什么。两部分：' +
+    '1. 核心机制（回合制 / 文字冒险 / 资源管理 / 角色羁绊 / 选择驱动 / 等）' +
+    '2. 1 句话玩家体验（「你扮演 X，在 Y，做 Z」）' +
+    '派生 L1-L5——核心机制派生世界 + 人物；体验整合整链路。',
 }
 
-// === 设计循环校准 prompt（v0.5+ 新增） ===
-// 4 个校准 prompt + 1 个 L1 立意专用，5 个校准 chip 在 STEP_PRESETS 通用区
+// === 设计循环校准 prompt（v0.5.3+ 简化：3 个校准 prompt） ===
+// v0.5.3+ 从 v0.5+ 5 个校准 prompt 简化到 3 个：
+// - L1 立意校准：问 3 个尖锐问题（立意特殊性扩展）
+// - L2-L5 上游校准：检查当前 step 是否还服务 L1 立意 + L2 核心故事
+// - L6 全链路整合：跑 L1-L6 整链路一致性检查
+// v0.5+ 旧 PILLAR_REVERSE_CHECK（pillars 专用）+ RECALIBRATE_DOWNSTREAM（L1 模板）删除
 // 完整设计见 docs/CONCEPT_REDESIGN_PLAN.md §3.3
-
-const RECALIBRATE_DOWNSTREAM_PROMPT =
-  '上游刚刚改过。' +
-  '当前 step 内容可能与新上游不一致。' +
-  '逐条检查：' +
-  '1. 当前 step 的关键论断是否还被新上游支持？' +
-  '2. 哪些句子需要重写、哪些保留？' +
-  '3. 指出具体段落 + 建议方向（不替玩家写完整版）。'
 
 const RECALIBRATE_UPSTREAM_PROMPT =
   '当前 step 刚刚改过（或上游有变化）。' +
-  '它可能跟上游 L1 立意 + L2 pillars 不一致。' +
+  '它可能跟上游 L1 立意 + L2 核心故事 不一致。' +
   '逐条检查：' +
   '1. 当前 step 是否还服务 L1 立意？' +
-  '2. 当前 step 是否违反 L2 pillars？' +
+  '2. 当前 step 是否还派生 L2 核心故事 的弧线？' +
   '3. 哪些句子需要回看 L1+L2 才能确定？' +
   '指出问题点 + 建议方向（不替玩家写完整版）。'
 
 const RECALIBRATE_FULL_CHAIN_PROMPT =
-  'L7 核心体验刚刚改过（或上游关键层有重大变化）。' +
+  'L6 核心玩法 刚刚改过（或上游关键层有重大变化）。' +
   '跑全链路一致性检查：' +
-  '1. L1 立意 → L2 pillars：pillars 还服务于立意吗？' +
-  '2. L1+L2 → L3 世界：世界还满足 pillars + 服务立意吗？' +
+  '1. L1 立意 → L2 核心故事：故事弧线还服务于立意吗？' +
+  '2. L1+L2 → L3 世界规则：世界还派生 L2 + 服务立意吗？' +
   '3. L3 → L4 地点：地点还显形 L3 规则吗？' +
-  '4. L3+L4 → L5 人物：人物欲望还派生自世界+地点吗？' +
-  '5. L1-L5 → L6 故事：三幕还派生整链路吗？' +
-  '6. L1-L6 → L7 核心体验：核心体验还反映整链路吗？' +
+  '4. L3+L4 → L5 人物：人物欲望还派生自世界 + 地点吗？' +
+  '5. L1-L5 → L6 核心玩法：核心机制 + 体验还反映整链路吗？' +
   '指出每层的不一致点 + 建议方向（不替玩家写）。'
 
-const PILLAR_REVERSE_CHECK_PROMPT =
-  '用 L3-L6 现状反推 L2 pillars：' +
-  '1. L3 世界规则里有没有"硬约束"性质但没写进 L2 的？' +
-  '2. L5 人物功能里有没有"贯穿"性质但没写进 L2 的？' +
-  '3. L6 三幕里有没有"不可越线"性质但没写进 L2 的？' +
-  '建议补充哪些 pillars（不替玩家写完整版）。'
-
-/** L1 立意校准 prompt（基于 RECALIBRATE_DOWNSTREAM 模板 + 立意特殊性扩展） */
+/** L1 立意校准 prompt（立意特殊性扩展，问 3 个尖锐问题） */
 const L1_RECALIBRATE_PROMPT =
-  RECALIBRATE_DOWNSTREAM_PROMPT +
+  '上游刚刚改过，或立意刚改。' +
+  '当前 step（立意）内容可能与新上游不一致。' +
+  '逐条检查：' +
+  '1. 当前 step 的关键论断是否还被新上游支持？' +
+  '2. 哪些句子需要重写、哪些保留？' +
+  '3. 指出具体段落 + 建议方向（不替玩家写完整版）。' +
   '\n\n立意特殊性 —— 立意是整个设计的哲学根：' +
   '问 3 个尖锐问题帮 ta 确认：' +
   '1. 这次改立意是要「大改方向」还是「精化措辞」？' +
-  '2. 如果是大改方向 —— 玩家准备好 L2-L7 全部重看吗？' +
+  '2. 如果是大改方向 —— 玩家准备好 L2-L6 全部重看吗？' +
   '3. 玩家希望先看 L1 新立意 vs 旧下游的不一致点，还是先继续写 L2+？' +
   '根据玩家回答决定下一步（不替玩家做决定）。'
 
 // === Preset 共享片段 ===
 
-/** v0.3+ preset 都拼这段尾巴 —— v0.4+ 改走 tool calling 后的兜底
- *  - v0.4+ 主路径：LLM 收到 tools schema（`ask_user_question` / `update_doc_item`）→
- *    schema 强制 LLM 调 tool 返结构化数据（AltCard / 确认按钮）
- *  - 本段 prompt 是**兜底**：万一 LLM 不调 tool，prompt 仍约束 content 字段返
- *    "JSON 数组"形态（前端 v0.3+ parseAlternatives 已删，v0.4+ 直接当 markdown bubble
- *    显示，但 LLM 至少返稳定形态而非自由发挥）
- *  - v0.3+ 强化: **第一个字符必须是 `[`, 最后一个必须是 `]`** —— 之前 LLM 会加
- *    "让我分析一下" / 思考过程 / 多版本混排 等, 前端 fallback 按 \n\n 切段造假 cards
- *  - v0.3+ 防御：流式开始那一刻 system prompt 固定，过程中玩家改编辑器 chat 不会重发，
- *    显式告诉 LLM "以最新内容为准"（虽然 system 已注入"当前「X」已有内容"，这是双保险） */
-const JSON_TAIL =
-  '**优先用 ask_user_question tool 提问**：每项 option 是 1 个备选，label 10 字内，preview 是完整内容。\n' +
-  '**如果 LLM 不调 tool，content 字段严格 JSON 数组**（第一个 `[`、最后一个 `]`，3-5 项）。\n' +
-  '**禁止**输出任何额外文字、preamble、思考过程、解释、markdown 代码围栏。\n' +
-  '**禁止**说"好的"、"让我分析一下"、"以下是"、"方案 1"等任何人类语言前缀。\n' +
+// v0.5+ 备选类 chip 通用尾巴（强制调 ask_choose_option tool）
+// - 玩家 2026-08-03 反馈：点「✨ 润色这一步」后 LLM 完全沉默 → fallback "(AI 无回复)"
+// - 根因：旧 JSON_TAIL 写"**优先**用 ask_choose_option tool + **如果不调 tool** 就返 JSON 数组"
+//   （软约束 + fallback），跟 SYSTEM_PROMPT "1 round 1 tool call" 硬规则互相打架，
+//   deepseek-v4-flash 在矛盾指令下选沉默（既不调 tool 也不出 text）→ AltCard 一个不渲染
+// - 修：钉死**必须**调 ask_choose_option tool，去掉 markdown / JSON 数组兜底
+//   - LLM 跟 system 提示"必须 tool call"一致，没有退路 → 不再犹豫
+//   - 万一 model 真不支持 tool（理论上 v0.4+ 都不该用），就 fallback "(AI 无回复)"（边界 case）
+//   - 旧的 JSON 数组解析路径（lib/alternatives.ts）保留作 defense-in-depth，但不靠它走
+// - 跟 REFLECT_TAIL（ask_user_question 强制回复）对称：两者都是"必须调某个 tool，无 fallback"
+const OPTION_TAIL =
+  '**必须**用 ask_choose_option tool 提问（不要返 markdown 文本 / JSON 数组）：\n' +
+  '- 调 1 次 ask_choose_option tool（不要调多次）\n' +
+  '- options 数组给 2-5 个互斥备选（不要重复 / 不要"其他"兜底）\n' +
+  '- 每项：label（≤10 字）+ preview（完整备选内容）+ description（可选，hover tooltip）\n' +
+  '- **不要**在 tool call 前后加 preamble / 客套话 / 解释 / 思考过程\n' +
   '基于当前步骤最新内容回答。'
 
-/** 反思/追问类 preset 通用尾巴（v0.4+ 走 ask_free_text tool，prompt 兜底走 markdown）
- *  - 玩家主导：只给追问，玩家自己答，绝不替玩家做决定 */
+/** 反思/追问类 preset 通用尾巴（v0.5+ 强制走 ask_user_question tool，1 个问题版）
+ *  - v0.5+ 旧名 ask_free_text（这个名被"向用户问问题"语义接管了）
+ *  - **强制回复**：玩家在下方 composer 直接打字答（v0.4.4.1+ 之前是 bubble 内嵌 N 个 input，
+ *    UX 上"上下一对输入框"看着冗余 —— 玩家 2026-08-03 反馈后改成单问题，UX 跟普通聊天一致）
+ *  - **调 1 次** ask_user_question tool：question 字段里**只写 1 个问题**（不要用编号拆多个）
+ *  - **不要**给选项（ask_choose_option 是另一条路径，给的是备选不是反思）
+ *  - **不要**调 update_doc_item（玩家没要求改编辑器）
+ *  - 玩家主导：只问问题，玩家自己答，绝不替玩家做决定
+ *  - 跟之前 v0.4+ 区别：之前没明确说用哪个 tool，LLM 自作主张可能调 ask_choose_option / update_doc_item / 多次 ask_user_question
+ *    ——现在钉死：1 次 ask_user_question + 单问题，UI 整合到 composer，无需拆 N 个 input
+ *  - 跟 polish/expand/generate 的 OPTION_TAIL 一样明确"用什么 tool + 输出形态"
+ */
 const REFLECT_TAIL =
-  '玩家主导：你只给备选/追问，玩家挑+改，绝不替玩家做决定。' +
-  '基于当前步骤最新内容回答。'
+  '**强制走 ask_user_question tool（1 round 1 次调用，question 字段写 1 个问题）**：\n' +
+  '1. **调 1 次** ask_user_question（不要调多次 / 不要调 ask_choose_option / 不要调 update_doc_item）\n' +
+  '2. **question 字段**里**只写 1 个问题**（不要用 1./2./3. 编号拆多个问题）—— 玩家在下方 composer 直接打字回答，\n' +
+  '   UX 跟普通聊天一致，不要让玩家在多个 input 之间跳来跳去\n' +
+  '3. 玩家**回车提交**后，UI 自动把内容作为 ask_user_question 的 tool_result 喂回 LLM\n' +
+  '4. **不要**给选项 / 不要替玩家做决定 / 不要说"好的""让我分析"等客套话\n' +
+  '5. **关键**：所有问题必须**主题层**（"这论断独立成立吗？""玩家能带走吗？"），**不要**问"主角是谁""主角想什么""故事发生在哪里"——那是 L5/L6 的事，不是 L1 立意。\n' +
+  '6. 基于当前步骤最新内容回答。'
 
 /** 润色 / 扩展 类 preset 通用指令（v0.3+ 改成"出 3-5 个不同方向的备选"）
  *  - v0.3 早期是"输出完整润色/扩展后的版本" (一个 bubble), 玩家只能采用或放弃
@@ -168,23 +184,28 @@ const EXPAND_INSTRUCTION =
   '- 是完整扩展后的版本（不是扩展说明）\n' +
   '- 长度比原文明显更长（至少 1.5 倍，扩写就是要更厚）'
 
-// === 7 层 × 5 presets 静态配置（chip + 完整 prompt） ===
-// v0.5+ 每层加 1 个校准 chip（设计循环）：4 基础（generate/reflect/polish/expand）+ 1 校准
-// - L1 立意：校准 chip = "🎯 立意校准"（问 3 尖锐问题）
-// - L2 pillars：校准 chip = "🔄 反向检验"（用 L3-L6 反推）
-// - L3-L6：校准 chip = "⬆️ 上游校准"（改本层后回看 L1+L2）
-// - L7 核心体验：校准 chip = "🌀 全链路整合"（汇总裁决）
+// === 6 层 × 5 chip 静态配置（v0.5.3+ 简化：4 基础 + 1 校准） ===
+// v0.5+ 7 层 × 5 chip → v0.5.3+ 6 层 × 5 chip（数量不变，校准 prompt 简化 4→3）
+// 每层 5 chip：generate / reflect / polish / expand / 校准
+// - L1 立意：校准 chip = "🎯 立意校准"（L1_RECALIBRATE：问 3 尖锐问题）
+// - L2 核心故事 / L3 世界规则 / L4 地点 / L5 人物：校准 chip = "⬆️ 上游校准"（RECALIBRATE_UPSTREAM）
+// - L6 核心玩法：校准 chip = "🌀 全链路整合"（RECALIBRATE_FULL_CHAIN）
+// v0.5+ 旧 PILLAR_REVERSE_CHECK（pillars 专用）+ L2 pillars 的 "🔄 反向检验" chip 删除
 
 const STANDARD_PRESETS: PresetAction[] = [
   {
     label: '✨ 润色这一步',
-    prompt: POLISH_INSTRUCTION + JSON_TAIL,
+    prompt: POLISH_INSTRUCTION + OPTION_TAIL,
     action: 'polish',
+    // v0.4.4+ 让 LLM 重新调 ask_choose_option 出新备选（玩家可换思路）；不锁 chip
+    allowDuringPending: true,
   },
   {
     label: '🌱 扩展这一步',
-    prompt: EXPAND_INSTRUCTION + JSON_TAIL,
+    prompt: EXPAND_INSTRUCTION + OPTION_TAIL,
     action: 'expand',
+    // v0.4.4+ 同上
+    allowDuringPending: true,
   },
 ]
 
@@ -194,9 +215,11 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
     {
       label: '💡 给 3-5 个立意方向',
       prompt:
-        '根据玩家给的素材，给出 3-5 个不同方向的 1 句话立意版本（不同核心矛盾 / 不同主题走向）。' +
-        '格式：「主角在 X 处境下，想要 Y，但 Z 不可越」。' +
-        JSON_TAIL,
+        '根据玩家给的素材，给出 3-5 个不同方向的立意版本（不同主题 / 不同设计者论断）。' +
+        '每个版本是**设计者要表达的话**（主题 / 论断）——不是故事，不依赖具体人物 / 处境 / 情节。' +
+        '**禁止**用「主角在 X 处境下...」「XX 想...」这种故事模板——立意是主题层，比故事高一层。' +
+        '能套多个故事也成立的才算立意。' +
+        OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -207,36 +230,46 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
     ...STANDARD_PRESETS,
     {
       label: '🎯 立意校准',
-      prompt: L1_RECALIBRATE_PROMPT + JSON_TAIL,
+      prompt: L1_RECALIBRATE_PROMPT + OPTION_TAIL,
       action: 'calibrate',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
-  // L2 抽象规则
-  pillars: [
+  // L2 核心故事（v0.5.3+ 新名；吸收旧 L2 抽象规则 + L6 故事）
+  'core-story': [
     {
-      label: '💡 从立意拆支柱',
-      prompt: '从 L1 立意拆 3-5 条抽象规则（pillars），每条必须有否决权 —— 能用来否决具体方案。' + JSON_TAIL,
+      label: '💡 从立意拆核心故事',
+      prompt:
+        '从 L1 立意拆 3-5 个不同方向的 L2 核心故事版本：' +
+        '每个版本是 1-2 段话 = 弧线（1 句话）+ 3 幕压力走向（每幕 1 句话）。' +
+        '派生 L1 立意——把「主题要表达什么」转成「故事要演什么」。' +
+        OPTION_TAIL,
       action: 'generate',
     },
     {
-      label: '🔍 打回我的废话支柱',
+      label: '🔍 检查弧线是否服务立意',
       prompt:
-        '「丰富剧情」「画面精美」这种无法否决任何方案的废话支柱要打回，明确指出并给出可否决的写法。' +
+        '检查玩家写的核心故事弧线是否真的服务 L1 立意（弧线对不上立意 → 故事跑偏）。' +
         REFLECT_TAIL,
       action: 'reflect',
     },
     ...STANDARD_PRESETS,
     {
-      label: '🔄 反向检验',
-      prompt: PILLAR_REVERSE_CHECK_PROMPT + JSON_TAIL,
+      label: '⬆️ 上游校准',
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + OPTION_TAIL,
       action: 'calibrate',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
-  // L3 世界
+  // L3 世界规则（v0.5.3+ 改名；强调"设定 + 法则"是同一件事）
   'world-rules': [
     {
-      label: '💡 从立意 + 规则推世界',
-      prompt: '从 L1 立意 + L2 pillars 推 3-5 条世界规则，每条 = 是什么 + 造成什么冲突。' + JSON_TAIL,
+      label: '💡 从立意 + 核心故事推世界',
+      prompt:
+        '从 L1 立意 + L2 核心故事 推 3-5 条世界规则，每条 = 是什么 + 怎么运作 + 造成什么冲突。' +
+        OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -247,27 +280,31 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
     ...STANDARD_PRESETS,
     {
       label: '⬆️ 上游校准',
-      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + OPTION_TAIL,
       action: 'calibrate',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
   // L4 地点（可选）
   locations: [
     {
       label: '💡 从世界显形地点',
-      prompt: '从 L3 世界规则在哪些具体空间显形 —— 给出 3-5 个地点（地理 + 氛围 + 立意连接）。' + JSON_TAIL,
+      prompt: '从 L3 世界规则在哪些具体空间显形 —— 给出 3-5 个地点（地理 + 氛围 + 立意连接）。' + OPTION_TAIL,
       action: 'generate',
     },
     {
       label: '🔍 地点有没有显形 L3',
-      prompt: '检查玩家写的地点是不是真的显形 L3 世界的某条规则（显不出来的就是装饰）。' + REFLECT_TAIL,
+      prompt: '检查玩家写的地点是不是真的显形 L3 世界规则的某条（显不出来的就是装饰）。' + REFLECT_TAIL,
       action: 'reflect',
     },
     ...STANDARD_PRESETS,
     {
       label: '⬆️ 上游校准',
-      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + OPTION_TAIL,
       action: 'calibrate',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
   // L5 人物
@@ -275,10 +312,10 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
     {
       label: '💡 人物从世界长出来',
       prompt:
-        '按 L3 世界 + L4 地点生成人物候选：' +
+        '按 L3 世界规则 + L4 地点生成人物候选：' +
         '每个角色写清「想要什么 + 为什么得不到」+ 追溯到 L3+L4 哪条。' +
-        '模式：对手 = 支柱反面人格化；镜子 = 主角另一种可能；推手 = 推进情节。' +
-        JSON_TAIL,
+        '模式：对手 = 核心故事反面人格化；镜子 = 主角另一种可能；推手 = 推进情节。' +
+        OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -289,50 +326,37 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
     ...STANDARD_PRESETS,
     {
       label: '⬆️ 上游校准',
-      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
+      prompt: RECALIBRATE_UPSTREAM_PROMPT + OPTION_TAIL,
       action: 'calibrate',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
-  // L6 故事
-  'three-act': [
+  // L6 核心玩法（v0.5.3+ 新名；吸收旧 L7 核心体验 + 新增核心机制）
+  'core-gameplay': [
     {
-      label: '💡 给 3-5 种加压走法',
-      prompt: '派生 L1-L5 给出 3-5 种三幕加压走法，每种写清三幕各自的加压点（一幕比一幕紧）。' + JSON_TAIL,
-      action: 'generate',
-    },
-    {
-      label: '🔍 检验压力有没有递增',
-      prompt: '帮玩家检验三幕骨架的压力有没有递增（第二幕比第一幕紧、第三幕不能塌）。' + REFLECT_TAIL,
-      action: 'reflect',
-    },
-    ...STANDARD_PRESETS,
-    {
-      label: '⬆️ 上游校准',
-      prompt: RECALIBRATE_UPSTREAM_PROMPT + JSON_TAIL,
-      action: 'calibrate',
-    },
-  ],
-  // L7 核心体验
-  'core-fantasy': [
-    {
-      label: '💡 给 3-5 个整合版',
+      label: '💡 给 3-5 种核心玩法',
       prompt:
-        '整合 L1-L6 给出 3-5 个核心体验 1 句话版本。' +
-        '格式：「你扮演 X，在 Y 处境，做 Z」。' +
-        '必须反映整链路：立意 + 规则 + 世界 + 地点 + 人物 + 故事。' +
-        JSON_TAIL,
+        '整合 L1-L5 给出 3-5 种核心玩法方向，每种写清 2 部分：' +
+        '1. 核心机制（回合制 / 文字冒险 / 资源管理 / 角色羁绊 / 选择驱动 / 等）' +
+        '2. 1 句话玩家体验（「你扮演 X，在 Y，做 Z」）' +
+        OPTION_TAIL,
       action: 'generate',
     },
     {
-      label: '🔍 核心体验有没有反映整链路',
-      prompt: '检查玩家写的核心体验是不是真的反映 L1-L6 整链路（对不上的就是凭空写）。' + REFLECT_TAIL,
+      label: '🔍 核心玩法有没有反映整链路',
+      prompt:
+        '检查玩家写的核心玩法是不是真的反映 L1-L5 整链路（核心机制派生世界 + 人物；体验整合整链路）。' +
+        REFLECT_TAIL,
       action: 'reflect',
     },
     ...STANDARD_PRESETS,
     {
       label: '🌀 全链路整合',
-      prompt: RECALIBRATE_FULL_CHAIN_PROMPT + JSON_TAIL,
+      prompt: RECALIBRATE_FULL_CHAIN_PROMPT + OPTION_TAIL,
       action: 'calibrate',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
 }
@@ -344,7 +368,7 @@ export const STEP_PRESETS: Record<ConceptStepId, PresetAction[]> = {
  *  - 默认 markdown 形态；用户消息若要求 JSON 则必须 JSON
  *  - **v0.4.1+ 写入模式提示**：调 update_doc_item 时分清 replace vs append —
  *    整段完整内容 → mode=replace (默认); 局部补全/单条规则/一句话 → mode=append。
- *    反思/提问/解释类输出**不要**用 update_doc_item, 用 ask_user_question / ask_free_text */
+ *    反思/提问/解释类输出**不要**用 update_doc_item, 用 ask_choose_option / ask_user_question */
 function stepChatSystemPrompt(step: ConceptStep): string {
   return (
     `你是 PlotCraft 的 AI 编剧搭档，正在帮玩家做「${step.title}」这一步。\n` +
@@ -355,7 +379,7 @@ function stepChatSystemPrompt(step: ConceptStep): string {
     `- 如果用户没指定 → 输出 markdown，保持简洁\n` +
     `**写入模式**（调 update_doc_item 时）：整段完整内容 → mode=replace（默认）；` +
     `局部补全 / 一句话 / 一条规则 → mode=append。` +
-    `反思 / 提问 / 解释 → 用 ask_user_question / ask_free_text，不要用 update_doc_item。`
+    `反思 / 提问 / 解释 → 用 ask_choose_option / ask_user_question，不要用 update_doc_item。`
   )
 }
 
@@ -407,9 +431,9 @@ export const useConceptStore = defineStore('concept', () => {
   }
 
   /** 保存一步（v0.3+ 永远 markConfirmed=true：玩家操作 = 自动 confirmed，不再有"标记为已确认"按钮）
-   *  v0.5+ maturity：仅 L2 pillars 写（其他步骤传 undefined 不写盘）
+   *  v0.5.3+ 删 maturity 参数（L2 核心故事 不再有 4 态成熟度）
    *  v0.5+ 设计循环：成功 → markStale(stepId) 触发下游/上游黄点
-   *  v0.5.1 mtime hash 对比：保存前拿 oldContent / oldMaturity，后端返回 newContent / newMaturity，
+   *  v0.5.1 mtime hash 对比：保存前拿 oldContent，后端返回 newContent，
    *    真有变化才 markStale——避免 debounce 重复触发、纯 markConfirmed 重复保存等场景下"改一下全黄"
    *  成功用后端返回的 step 替换本地项（shallowRef → 整个数组换新引用）；
    *  失败抛错让 UI 提示 */
@@ -417,29 +441,23 @@ export const useConceptStore = defineStore('concept', () => {
     stepId: ConceptStepId,
     content: string,
     markConfirmed: boolean,
-    maturity?: StepMaturity,
   ): Promise<void> {
     const project = useProjectStore()
     if (!project.current) throw new Error('没有打开的项目')
-    // v0.5.1 拿旧 content / maturity（save 前可能没加载过 steps，oldStep 可能 undefined → 视为变化）
+    // v0.5.1 拿旧 content（save 前可能没加载过 steps，oldStep 可能 undefined → 视为变化）
     const oldStep = steps.value.find((s) => s.id === stepId)
     const oldContent = oldStep?.content ?? ''
-    const oldMaturity = oldStep?.maturity ?? 'empty'
     const updated = await saveConceptStep(
       project.current.folder,
       stepId,
       content,
       markConfirmed,
-      maturity,
     )
     steps.value = steps.value.map((s) => (s.id === stepId ? updated : s))
-    // v0.5.1 mtime hash 对比：content / maturity 真有变化才 markStale
+    // v0.5.1 mtime hash 对比：content 真有变化才 markStale
     // - 字符串比较（O(n) 但 content 不大，不引入 hash 库）
-    // - maturity 变化时即使 content 没变也要 markStale（L2 成熟度从草稿→定型影响下游判断）
     // - oldStep undefined（极少见：load 失败但还能 save）→ 视为变化触发 markStale，行为保守
-    const contentChanged = oldContent !== updated.content
-    const maturityChanged = maturity !== undefined && oldMaturity !== updated.maturity
-    if (contentChanged || maturityChanged) {
+    if (oldContent !== updated.content) {
       markStaleAfterSave(stepId)
       // v0.5+ sync：概念 L3/L4 改了 → 通知 world store 标对应 doc stale
       // - 只 L3/L4 跟世界 tab 有派生关系，其他 5 步不动 world
@@ -476,6 +494,37 @@ export const useConceptStore = defineStore('concept', () => {
   // 错误条 "复制诊断信息" 按钮用
   const chatErrorDiags = shallowRef(new Map<string, ChatErrorDiag | null>())
   const chatRunIds = shallowRef(new Map<string, string | null>())
+
+  // v0.4.4+ ask_free_text tool 强制回复协议（"就地输入" 模式，1 round 1 ask_free_text 多问题版）
+  // - Map<toolCallId, { question, answer? }>
+  //   - LLM 调 1 次 ask_free_text，question 字段里用 1./2./3. 编号列所有要问的问题
+  //   - onChatDone 写入 { question }（answer 还没填）
+  //   - UI 拆 question 编号 → N 个 input → 玩家在 N 个 input 各自打字 → 实时更新 answer
+  //   - 玩家点 "提交所有回答" → sendAllAskFreeTextAnswers → 把 N 个 answer 合成 1 条 tool message 发回 LLM
+  //   - 协议要求：1 round 1 个 tool_call → 1 个 tool_result 配对，UI 永远 0/1 pending entry（1 round 1 ask_free_text 调用）
+  //   - 答完 → LLM 拿到 tool_result → 决定下一步（可能再调 1 次 ask_free_text 进 round 2，也可能直接出 text）
+  // - 跟 chatHistories 一样 per-item，切步保留
+  // - shallowRef + triggerRef 手动触发响应
+  // - 详见 docs/AI_PANEL_DESIGN.md §ask_free_text 强制回复
+  const askFreeTextPending = shallowRef(new Map<string, Map<string, { question: string; answer?: string }>>())
+
+  // v0.4.4+ 全 tool 通用 pending（ask_choose_option / ask_user_question / update_doc_item 都在等玩家反应）
+  // - Map<itemId, Set<toolCallId>>
+  // - LLM 调 tool 时 add（onChatDone 扫 tool_calls）
+  // - 玩家反应时 remove（sendToolResult / sendAllAskFreeTextAnswers 内部）
+  // - 玩家"放弃"时 remove（cancelPendingToolCall 内部）
+  // - 协议：1 round 1 tool_call → 1 tool_result 配对。set 永远 0/1 entry（v0.4.4+ 钉死 1 round 1 tool_call）
+  // - AiChatPanel 据此锁 composer（避免玩家绕开 AltCard 用 composer 输入破坏协议）
+  //   → 玩家 2026-08-02 撞 deepseek "No tool output found" bug 根因
+  // - 防御性兼容：理论 LLM 1 round 1 tool_call，但万一 LLM 调多次，set 多个 entry 也兼容（每个单独 track）
+  const pendingToolCalls = shallowRef(new Map<string, Set<string>>())
+
+  // v0.5+ silently 改写常量（cancelPendingToolCall silently=true 写入 assistant message.content）
+  // - runChatRound 拼 messages 时扫 chatHistories，匹配这个 content 的 assistant message → 临时补 tool message
+  //   给 LLM（OpenAI 协议层 tool_calls + tool_result 配对），**不**改 chatHistories
+  // - 不用维护 separate state（per item Set）——直接 string 匹配（content 固定就是这串）
+  // - 永久性：chatHistories 存盘后 replay 仍能 detect
+  const SILENTLY_ABANDONED_CONTENT = '玩家放弃这批备选，等玩家打字。'
 
   function mapGet<T>(ref: Ref<Map<string, T>>, key: string, fallback: T): T {
     return ref.value.get(key) ?? fallback
@@ -521,6 +570,76 @@ export const useConceptStore = defineStore('concept', () => {
    *  - 跟 chatTexts 一样是 per-item Map，shallowRef + triggerRef
    *  - 切步 / 切项目 / reset 时清 */
   const chatToolCalls = shallowRef(new Map<string, Map<number, ToolCallInfo>>())
+
+  // === v0.4.4+ ask_free_text pending helpers ===
+  // 浅拷贝 Map + 设值 + triggerRef
+  function mapGetAskFreeText(itemId: string): Map<string, { question: string; answer?: string }> {
+    return askFreeTextPending.value.get(itemId) ?? new Map()
+  }
+  function mapSetAskFreeText(
+    itemId: string,
+    pending: Map<string, { question: string; answer?: string }>,
+  ): void {
+    askFreeTextPending.value.set(itemId, pending)
+    triggerRef(askFreeTextPending)
+  }
+  function clearAskFreeTextForItem(itemId: string): void {
+    const next = new Map(askFreeTextPending.value)
+    next.delete(itemId)
+    askFreeTextPending.value = next
+    triggerRef(askFreeTextPending)
+  }
+
+  // === v0.4.4+ 全 tool 通用 pending helpers（ask_choose_option / ask_user_question / update_doc_item 通用）===
+  /** 取当前 item 的 pending tool_call id 集合（深拷，UI 直接用） */
+  function mapGetPendingToolCalls(itemId: string): Set<string> {
+    return new Set(pendingToolCalls.value.get(itemId) ?? [])
+  }
+  /** 加 tool_call 到 pending（LLM 调 tool 时） */
+  function addPendingToolCall(itemId: string, toolCallId: string): void {
+    const cur = pendingToolCalls.value.get(itemId)
+    const next = cur ? new Set(cur) : new Set<string>()
+    next.add(toolCallId)
+    pendingToolCalls.value.set(itemId, next)
+    triggerRef(pendingToolCalls)
+  }
+  /** 从 pending 移除 tool_call（玩家反应时 / 玩家放弃时） */
+  function removePendingToolCall(itemId: string, toolCallId: string): void {
+    const cur = pendingToolCalls.value.get(itemId)
+    if (!cur || !cur.has(toolCallId)) return
+    const next = new Set(cur)
+    next.delete(toolCallId)
+    if (next.size === 0) {
+      const outer = new Map(pendingToolCalls.value)
+      outer.delete(itemId)
+      pendingToolCalls.value = outer
+    } else {
+      pendingToolCalls.value.set(itemId, next)
+    }
+    triggerRef(pendingToolCalls)
+  }
+  /** 清空 item 的所有 pending（防御性，正常不调） */
+  function clearPendingToolCallsForItem(itemId: string): void {
+    const outer = new Map(pendingToolCalls.value)
+    if (outer.delete(itemId)) {
+      pendingToolCalls.value = outer
+      triggerRef(pendingToolCalls)
+    }
+  }
+
+  /** 解析 ask_free_text tool 的 arguments（JSON 字符串）→ { question }
+   *  - 失败 → null
+   *  - 跟 AiChatPanel.vue 的 parseAskUserQuestion / parseAskFreeText 同款 try/catch
+   *  - store 端单独用一份（不依赖 AiChatPanel 的实现） */
+  function parseAskFreeTextArgs(tc: ToolCallInfo): { question: string } | null {
+    try {
+      const args = JSON.parse(tc.arguments)
+      if (typeof args.question !== 'string') return null
+      return { question: args.question }
+    } catch {
+      return null
+    }
+  }
 
   function mapGetToolCalls(itemId: string): Map<number, ToolCallInfo> {
     return chatToolCalls.value.get(itemId) ?? new Map()
@@ -607,6 +726,20 @@ export const useConceptStore = defineStore('concept', () => {
           console.log(
             `[concept.onChatDone] ${id} run=${payload.run_id} OK: contentLen=${accumulated.length}, action=${lastUser?.action ?? 'none'}, toolCalls=${toolCalls?.length ?? 0}`,
           )
+          // v0.4.4.1+ 诊断：打出 LLM 实际回复的 content + tool_calls（玩家截图"AI 回复"空内容 bug 排查用）
+          // - 仅 dev 模式输出（import.meta.env.DEV 是 Vite 原生 dev 标志）
+          // - 生产 release 前可整体删（已修玩家报的 bug，遗留只为后续类似 bug 留排查入口）
+          if (import.meta.env.DEV) {
+            console.log(
+              `[concept.onChatDone.DIAG] ${id} run=${payload.run_id} CONTENT: ${JSON.stringify(accumulated).slice(0, 200)}`,
+            )
+            if (toolCalls && toolCalls.length > 0) {
+              console.log(
+                `[concept.onChatDone.DIAG] ${id} run=${payload.run_id} TOOL_CALLS:`,
+                toolCalls.map((tc) => ({ name: tc.name, arguments: tc.arguments?.slice(0, 300) })),
+              )
+            }
+          }
         } else if (tcs.size > 0) {
           // v0.4+ 纯 tool call reply（无 text content）
           const cur = mapGet(chatHistories, id, [])
@@ -625,7 +758,72 @@ export const useConceptStore = defineStore('concept', () => {
             `[concept.onChatDone] ${id} run=${payload.run_id} OK: pure tool_call, toolCalls=${toolCalls.length}, names=${toolCalls.map((t) => t.name).join(',')}`,
           )
         } else {
-          console.warn(`[concept.onChatDone] ${id} run=${payload.run_id} empty content (LLM returned 0 chars?)`)
+          // v0.4+ 真沉默（accumulated === '' && tcs.size === 0）：LLM 收到 tool_result / user message 后
+          // 既不出 text 也不调 tool —— 协议层异常（理论上 tool_result 必触发 model 重新输出）
+          // 玩家 2026-08-03 截图：deepseek-v4-flash 收到 ask_user_question 答完的 tool_result 后沉默
+          // - 修：写一条 fallback message 让 chatHistories 增加 entry，UI 不再"卡住"
+          // - **v0.5+ 文案智能判断**（玩家 2026-08-03 截图反馈"AI 可以拒绝？"）：
+          //   - 上一条 message 是 tool_result → LLM 刚调过 tool + 写完 tool_result → 沉默是"已交付"
+          //     → fallback 显示 "✓ 已完成"，让玩家知道 LLM 没出错，是交付完沉默
+          //   - 上一条 message 是 user 打字 → LLM 主动沉默（可能是边界 case / model 行为）
+          //     → fallback 显示 "（AI 无回复）"（保留旧提示）
+          // - console.warn 保留（边界 case 排查用）
+          const cur = mapGet(chatHistories, id, [])
+          const lastUser = [...cur].reverse().find((m) => m.role === 'user')
+          const lastMsg = cur.length > 0 ? cur[cur.length - 1] : undefined
+          const fallbackContent =
+            lastMsg && (lastMsg.role === 'tool' || (lastMsg.role === 'user' && lastMsg.tool_call_id))
+              ? '✓ 已完成'
+              : '（AI 无回复）'
+          mapSet(chatHistories, id, [
+            ...cur,
+            { role: 'assistant', content: fallbackContent, action: lastUser?.action },
+          ])
+          console.warn(
+            `[concept.onChatDone] ${id} run=${payload.run_id} empty content (LLM 沉默边界 case: 0 chars + 0 tool_call，写 fallback message "${fallbackContent}")`,
+          )
+        }
+        // v0.4.4+ ask_free_text 强制回复：扫描本轮 tool_calls 把 ask_free_text 写入 pending map
+        // - 必须在写 chatHistories **之后**做（chatHistories 是 source of truth，pending 是 UI 派生）
+        // - 每次新 round 都覆盖 pending（之前未答的作废，UI 端需要保证不让这种情况发生 —— 上一轮
+        //   没提交所有回答 LLM 不会进入下一轮）
+        if (tcs.size > 0) {
+          const next = new Map<string, { question: string; answer?: string }>()
+          for (const tc of tcs.values()) {
+            // v0.5+ tool name 重命名：旧 ask_free_text → ask_user_question
+            if (tc.name === 'ask_user_question') {
+              const parsed = parseAskFreeTextArgs(tc)
+              if (parsed && tc.id) {
+                next.set(tc.id, { question: parsed.question })
+              }
+            }
+          }
+          if (next.size > 0) {
+            mapSetAskFreeText(id, next)
+            console.log(
+              `[concept.onChatDone] ${id} populated ${next.size} ask_free_text pending (forced reply)`,
+            )
+          } else {
+            // 本轮没有 ask_free_text（比如只有 ask_choose_option / update_doc_item）—— 清掉 pending
+            // 避免上轮残留（正常情况上轮已经发完，但 chat error 路径可能漏掉清空）
+            clearAskFreeTextForItem(id)
+          }
+        } else {
+          // 本轮没 tool call —— 清掉 pending（防御性，正常不会到这里）
+          clearAskFreeTextForItem(id)
+        }
+        // v0.4.4+ 全 tool 通用 pending：把本轮 tool_call 加到 pendingToolCalls（**v0.4.4.1+ ask_free_text 除外**）
+        // - ask_user_question → 等玩家点 AltCard / 放弃
+        // - update_doc_item → 等玩家确认写入
+        // - **v0.4.4.1+ ask_free_text 不再加 pendingToolCalls**（UX 整合到 composer，composer 解锁让玩家打字）
+        //   - 协议层仍由 askFreeTextPending 独立 track（onChatDone 写入 question，玩家 composer 提交时清）
+        //   - sendAllAskFreeTextAnswers 内部 removePendingToolCall 是 noop（不影响协议配对）
+        // - remove 路径：sendToolResult (ask_user_question/update) + sendAllAskFreeTextAnswers (ask_free_text, noop)
+        if (tcs.size > 0) {
+          for (const tc of tcs.values()) {
+            // v0.4.4.1+ ask_user_question (旧名 ask_free_text) 跳过 pendingToolCalls（避免锁 composer）
+            if (tc.id && tc.name !== 'ask_user_question') addPendingToolCall(id, tc.id)
+          }
         }
         mapSet(chatTexts, id, '')
         mapSet(chatRunIds, id, null)
@@ -739,7 +937,7 @@ export const useConceptStore = defineStore('concept', () => {
       // 那里可能是没同步过的失效值（400 invalid model 踩过）——resolveLlmConnection 才跟会话 tab 同源
       const conn = await resolveLlmConnection()
       // v0.4+ 走 tool calling：runChatRound 内部自动 resolveEnabledTools 注入 tools 字段，
-      // LLM 收到 schema 强制调 ask_user_question / update_doc_item 返结构化数据
+      // LLM 收到 schema 强制调 ask_choose_option / update_doc_item 返结构化数据
       await runChatRound({ id, conn })
     } catch (e) {
       mapSet(chatStreamings, id, false)
@@ -755,7 +953,7 @@ export const useConceptStore = defineStore('concept', () => {
    *  - LLM 第二轮可能：
    *    - 调 update_doc_item tool → 走 assistant-tool-update 渲染分支（玩家点"确认写入"再调一次）
    *    - 直接出 text → 走整体采用条 append
-   *    - 调 ask_user_question tool → 又一个 AltCard 循环
+   *    - 调 ask_choose_option tool → 又一个 AltCard 循环
    *  - 失败抛错让 UI 提示 */
   async function sendToolResult(toolCallId: string, content: string): Promise<void> {
     const id = currentItemKey()
@@ -783,6 +981,8 @@ export const useConceptStore = defineStore('concept', () => {
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
     mapSet(chatErrorDiags, id, null)
+    // v0.4.4+ pendingToolCalls：玩家已反应，从 pending 移除
+    removePendingToolCall(id, toolCallId)
 
     try {
       mapSet(chatStreamings, id, true)
@@ -795,6 +995,179 @@ export const useConceptStore = defineStore('concept', () => {
       throw e
     }
   }
+
+  // === v0.4.4.1+ ask_free_text 强制回复协议（UX 整合到 composer，单问题版） ===
+  // v0.4.4+ 老的"bubble 内嵌 N 个 input"多问题版已删：
+  // - setAskFreeTextAnswer / askFreeTextAllAnswered / parseAskFreeTextSubQuestions 等都不再需要
+  // - 单问题版：玩家在 composer 打字回车 → sendAllAskFreeTextAnswers(playerText) 内部覆盖 pending.answer
+  // - askFreeTextPending 仍是 1 round 1 entry 的 Map（防御性兼容多次），AIChatPanel 拿来显示 LLM 问题 + 锁 chip
+
+  /** 派生的 askFreeTextPending（当前 item）—— AiChatPanel 拿来显示 LLM 问的问题 + 锁 chip
+   *  - shallowRef 包 Map<itemId, Map<toolCallId, {question, answer?}>>
+   *  - 当前 item 派生 = inner Map（按 currentItemKey 取）
+   *  - 切步自动切派生（跟 chatHistories 同一套）
+   *  - v0.4.4+ 1 round 1 ask_free_text 调用：实际 0/1 entry，但保持 Map 接口泛型稳 */
+  const askFreeTextPendingForItem = computed(() => mapGetAskFreeText(currentItemKey()))
+
+  /** 玩家在 composer 回车发送时调（v0.4.4.1+ UX 整合到 composer）—— 1 条 function_call_output 喂回 LLM
+   *  - **v0.4.4.1+ playerText 必填**：玩家在 composer 打的字直接作为 ask_free_text 的 answer
+   *  - 1 round 1 ask_free_text 调用（v0.4.4+ 钉死，v0.4.4.1+ 改为单问题版）→ 1 条 tool_result 配对（协议要求）
+   *  - 协议层：pending 永远 0/1 entry（因为 1 round 1 ask_free_text），for loop 是防御性兼容
+   *  - 必须有非空 playerText（trim 后非空）
+   *  - 失败抛错让 UI 提示
+   *  - 跟 sendToolResult 走同款 stream 路径（runChatRound 触发 streaming=true）*/
+  async function sendAllAskFreeTextAnswers(playerText?: string): Promise<void> {
+    const id = currentItemKey()
+    if (mapGet(chatStreamings, id, false)) {
+      console.log(`[concept.sendAllAskFreeTextAnswers] ${id} ignored: already streaming`)
+      return
+    }
+    if (!steps.value.find((s) => s.id === currentStepId.value)) {
+      throw new Error('未知步骤')
+    }
+    const pending = askFreeTextPendingForItem.value
+    if (pending.size === 0) {
+      console.log(`[concept.sendAllAskFreeTextAnswers] ${id} ignored: no pending ask_free_text`)
+      return
+    }
+    // v0.4.4.1+ playerText 优先（composer 整合 UX）—— fallback 到 entry.answer 兼容旧 UI 路径
+    // 1 round 1 ask_free_text：取唯一那一条 toolCallId
+    // for loop 防御性兼容（理论 LLM 1 round 只调 1 个）
+    const allAnswered: Array<{ toolCallId: string; content: string }> = []
+    const trimmedText = playerText?.trim()
+    for (const [toolCallId, entry] of pending) {
+      const a = trimmedText || entry.answer?.trim()
+      if (!a) {
+        throw new Error('还有未填的 ask_free_text 答案')
+      }
+      allAnswered.push({ toolCallId, content: a })
+    }
+    // v0.4.4.1+ 玩家在 composer 打字 → 覆盖 pending.answer（保证后续 chatHistories 派生状态一致）
+    if (trimmedText) {
+      const next = new Map(askFreeTextPending.value)
+      for (const toolCallId of pending.keys()) {
+        const cur = next.get(toolCallId)
+        if (cur) next.set(toolCallId, { question: cur.question, answer: trimmedText })
+      }
+      mapSetAskFreeText(id, next)
+    }
+
+    await init()
+    console.log(
+      `[concept.sendAllAskFreeTextAnswers] ${id} starting: ${allAnswered.length} tool_results, contentLen=${allAnswered[0]?.content.length ?? 0}`,
+    )
+
+    // 加 tool message 到 chatHistories（1 round 1 tool_result：1 条 message）
+    let cur = mapGet(chatHistories, id, [])
+    for (const { toolCallId, content } of allAnswered) {
+      cur = [
+        ...cur,
+        { role: 'tool' as const, content, tool_call_id: toolCallId },
+      ]
+    }
+    mapSet(chatHistories, id, cur)
+    mapSet(chatErrorKinds, id, null)
+    mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
+    // 清 pending（提交后玩家不能再改）
+    clearAskFreeTextForItem(id)
+    // v0.4.4+ pendingToolCalls：玩家已提交，从 pending 移除
+    for (const { toolCallId } of allAnswered) {
+      removePendingToolCall(id, toolCallId)
+    }
+
+    try {
+      mapSet(chatStreamings, id, true)
+      const conn = await resolveLlmConnection()
+      await runChatRound({ id, conn })
+    } catch (e) {
+      mapSet(chatStreamings, id, false)
+      console.error('[concept.sendAllAskFreeTextAnswers] startChat FAILED:', e)
+      throw e
+    }
+  }
+
+  /** v0.4.4+ 玩家点"放弃备选"按钮时调 —— 1 条 function_call_output 喂回 LLM
+   *  - 用于 ask_choose_option / update_doc_item 场景：玩家不要 LLM 给的备选 / 写入内容
+   *  - 非 silently 模式：发 1 条 tool_result（"玩家放弃：<reason>"）→ LLM 知道玩家不要 → 可以出 text 引导 / 让 update_doc_item 跟玩家的写
+   *  - 协议层：1 round 1 tool_call → 1 tool_result 配对（不破坏协议）
+   *  - 复用 sendToolResult 走 stream 路径
+   *  - **v0.4.4+ silently 模式**：玩家点"放弃"时**不想让 LLM 立刻再调 tool**（避免 LLM 又出一批新备选）→
+   *    改 chatHistories 写「玩家放弃」语义 + **不调 LLM**。玩家解锁 composer 后自己写 → 下次 sendStepChat 走普通 user message
+   *  - **v0.5+ silently 改成主流做法**（玩家 2026-08-03 反馈）：之前 silently 模式用"清 tool_calls 字段 + 改写 content"绕过
+   *    OpenAI 协议，**导致 LLM 看不到 tool_call 上下文**——玩家打字问时 LLM 脑补"那我就直接写吧"调 update_doc_item。
+   *    主流 agent（Cline / Cursor / LangChain / OpenClaw / OpenAI Cookbook）都是"保留 tool_call 上下文 + 发 tool_result 配对"。
+   *    现在 silently 模式改成：
+   *    1. **保留** tool_calls 字段（LLM 看到 tool_call + 之前给过什么备选）
+   *    2. **改写** assistant content 为短版「玩家放弃这批备选，等玩家打字。」（避免 LLM 顺着 preamble iterate 新备选）
+   *    3. **追加** 1 条 tool message（tool_call_id 配对，content 同上）——OpenAI 协议层 tool_calls 必有 tool_result
+   *    4. **不调 LLM**——玩家解锁 composer 自己写，下条 user message 走 sendStepChat 普通路径
+   *  - 效果：协议层 OK（tool_calls + tool_result 配对，deepseek 不会报 "No tool output found"）+
+   *    LLM 看到完整 tool_call 上下文 + 玩家放弃信号 → 玩家打字时 LLM 知道"玩家在打字"（不是"那你就直接写吧"）
+   *  - **老 .chats/ 落盘数据不兼容**：v0.4.4+ 之前的 silently 改写 assistant 没 tool_calls 字段（没协议配对），
+   *    v0.5+ 新 silently 改写要求 tool_calls + tool_result 配对。需要清掉老 .chats/concept/*.json
+   *    （下次启动自动建新 + 落盘新格式）。同款适用于 world store。
+   *  - 视觉：assistant message 仍带 tool_calls 字段 + content 改写为"玩家放弃..."——
+   *    replay 时 AltCard / 写入确认 UI 仍渲染（tool_call 还在），但 content 显示"玩家放弃"语义
+   *    （v0.4+ "tool_call 优先不显示 text"，现在改成显示"玩家放弃..."短句给玩家 UX 提示）*/
+  async function cancelPendingToolCall(
+    toolCallId: string,
+    reason?: string,
+    options?: { silently?: boolean },
+  ): Promise<void> {
+    const id = currentItemKey()
+    const finalReason = reason ?? '玩家放弃这个备选'
+    const silently = options?.silently ?? false
+    console.log(
+      `[concept.cancelPendingToolCall] ${id} starting: tool_call_id=${toolCallId}, reason=${finalReason}, silently=${silently}`,
+    )
+    if (silently) {
+      // v0.5+ 主流做法（UI 不重复版）：保留 tool_call 上下文 + 改写 content + **不**追加 tool message to chatHistories
+      // - 协议层：assistant tool_calls 必有 tool_result 配对（OpenAI 协议硬要求）→
+      //   runChatRound 拼 messages 时**临时**为 silently 放弃的 tool_call 补 1 条 tool message 给 LLM
+      //   （从 silentlyAbandonedToolCalls 取 tool_call_id，per item 维护；不存 chatHistories）
+      // - UI 层：assistant 改写后**只**显示 1 条 bubble（"✓ 已答"+ 改写后 content）——不追加 tool message
+      //   到 chatHistories 避免 UI 重复显示（之前 v0.5+ 错误做法：追加 tool message → UI 走 MessageBubble 又渲染
+      //   一次"玩家放弃..." 截图反馈）
+      // - 语义层：LLM 看到完整 tool_call 上下文（tool_calls 字段保留 + tool_result 临时补）
+      //   + "等玩家打字"——不脑补"那你就直接写吧"
+      // - 不调 LLM：玩家解锁 composer 自己写
+      // - 改写后的 assistant message 走"✓ 已答"tool-question bubble（pending 已 remove + askFreeTextAnswered 返 null），
+      //   AiChatPanel.vue "✓ 已答" else 分支显示 d.msg.content（v0.5.1+ 修）让玩家看到"玩家放弃..."语义
+      const histories = mapGet(chatHistories, id, [])
+      const idx = histories.findIndex(
+        (m) => m.role === 'assistant' && m.tool_calls?.some((tc) => tc.id === toolCallId),
+      )
+      if (idx >= 0) {
+        const next = [...histories]
+        const orig = next[idx]!
+        const abandonMsg = '玩家放弃这批备选，等玩家打字。'
+        // 改写 content + 保留 tool_calls 字段（UI 走"✓ 已答"tool-question bubble，LLM 看到 tool_call 上下文）
+        // 不追加 tool message to chatHistories（避免 UI 重复）
+        next[idx] = { ...orig, content: abandonMsg }
+        mapSet(chatHistories, id, next)
+        console.log(
+          `[concept.cancelPendingToolCall] ${id} silently rewrote assistant message idx=${idx} (preserved tool_calls, content='${abandonMsg}'; tool result 临时拼给 LLM 不存)`,
+        )
+      } else {
+        console.warn(
+          `[concept.cancelPendingToolCall] ${id} silently: no assistant message found with tool_call_id=${toolCallId}`,
+        )
+      }
+      // 不需要 addSilentlyAbandonedToolCall state：runChatRound 直接从 chatHistories
+      // 检测 content === SILENTLY_ABANDONED_CONTENT 的 assistant message + 临时补 tool message 给 LLM
+      removePendingToolCall(id, toolCallId)
+      return
+    }
+    // 非 silently：走 sendToolResult 同款路径（add tool message + 触发 LLM round 2 + 内部 remove pending）
+    await sendToolResult(toolCallId, finalReason)
+  }
+
+  /** 派生的 pendingToolCalls（当前 item）—— AiChatPanel 拿来 disable composer
+   *  - 跟 askFreeTextPendingForItem 同款派生套路（当前 item 内层 Set）
+   *  - 切步自动切派生
+   *  - v0.4.4+ 1 round 1 tool_call：实际 0/1 entry，但保持 Set 接口稳（防御性兼容多次） */
+  const pendingToolCallsForItem = computed(() => mapGetPendingToolCalls(currentItemKey()))
 
   /** 内部：发一轮 LLM（user 消息流 / tool result 流 共用）
    *  - 拼 system + 完整 messages（透传 tool_calls / tool_call_id）
@@ -821,19 +1194,67 @@ export const useConceptStore = defineStore('concept', () => {
         { role: 'system', content: systemContent },
         // 过滤 system（第一轮 system 已含 context）+ strip preset field（后端 ChatMessage 不带）
         // v0.4+ tool_calls / tool_call_id 必须透传给后端（跨 request 回放需要）
-        ...mapGet(chatHistories, id, [])
-          .filter((m) => m.role !== 'system')
-          .map((m) => ({
-            role: m.role,
-            content: m.content,
-            partial: m.partial,
-            tool_calls: m.tool_calls,
-            tool_call_id: m.tool_call_id,
-          })),
+        // **v0.5+ silently 临时补 tool message**：遇到 content === SILENTLY_ABANDONED_CONTENT 的
+        //   assistant message（玩家点"放弃"后 cancelPendingToolCall silently 改写 + 保留 tool_calls
+        //   字段），在它后面**临时**插 1 条 tool message（OpenAI 协议层 tool_calls + tool_result 配对）。
+        //   **不**改 chatHistories（避免 UI 重复显示），只在 LLM 端 messages 流补。
+        //   - 玩家下次 sendStepChat 调 LLM 时 LLM 看到完整 tool_call 上下文 + "玩家放弃"信号
+        ...buildMessagesWithSilentAbandonToolResult(id),
       ],
       { model: conn.model, effort: null, tools },
     )
     mapSet(chatRunIds, id, runId)
+  }
+
+  /** v0.5+ 拼 messages 给 LLM 时，临时为 silently 放弃的 assistant message 补 tool_result
+   *  - chatHistories 里的 assistant message（content === SILENTLY_ABANDONED_CONTENT + tool_calls 仍存在）
+   *    是 cancelPendingToolCall silently=true 改写的——玩家放弃但 chatHistories 没存 tool message（避免 UI 重复）
+   *  - LLM 端 messages 流必须**临时**给这种 assistant message 补 1 条 tool message（tool_call_id 配对），
+   *    否则 LLM 报 "No tool output found"
+   *  - 不用维护 separate state（per item Set）——直接 string 匹配（content 固定 = SILENTLY_ABANDONED_CONTENT）
+   *  - 永久性：chatHistories 存盘后 replay 仍能 detect（"玩家放弃"改写 + tool_calls 保留 2 个条件即可）
+   *  - 用法：runChatRound 调；不修改 chatHistories（只读） */
+  function buildMessagesWithSilentAbandonToolResult(itemId: string): Array<{
+    role: ChatMessage['role']
+    content: string
+    partial?: boolean
+    tool_calls?: ToolCallInfo[]
+    tool_call_id?: string
+  }> {
+    const result: Array<{
+      role: ChatMessage['role']
+      content: string
+      partial?: boolean
+      tool_calls?: ToolCallInfo[]
+      tool_call_id?: string
+    }> = []
+    const histories = mapGet(chatHistories, itemId, [])
+    for (const m of histories) {
+      if (m.role === 'system') continue
+      result.push({
+        role: m.role,
+        content: m.content,
+        partial: m.partial,
+        tool_calls: m.tool_calls,
+        tool_call_id: m.tool_call_id,
+      })
+      // silently 改写的 assistant message：临时补 tool message（不存 chatHistories）
+      if (
+        m.role === 'assistant' &&
+        m.content === SILENTLY_ABANDONED_CONTENT &&
+        m.tool_calls &&
+        m.tool_calls.length > 0
+      ) {
+        for (const tc of m.tool_calls) {
+          result.push({
+            role: 'tool',
+            content: SILENTLY_ABANDONED_CONTENT,
+            tool_call_id: tc.id,
+          })
+        }
+      }
+    }
+    return result
   }
 
   /** 清当前 step 的 chat 状态（UI「清空对话」按钮调）
@@ -849,6 +1270,10 @@ export const useConceptStore = defineStore('concept', () => {
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
     mapSet(chatErrorDiags, id, null)
+    // v0.4.4+ ask_free_text pending 也要清（玩家点清空对话 → 强制回复状态也作废）
+    clearAskFreeTextForItem(id)
+    // v0.4.4+ pendingToolCalls 也要清（避免上轮残留的待反应 tool_call 卡 composer）
+    clearPendingToolCallsForItem(id)
     // 立即删 .chats/concept/<stepId>.json
     const project = useProjectStore()
     if (project.current) {
@@ -869,6 +1294,12 @@ export const useConceptStore = defineStore('concept', () => {
     chatErrorKinds.value = new Map()
     chatErrorRaws.value = new Map()
     chatErrorDiags.value = new Map()
+    // v0.4.4+ ask_free_text pending 也要清（切项目时新项目 pending 不能继承老项目）
+    askFreeTextPending.value = new Map()
+    triggerRef(askFreeTextPending)
+    // v0.4.4+ pendingToolCalls 也要清（切项目时新项目 pending 不能继承老项目）
+    pendingToolCalls.value = new Map()
+    triggerRef(pendingToolCalls)
     const project = useProjectStore()
     if (project.current) {
       void deleteAllChats(project.current.folder).catch((e) =>
@@ -929,51 +1360,51 @@ export const useConceptStore = defineStore('concept', () => {
     scheduleChatSave()
   })
 
-  // === v0.5+ 设计循环：staleFlags + L7 5min cooldown ===
+  // === v0.5+ 设计循环：staleFlags + L6 5min cooldown ===
   //
   // 改任何 step → markStaleAfterSave 标记上下游 stale
-  //  - L1 改 → L2-L7 全 stale
-  //  - L2-L6 改 → 自己 + 上游 + L7 stale
-  //  - L7 改 → L1-L6 全 stale
+  //  - L1 改 → L2-L6 全 stale
+  //  - L2-L5 改 → 自己 + 上游 + L6 stale
+  //  - L6 改 → L1-L5 全 stale
   // 玩家点黄点（或跑完校准 preset）→ clearStale
-  // 5min cooldown for L7 频繁改动（避免 toast 刷屏）
+  // 5min cooldown for L6 频繁改动（避免 toast 刷屏）
 
   const staleFlags = shallowRef(new Map<ConceptStepId, boolean>())
 
   /** 改完一步后标记 stale（设计循环核心）
-   *  - L1 改 → L2-L7 all stale
-   *  - L2-L6 改 → 自己 + 上游 + L7 stale
-   *  - L7 改 → L1-L6 all stale
-   *  - 5min cooldown for L7 频繁改（避免 toast 刷屏） */
+   *  - L1 改 → L2-L6 all stale
+   *  - L2-L5 改 → 自己 + 上游 + L6 stale
+   *  - L6 改 → L1-L5 all stale
+   *  - 5min cooldown for L6 频繁改（避免 toast 刷屏） */
   function markStaleAfterSave(changedId: ConceptStepId): void {
     const idx = STEP_IDS.indexOf(changedId)
     if (idx === -1) return
     const next = new Map(staleFlags.value)
-    if (changedId === 'core-fantasy') {
-      // L7 改 → L1-L6 全 stale（5min cooldown）
+    if (changedId === 'core-gameplay') {
+      // L6 改 → L1-L5 全 stale（5min cooldown）
       const now = Date.now()
-      const lastL7Stale = (window as unknown as { __lastL7Stale?: number }).__lastL7Stale ?? 0
-      if (now - lastL7Stale < 5 * 60 * 1000) {
+      const lastL6Stale = (window as unknown as { __lastL6Stale?: number }).__lastL6Stale ?? 0
+      if (now - lastL6Stale < 5 * 60 * 1000) {
         // cooldown 内 → 不重复 toast（但不阻止 mark stale —— 黄点还是亮）
         // 黄点本身已经是 stale，再触发一次没有副作用；这里只跳过 toast 逻辑（toast 在 view 层）
       } else {
-        ;(window as unknown as { __lastL7Stale?: number }).__lastL7Stale = now
+        ;(window as unknown as { __lastL6Stale?: number }).__lastL6Stale = now
       }
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 5; i++) {
         next.set(STEP_IDS[i], true)
       }
     } else if (changedId === 'seed') {
-      // L1 改 → L2-L7 all stale
+      // L1 改 → L2-L6 all stale
       for (let i = 1; i < STEP_IDS.length; i++) {
         next.set(STEP_IDS[i], true)
       }
     } else {
-      // L2-L6 改 → 自己 + 上游 + L7 stale
-      // 上游：idx 之前的；自己：idx；L7：core-fantasy
+      // L2-L5 改 → 自己 + 上游 + L6 stale
+      // 上游：idx 之前的；自己：idx；L6：core-gameplay
       for (let i = 0; i <= idx; i++) {
         next.set(STEP_IDS[i], true)
       }
-      next.set('core-fantasy', true)
+      next.set('core-gameplay', true)
     }
     staleFlags.value = next
   }
@@ -1032,6 +1463,14 @@ export const useConceptStore = defineStore('concept', () => {
     /** v0.4+ tool result 喂回 LLM（玩家点 AltCard / 确认 update_doc_item 后调） */
     sendToolResult,
     reset: resetStepChat,
+    // === v0.4.4.1+ ask_free_text 强制回复（UX 整合到 composer，1 round 1 ask_free_text 单问题版） ===
+    askFreeTextPending: askFreeTextPendingForItem,
+    sendAllAskFreeTextAnswers,
+    // === v0.4.4+ 全 tool 通用 pending（ask_choose_option / ask_user_question / update_doc_item 通用） ===
+    // - 锁 composer 用（避免玩家绕开 AltCard 用 composer 输入破坏协议）
+    // - 玩家点"放弃备选"按钮走 cancelPendingToolCall
+    pendingToolCalls: pendingToolCallsForItem,
+    cancelPendingToolCall,
   })
 
   return {

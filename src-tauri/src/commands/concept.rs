@@ -11,6 +11,7 @@ use crate::concept::{
 use crate::error::{AppError, AppResult};
 
 /// 扫描项目 concept/ 6 步，缺文件的步骤返回 status "empty" + 空内容
+/// v0.5.3+ 入口自动跑 migrate_legacy_concept（v0.5+ 7 步 → 6 步 文件级迁移）
 #[tauri::command]
 pub async fn list_concept_steps(project_root: String) -> AppResult<Vec<ConceptStep>> {
     let root = PathBuf::from(project_root);
@@ -20,7 +21,7 @@ pub async fn list_concept_steps(project_root: String) -> AppResult<Vec<ConceptSt
 }
 
 /// 保存一步（atomic write；mark_confirmed=true → status "confirmed"，否则 "draft"）
-/// maturity：仅 L2 pillars 写（其他步骤传 None 不写盘）
+/// v0.5.3+ 删 maturity 参数（L2 核心故事 不再有 4 态成熟度）
 /// 懒建 `concept/` 目录 —— 旧项目无目录也能直接 save
 #[tauri::command]
 pub async fn save_concept_step(
@@ -28,11 +29,10 @@ pub async fn save_concept_step(
     step_id: String,
     content: String,
     mark_confirmed: bool,
-    maturity: Option<String>,
 ) -> AppResult<ConceptStep> {
     let root = PathBuf::from(project_root);
     tokio::task::spawn_blocking(move || {
-        save_concept_step_impl(&root, &step_id, &content, mark_confirmed, maturity.as_deref())
+        save_concept_step_impl(&root, &step_id, &content, mark_confirmed)
     })
     .await
     .map_err(|e| AppError::Config(format!("save_concept_step: join: {}", e)))?
