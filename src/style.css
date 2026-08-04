@@ -55,3 +55,30 @@ textarea:focus {
   outline: none;
   border-color: var(--accent);
 }
+
+/* 全局滚动条样式（深色主题）—— 2026-08-03 玩家反馈控制台等区域 WebView2 默认亮色粗滚动条不搭
+   - Webkit 私有前缀（Chromium / WebView2 / WebKit）
+   - Firefox 兼容（标准 scrollbar-width / scrollbar-color，FF64+）
+   - 默认 8px 细滚动条 + 暗灰 thumb + 透明 track；hover 时变明显
+   - 玩家 2026-08-03 截图：控制台（ConsoleSettings.vue.console-list）默认亮色滚动条浮在深色 bg 上刺眼 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

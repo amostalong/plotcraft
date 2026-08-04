@@ -52,7 +52,7 @@ export interface ToolDefinition {
 export interface ToolCallInfo {
   /** 协议级 id（OpenAI: call_xxx / Anthropic: toolu_xxx），用于 tool result 关联 */
   id: string
-  /** 调的工具名（ask_user_question / update_doc_item / ask_free_text） */
+  /** 调的工具名（ask_choose_option / update_doc_item / ask_free_text） */
   name: string
   /** 参数的 JSON 字符串（流式累积；done 时是合法 JSON） */
   arguments: string

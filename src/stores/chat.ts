@@ -54,7 +54,43 @@ const SYSTEM_PROMPT =
   '保持项目文件夹结构：world/ characters/ plot/ art/ sessions/。' +
   '**严格遵循用户消息中指定的输出格式**：\n' +
   '- 如果用户要求 JSON 数组 → 第一个字符必须是 `[`，**不要**任何额外文字/preamble/思考/解释\n' +
-  '- 如果用户没指定 → 输出 markdown 格式，每个文件带 frontmatter 元信息。'
+  '- 如果用户没指定 → 输出 markdown 格式，每个文件带 frontmatter 元信息。' +
+  // v0.4.4.1+ 工具调用节奏硬规则（玩家 2026-08-03 反馈）
+  // - 玩家点"采用"/选 option 时，LLM 第二轮**只能**调 1 个 tool
+  // - 不要一次发起多个 tool（AltCard + ask_user_question + update_doc_item 一起）—— 玩家得 N 个一起处理，节奏乱
+  // - 想多问就下一轮再发新问题
+  // - 这个规则覆盖所有 tool（chat tab 调 tool 也算）
+  // - v0.5+ 工具名重命名：旧 ask_user_question (给选项) → ask_choose_option；旧 ask_free_text (反问) → ask_user_question
+  '**update_doc_item 写入硬规则（playcentric 核心，玩家 2026-08-03 反馈）**：\n' +
+  '- **绝不**在玩家没明确说"用 A"/"采用 X"/"写成 Y"时调 update_doc_item\n' +
+  '- **绝不**把"玩家打字问问题 / 描述想法"当成"玩家要求写入" —— 问 ≠ 写\n' +
+  '- 玩家在打字问"做成 X 怎么样"/"是不是应该 Y" → 调 ask_user_question 反问 / ask_choose_option 给备选\n' +
+  '  → 玩家选/答完，下一轮 LLM 才能调 update_doc_item 写入\n' +
+  '- LLM 永不"猜测玩家意图后直接写入"——必须等玩家先选/答\n' +
+  '\n' +
+  '**工具调用节奏（硬规则）**：\n' +
+  '- 1 round 1 tool call —— 一次只发起 1 个 tool，让玩家先选/答完，再下一轮发新问题\n' +
+  '- **不要**一次发起多个 tool（不要同时调 ask_choose_option + ask_user_question + update_doc_item）\n' +
+  '- 想追问 / 让玩家再做选择 / 写入编辑器 → 拆成 N 轮，每轮 1 个 tool\n' +
+  '- **不要**自作主张"一站式服务"——玩家主导节奏，AI 不要催'
+    '\n' +
+    // v0.5.1+ few-shot example (玩家 2026-08-04 反馈): deepseek-v4-flash 行为异常
+    // 调 ask_choose_option 但 content 字段附整段 chip prompt 复述 + args.question 字段是整段 prompt
+    // + options 缺/少 → 前端 parseAskChooseOption 失败 → UI 走 fallback 显示整段 content
+    // few-shot 直接展示"正确响应长啥样" + "错误响应长啥样", 让 deepseek 学
+    '**正确响应示例 (few-shot, deepseek 行为约束, 玩家 2026-08-04 反馈)**: ' +
+    '玩家点 chip "💡 从立意拆支柱" → 你应该**只**调 ask_choose_option tool, **不要**附 preamble text: ' +
+    '- ✓ 正确: `content=""` (空) + `tool_calls=[{name: "ask_choose_option", arguments: "{\\"question\\":\\"具体问题\\",\\"options\\":[{\\"label\\":\\"X\\",\\"preview\\":\\"...\\"},{\\"label\\":\\"Y\\",\\"preview\\":\\"...\\"},{\\"label\\":\\"Z\\",\\"preview\\":\\"...\\"}]}"}]` ' +
+    '- ✗ 错误 1: `content="好的, 我帮你拆支柱..."` + tool_calls=[] (附客套话 + 没调 tool) ' +
+    '- ✗ 错误 2: `content=""` + `tool_calls=[{arguments: "{\\"options\\":[...]}"}]` (缺 question 字段, 前端解析失败) ' +
+    '- ✗ 错误 3: `content="从 L1 立意拆 3-5 条..."` (把 chip prompt 复述作为 content 字段——deepseek 常见错误) ' +
+    '- ✗ 错误 4: `tool_calls=[{arguments: "{\\"question\\":\\"从 L1 立意拆 3-5 条...\\",\\"options\\":[\\"A\\",\\"B\\"]}"}]` (question 字段是整段 prompt 复述 + options 是字符串数组不是对象数组) ' +
+    '核心: **content 字段保持空** (不附任何文字 / 客套话 / 复述), 让 tool_call 自己说话. ' +
+    '**ask_choose_option schema 关键约束**: ' +
+    '- `question` 字段 = 1 句具体问题 (**不**是整段 prompt 复述, **不**是 chip label 复述) ' +
+    '- `options` 数组 = 2-5 个对象, 每个对象**必须**有 `label` (≤10 字) + `preview` (完整备选内容) ' +
+    '- options 数组元素**必须**是对象, **不**是字符串'
+
 
 /** v0.5+ 方法论索引：让 LLM 在玩家卡住时自动引用对应方法论。
  *  始终注入（不只在概念设计 chat），对人物/剧情/设定图等场景同样适用。

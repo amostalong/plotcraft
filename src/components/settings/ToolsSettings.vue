@@ -192,7 +192,7 @@ const PERMISSION_OPTIONS: { value: ToolPermission; label: string; desc: string }
         </div>
       </div>
       <div class="footer-note">
-        <strong>推荐</strong>：问问题类工具（ask_user_question / ask_free_text）→ 自动；改编辑器类（update_doc_item）→ 询问。
+        <strong>推荐</strong>：问问题类工具（ask_choose_option / ask_user_question）→ 自动；改编辑器类（update_doc_item）→ 询问。
       </div>
     </section>
   </div>

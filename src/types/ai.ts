@@ -32,6 +32,12 @@ export interface PresetAction {
   label: string
   prompt: string
   action: 'generate' | 'reflect' | 'polish' | 'expand' | 'calibrate'
+  /** v0.4.4+ 玩家在 tool_call 待反应时（ask_choose_option AltCard / ask_free_text 输入框 / update_doc_item 写入确认），
+   *  是否允许点这个 chip —— true = 不锁 chip（让 LLM 重新调 tool 出新备选，玩家可换思路），
+   *                false（默认）= 锁 chip（会破坏协议 / 重置 LLM 流程）。
+   *  玩家 2026-08-02 撞 deepseek "No tool output found" 后加：polish/expand/calibrate 标 true
+   *  （让 LLM 重新输出接选项），generate/reflect 保持默认 false（不锁会重置 LLM 上下文）。 */
+  allowDuringPending?: boolean
 }
 
 /** adopt 事件 payload（v0.3+ 单事件 + mode 派生）
@@ -74,4 +80,39 @@ export interface StepChatState {
   /** v0.4+ tool result 喂回 LLM（多轮 tool calling 核心） */
   sendToolResult?(toolCallId: string, content: string): Promise<void>
   reset(): void
+  // === v0.4.4.1+ ask_free_text 强制回复协议（UX 整合到 composer，1 round 1 ask_free_text 单问题版）===
+  // **v0.4.4.1+ UX 整合到 composer**：REFLECT_TAIL 钉死 1 个问题（不编号多问），
+  // 玩家在下方 composer 打字回车 → 走 sendAllAskFreeTextAnswers(playerText) 路径
+  // （ask_free_text 强制回复协议保留：1 round 1 ask_free_text → 1 tool_result 配对，
+  //   只是答案来源从"bubble 内嵌 N 个 input"改成"composer 1 个输入"）
+  // 玩家 2026-08-03 反馈"上下一对输入框看着冗余"——v0.4.4+ 老设计拆 N 个 input + 锁 composer，
+  // 现在简化为 1 个 input = composer，UX 跟普通聊天一致
+  // - askFreeTextPending: 当前 item 待答的 ask_free_text（map，1 round 1 调用实际 0/1 entry）
+  //   - AiChatPanel 据此显示 LLM 问的问题（气泡）+ composer placeholder 提示"回答「xxx」"
+  // - sendAllAskFreeTextAnswers: 玩家在 composer 回车时调（onSend 路由），发 1 条 tool message 给 LLM
+  // - v0.4.4.1+ 删了 askFreeTextAllAnswered / setAskFreeTextAnswer 字段（多问题版才用，单问题版不需要）
+  /** v0.4.4+ 当前 item 的 ask_free_text pending（map，1 round 1 调用实际 0/1 entry）
+   *  - v0.4.4.1+ AiChatPanel 据此显示 LLM 问的问题（气泡 + composer placeholder 提示） */
+  askFreeTextPending?: ComputedRef<Map<string, { question: string; answer?: string }>>
+  /** v0.4.4.1+ 玩家在 composer 回车时调（onSend 路由检测 ask_free_text pending）—— 1 条 function_call_output 喂回 LLM */
+  sendAllAskFreeTextAnswers?(playerText?: string): Promise<void>
+  // === v0.4.4+ 全 tool 通用 pending（ask_choose_option / ask_user_question / update_doc_item 都在等玩家反应时锁 composer）===
+  // - pendingToolCalls: 当前 item 所有等待玩家 tool_result 的 tool_call id 集合
+  //   - LLM 调 tool 时 add（onChatDone 扫 tool_calls）
+  //   - 玩家反应时 remove（sendToolResult / sendAllAskFreeTextAnswers 内部）
+  //   - 玩家"放弃"时 remove（cancelPendingToolCall 内部）
+  // - cancelPendingToolCall: 玩家点"放弃备选"按钮 → 1 条 tool_result 喂回 LLM（"玩家放弃，自己写"）
+  //   - 不破坏协议（仍然 1 round 1 tool_result 配对）
+  //   - LLM 知道玩家不要备选，可以出 text 引导 / 调 update_doc_item 跟玩家的写
+  /** v0.4.4+ 当前 item 所有等待玩家反应的 tool_call id 集合（ask_choose_option / ask_user_question / update_doc_item 通用）—— AiChatPanel 据此锁 composer */
+  pendingToolCalls?: ComputedRef<Set<string>>
+  /** v0.4.4+ 玩家点"放弃备选"按钮时调 —— 1 条 function_call_output 喂回 LLM（reason 默认 "玩家放弃这个备选"）
+   *  - **v0.4.4+ silently 模式**：options.silently=true 时**不告诉 LLM**——
+   *    清 chatHistories 里 assistant message 的 tool_calls 字段，LLM 看不到 tool_call，
+   *    stop 在这里（玩家"放弃直接 stop"语义，LLM 下次 send 时无 tool_call 要配对） */
+  cancelPendingToolCall?(
+    toolCallId: string,
+    reason?: string,
+    options?: { silently?: boolean },
+  ): Promise<void>
 }

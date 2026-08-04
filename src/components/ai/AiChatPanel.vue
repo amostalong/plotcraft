@@ -33,6 +33,8 @@ import type { ChatErrorDiag, ChatErrorKind, ChatMessage, ToolCallInfo } from '@/
 import type { EffortLevel } from '@/lib/settings'
 
 import AltCard from './AltCard.vue'
+// v0.4.4.1+ AskFreeTextInput 废弃（UX 整合到 composer）—— 组件文件保留作 reference，
+// AiChatPanel 不再 import / render
 import MessageBubble from './MessageBubble.vue'
 
 const props = defineProps<{
@@ -50,12 +52,31 @@ const props = defineProps<{
 const emit = defineEmits<{ adopt: [payload: AdoptPayload] }>()
 
 // ComputedRef 也是 Ref，解构不丢响应性
-const { messages, streaming, errorKind, errorRaw, send, sendToolResult, reset } = props.chat
+const {
+  messages,
+  streaming,
+  errorKind,
+  errorRaw,
+  send,
+  sendToolResult,
+  reset,
+  // v0.4.4.1+ ask_free_text 强制回复协议（UX 整合到 composer，1 round 1 ask_free_text 单问题版）
+  askFreeTextPending,
+  sendAllAskFreeTextAnswers,
+  // v0.4.4+ 全 tool 通用 pending（ask_choose_option / ask_user_question / update_doc_item 通用）—— 锁 composer
+  pendingToolCalls,
+  cancelPendingToolCall,
+} = props.chat
 
 const input = ref('')
 const listEl = ref<HTMLElement | null>(null)
 /** startChat invoke 本身失败（不是流式 error event）的本地错误 */
 const localError = ref<string | null>(null)
+/** v0.4.4.1+ 防 onSend 重入：双击回车 / 双 trigger 会让 askFreeTextPending 在第一次 await
+ *  时被清空，第二次 onSend 走 sendStepChat 加 user message（玩家截图 bug：同一内容
+ *  出现 2 个气泡——绿色"已答"+ 灰色 user 风格）。sending 是 ref 同步设值，
+ *  onSend 入口 check + 立即设 true，try-finally 释放 */
+const sending = ref(false)
 
 const streamError = computed(() => {
   if (!errorRaw.value) return null
@@ -174,9 +195,10 @@ async function onCopyDiag() {
   }
 }
 
-/** 解析 ask_user_question tool 的 arguments（JSON 字符串）→ {question, options[]}
+/** 解析 ask_choose_option tool 的 arguments（JSON 字符串）→ {question, options[]}
+ *  - v0.5+ 旧名 ask_user_question（这个名不准确：是"让玩家挑选项"不是"问问题"）
  *  - 失败 → null（前端走"AI 在想..."占位） */
-function parseAskUserQuestion(tc: ToolCallInfo): { question: string; options: { label: string; preview: string; description?: string }[] } | null {
+function parseAskChooseOption(tc: ToolCallInfo): { question: string; options: { label: string; preview: string; description?: string }[] } | null {
   try {
     const args = JSON.parse(tc.arguments)
     if (typeof args.question !== 'string' || !Array.isArray(args.options)) return null
@@ -195,7 +217,10 @@ function parseAskUserQuestion(tc: ToolCallInfo): { question: string; options: { 
   }
 }
 
-function parseAskFreeText(tc: ToolCallInfo): { question: string } | null {
+/** 解析 ask_user_question tool 的 arguments（v0.5+ 旧名 ask_free_text）→ {question}
+ *  - v0.5+ 旧名 ask_free_text（这个名被"问问题"语义接管了）
+ *  - 失败 → null */
+function parseAskUserQuestion(tc: ToolCallInfo): { question: string } | null {
   try {
     const args = JSON.parse(tc.arguments)
     if (typeof args.question !== 'string') return null
@@ -243,53 +268,171 @@ interface Decorated {
   updateMode?: 'replace' | 'append'
 }
 const decorated = computed<Decorated[]>(() =>
-  messages.value.map((msg) => {
-    if (msg.role === 'user') return { kind: 'user', msg }
-    // v0.4+ tool call 优先：assistant 消息带 tool_calls → 按 tool name 分发
+  messages.value.flatMap((msg) => {
+    if (msg.role === 'user') return [{ kind: 'user' as const, msg }]
+    // v0.5.1+ role: 'tool' 跳过独立渲染——tool message 只是 LLM 喂数据用（OpenAI 协议层 tool_calls + tool_result 配对），
+    //   assistant-tool-question "✓ 已答" 框会从 askFreeTextAnswered 反查显示对应 tool message 内容（不重复）。
+    //   - 修 onRegenerateAltCard 路径 UI 重复：玩家点"🔄 重新生成" → sendToolResult 追加 tool message
+    //     + removePendingToolCall → assistant-tool-question 走 "✓ 已答" + 答案分支（显示 tool message content），
+    //     但同时 tool message 走 MessageBubble fallback 独立渲染——重复显示 2 次
+    //   - 同样适用于 silently 改写（虽然我 v0.5+ 已经不追加 tool message to chatHistories 避免 UI 重复，
+    //     兜底这条跳过规则保证所有 tool message 都不显示独立 bubble）
+    //   - 对 silently 改写后 askFreeTextAnswered 返 null 的情况：assistant-tool-question 走 v-else 分支
+    //     显示 d.msg.content（"玩家放弃..." 语义），不依赖 tool message 反查——独立跳过 tool message 不影响
+    if (msg.role === 'tool') return []
+    // v0.4.4+ 一个 message 可能带 N 个 tool_call（LLM 一次调多个 ask_user_question / 混搭）
+    // 每个 tool_call 单独生成 DecoratedItem，flatMap 自动展开
+    // - 修 v0.4.3+ "只渲染 tool_calls[0]" bug：之前 N 个 tool_call 只显第 1 个，剩 N-1 默默丢
+    // - 解析失败 / 未知 tool name → 跳过（不显示该 tool_call 的 bubble）
+    // - **v0.5+ 工具名重命名**：
+    //   - 'ask_user_question' (旧：给选项) → 'ask_choose_option'
+    //   - 'ask_free_text' (旧：反问) → 'ask_user_question'
     if (msg.tool_calls && msg.tool_calls.length > 0) {
-      // 取第一个有效 tool call（v0.4+ LLM 一次只调一个 tool）
-      const tc = msg.tool_calls[0]
-      if (tc.name === 'ask_user_question') {
-        const parsed = parseAskUserQuestion(tc)
-        if (parsed) {
-          return {
-            kind: 'assistant-tool-question',
-            msg,
-            question: parsed.question,
-            options: parsed.options,
-            toolCall: tc,
+      const items: Decorated[] = []
+      for (const tc of msg.tool_calls) {
+        if (tc.name === 'ask_choose_option') {
+          const parsed = parseAskChooseOption(tc)
+          if (parsed) {
+            items.push({
+              kind: 'assistant-tool-question',
+              msg,
+              question: parsed.question,
+              options: parsed.options,
+              toolCall: tc,
+            })
+          }
+        } else if (tc.name === 'ask_user_question') {
+          const parsed = parseAskUserQuestion(tc)
+          if (parsed) {
+            items.push({
+              kind: 'assistant-tool-freetext',
+              msg,
+              question: parsed.question,
+              toolCall: tc,
+            })
+          }
+        } else if (tc.name === 'update_doc_item') {
+          const parsed = parseUpdateDocItem(tc)
+          if (parsed) {
+            items.push({
+              kind: 'assistant-tool-update',
+              msg,
+              toolCall: tc,
+              updateContent: parsed.content,
+              updateMode: parsed.mode,
+            })
           }
         }
-      } else if (tc.name === 'ask_free_text') {
-        const parsed = parseAskFreeText(tc)
-        if (parsed) {
-          return {
-            kind: 'assistant-tool-freetext',
-            msg,
-            question: parsed.question,
-            toolCall: tc,
-          }
-        }
-      } else if (tc.name === 'update_doc_item') {
-        const parsed = parseUpdateDocItem(tc)
-        if (parsed) {
-          return {
-            kind: 'assistant-tool-update',
-            msg,
-            toolCall: tc,
-            updateContent: parsed.content,
-            updateMode: parsed.mode,
-          }
-        }
+        // 解析失败 / 未知 tool name 跳过
       }
-      // 未知 tool name / 解析失败 → 走老 bubble 路径
+      if (items.length > 0) return items
+      // v0.5.1+ 解析全失败（LLM 调 tool 但 args 不符合 schema——比如 question 字段是 chip prompt 复述
+      //   整段、options < 2）→ 跳过整条 assistant message（不显示整段 content，避免 LLM preamble
+      //   复述污染 UI）。fallback 显示整段 content 是 LLM 行为异常的副作用，玩家看是噪音。
+      //   - 玩家测试：deepseek-v4-flash 收到 chip "💡 从立意拆支柱" + OPTION_TAIL 后，调 ask_choose_option
+      //     但 args.question = 整段 prompt 复述、options 缺/少 → parse 失败 → fallback assistant-bubble
+      //     显示整段 content（"从 L1 立意拆..." 全文）——玩家截图反馈
+      //   - 修复：解析全失败 + 有 tool_calls 字段 → 跳过这条 message（不显示任何内容）
+      //   - 协议层：tool_call 仍存在 chatHistories，runChatRound 拼 messages 时能正常发给 LLM
+      //   - 跟 v0.5+ silently 改写区分：silently 改写后 tool_calls 仍存在 + parse 成功（args 没改），
+      //     走 assistant-tool-question 分支 + pendingToolCalls 已 remove + askFreeTextAnswered 返 null
+      //     → v-else 显示"✓ 已答" + d.msg.content（"玩家放弃..."）——这个分支不受影响
+      return []
     }
-    // 老路径：action 决定 polish/expand/reflect
-    if (msg.action === 'polish') return { kind: 'assistant-polish', msg }
-    if (msg.action === 'expand') return { kind: 'assistant-expand', msg }
-    return { kind: 'assistant-bubble', msg }
+    // 没 tool_calls → 老路径：action 决定 polish/expand/reflect / 普通 text reply
+    if (msg.action === 'polish') return [{ kind: 'assistant-polish' as const, msg }]
+    if (msg.action === 'expand') return [{ kind: 'assistant-expand' as const, msg }]
+    return [{ kind: 'assistant-bubble' as const, msg }]
   }),
 )
+
+/** v0.4.4.1+ ask_free_text 工具函数：
+ *  - askFreeTextAnswered(toolCallId): 拿到玩家已提交的 answer（用于"已答"状态显示）
+ *  - 都不需要 store 派生，askFreeTextPending 已经在 props.chat 暴露，answered 从 chatHistories 反查
+ *  - **v0.4.4.1+ 删了 askFreeTextIsPending / askFreeTextCurrentAnswer**（v0.4.4+ 多问题版才用，
+ *    用来判断"哪条 bubble 内嵌 input 已答 / 没答"——v0.4.4.1+ 整合到 composer 后不需要）
+ *  - **v0.4.4.1+ 删了 getSubQuestions / getSubAnswerText / setSubAnswerText / askFreeTextAnsweredCount /
+ *    onAskFreeTextSubmit / onSubmitAllAskFreeText**（都是 v0.4.4+ 多问题版逻辑：拆 N 个 input / 拼 N 个 answer /
+ *    "提交所有" 按钮 —— v0.4.4.1+ 单问题版 + composer 整合后全部不需要）
+ */
+function askFreeTextAnswered(toolCallId: string): string | null {
+  for (const m of messages.value) {
+    if (m.role === 'tool' && m.tool_call_id === toolCallId) {
+      return m.content
+    }
+  }
+  return null
+}
+
+/** v0.4.4.1+ composer 是否应该被 lock
+ *  - **v0.4.4.1+ ask_free_text 不再 lock composer**：UX 整合到 composer，玩家直接打字回车发作为 answer
+ *  - 全 tool 通用 pending：避免玩家绕开 AltCard / 写入确认破坏协议
+ *    - ask_choose_option AltCard 待选
+ *    - update_doc_item 写入确认待点
+ *  - **v0.4.4.1+ ask_free_text 跳过 addPendingToolCall**（onChatDone 改），所以这里不覆盖 → composer 解锁
+ *  - 玩家 2026-08-02 撞 deepseek "No tool output found" 根因：ask_choose_option AltCard 待选时
+ *    用 composer 发 → 协议断 → LLM 报配对错。lock 住 → 玩家必须先采用/放弃 */
+const composerDisabled = computed(() => {
+  // v0.4.4.1+ ask_free_text 不 lock composer（UX 整合）—— 但 ask_free_text 也在 pendingToolCalls 里
+  //   （sendAllAskFreeTextAnswers 内部 add/remove），所以这里的 pendingToolCalls check 已经覆盖
+  if (pendingToolCalls?.value && pendingToolCalls.value.size > 0) return true
+  return false
+})
+
+/** v0.4.4.1+ chip 是否应该被 lock
+ *  - **v0.4.4.1+ 跟 composer 区别**：ask_free_text pending 时 **chip lock**（避免触发新 LLM 破坏协议），
+ *    但 **composer unlock**（让玩家打字回车作为 answer）
+ *  - 玩家 2026-08-03 截图反馈：ask_free_text pending 时 chip 还能点不合理 —— 点 polish/expand 触发新 LLM
+ *    → protocol 断（ask_free_text 没答）
+ *  - chip 兜底逻辑跟 composer 同款（防 IME / 复制粘贴等绕过 UI disabled）
+ */
+const chipDisabled = computed(() => {
+  if (pendingToolCalls?.value && pendingToolCalls.value.size > 0) return true
+  // v0.4.4.1+ ask_free_text 也 lock chip（虽然不 lock composer）
+  if (askFreeTextPending?.value && askFreeTextPending.value.size > 0) return true
+  return false
+})
+
+/** v0.4.4.1+ composer placeholder 提示（按 pending 状态给最具体的提示）
+ *  - **v0.4.4.1+ ask_free_text 改显示当前 LLM 问的问题**（不再是"请先回答上面的问题"，
+ *    而是"回答「<question>」"——让玩家知道 composer 现在是 ask_free_text 模式）
+ *  - ask_choose_option / update_doc_item 还是 lock
+ */
+const composerPlaceholder = computed(() => {
+  if (pendingToolCalls?.value && pendingToolCalls.value.size > 0) {
+    return '请先处理上面的备选/写入确认（或点「放弃」）'
+  }
+  // v0.4.4.1+ ask_free_text pending 时显示 LLM 的问题
+  if (askFreeTextPending?.value && askFreeTextPending.value.size > 0) {
+    // v0.4.4.1+ 修正错位：size > 1（LLM 不听话调多次）时不要只显示 firstEntry 的 question，
+    // 否则 placeholder 跟 bubble 实际显示的 N 个问题不一致 —— 玩家困惑
+    const size = askFreeTextPending.value.size
+    if (size === 1) {
+      const firstEntry = askFreeTextPending.value.values().next().value
+      if (firstEntry?.question) {
+        const q = firstEntry.question.replace(/\s+/g, ' ').trim()
+        if (q.length <= 30) return `回答「${q}」（回车发送）`
+        return `回答「${q.slice(0, 30)}…」（回车发送）`
+      }
+    } else {
+      // size > 1：理论 REFLECT_TAIL 钉死 1 round 1 ask_free_text，size 应 = 1
+      // 防御性兼容多次（LLM 不听话），统一显示通用提示
+      return `回答 LLM 的 ${size} 个问题（回车发送）`
+    }
+  }
+  return '聊这一步的想法、疑问……（Enter 发送）'
+})
+
+/** v0.4.4.1+ composer title 提示 */
+const composerTitle = computed(() => {
+  if (pendingToolCalls?.value && pendingToolCalls.value.size > 0) {
+    return '请先处理上面的备选/写入确认'
+  }
+  if (askFreeTextPending?.value && askFreeTextPending.value.size > 0) {
+    return '回车发送作为 ask_free_text 的回答'
+  }
+  return '发送'
+})
 
 /** 新消息 / 流式开始 → 滚到底 */
 watch(
@@ -309,21 +452,62 @@ function onEnter(e: KeyboardEvent) {
 }
 
 async function onSend() {
+  // v0.4.4.1+ 防重入：双触发（同一次回车被 onEnter + send 按钮 click 都触发 / 双击回车 /
+  // IME 提交残留 / 复制粘贴 click 等）会让 askFreeTextPending 在第一次 await 时被清空，
+  // 第二次 onSend 看到 pending 空 → 走 sendStepChat 加 user message（玩家 2026-08-03 截图：
+  // 同一内容出现 2 个气泡——绿色"已答"+ 灰色 user 风格）。sending ref 同步设值，入口 guard
+  if (sending.value) {
+    console.warn('[AiChatPanel.onSend] blocked: already sending (re-entry guard)')
+    return
+  }
   const t = input.value.trim()
   if (!t || streaming.value) return
+  // v0.4.4+ 全 tool 通用 pending 兜底：composer disable 是 UI 层防御，store send 也要 guard
+  // - 玩家 2026-08-02 撞 deepseek "No tool output found" 根因：ask_choose_option AltCard 待选时用 composer 发
+  // - composerDisabled 已经 lock，但这里 double-check（防 IME 提交 / 复制粘贴等绕过 UI disabled 的场景）
+  if (composerDisabled.value) {
+    console.warn('[AiChatPanel.onSend] blocked by pendingToolCalls (composer should be disabled)')
+    return
+  }
+  sending.value = true
   input.value = ''
   localError.value = null
   try {
+    // v0.4.4.1+ ask_free_text 强制回复：ask_free_text pending 时 composer 内容作为 tool_result 喂回 LLM
+    // - 协议层：ask_free_text 也在 pendingToolCalls 里（sendAllAskFreeTextAnswers 内部 add/remove），
+    //   所以会被 composerDisabled 锁住（除非 sendAllAskFreeTextAnswers 提前 remove）—— 这条路径正常
+    // - UX 整合：玩家在 composer 打字回车 → 走 sendAllAskFreeTextAnswers(t) → 1 条 tool message 发 LLM
+    if (askFreeTextPending?.value && askFreeTextPending.value.size > 0 && sendAllAskFreeTextAnswers) {
+      console.log(`[AiChatPanel.onSend] routing to sendAllAskFreeTextAnswers (ask_free_text pending)`)
+      await sendAllAskFreeTextAnswers(t)
+      return
+    }
     await send(t)
   } catch (e) {
     // start_chat invoke 失败（比如没配 provider）—— 玩家文案跟流式错误同套路
     console.error('[AiChatPanel] send failed:', e)
     localError.value = getErrorMessage('unknown', String(e)).title
+  } finally {
+    sending.value = false
   }
 }
 
 async function onSendPreset(preset: PresetAction) {
   if (streaming.value) return
+  // v0.4.4+ 全 tool 通用 pending 兜底：跟 composer 一样 lock
+  // - 玩家 2026-08-02 撞 deepseek "No tool output found" 根因：ask_choose_option AltCard 待选时点 chip
+  //   → 触发新 LLM 调用 → 协议断
+  // - chip 全锁（polish/expand/calibrate 重新生成走 AltCard 旁边的"重新生成"按钮，
+  //   reason 标 polish/expand/calibrate 不同方向让 LLM 自己用对应方向重新调 ask_user_question）
+  // - **v0.4.4.1+ chip 也 lock ask_free_text**（chipDisabled 包含 askFreeTextPending）——
+  //   composer 不 lock 但 chip lock，避免 ask_free_text 没答时点 polish/expand 触发新 LLM 断协议
+  // - chip disabled 是 UI 防御，store send 也要 guard（防 IME / 复制粘贴等绕过 UI disabled 的场景）
+  if (chipDisabled.value) {
+    console.warn(
+      `[AiChatPanel.onSendPreset] blocked by chipDisabled (chip "${preset.label}" should be disabled)`,
+    )
+    return
+  }
   localError.value = null
   try {
     // 第二个参数 = preset；store send 内部会把 preset.label 存到 user msg.preset，
@@ -365,6 +549,59 @@ async function onAdoptAltCard(option: { label: string; preview: string }, toolCa
     await sendToolResult(toolCall.id, result)
   } catch (e) {
     console.error('[AiChatPanel] sendToolResult failed:', e)
+    localError.value = getErrorMessage('unknown', String(e)).title
+  }
+}
+
+/** v0.4.4+ ask_choose_option AltCard "放弃备选，自己写" 按钮
+ *  - **v0.4.4+ silently 模式**：玩家点"放弃" → store 清掉对应 assistant message 的
+ *    `tool_calls` 字段（LLM 看不到 tool_call，无协议要求配对），stop 在这里
+ *  - composer 解锁，玩家直接打字发 → LLM 走普通 user message 流程（**不知道**有过 tool_call）
+ *  - 玩家不需要想 "tool_result 该告诉 LLM 啥"——直接放弃就是直接放弃 */
+async function onCancelAltCard(toolCall: ToolCallInfo | undefined): Promise<void> {
+  if (!toolCall) return
+  if (!cancelPendingToolCall) {
+    console.error('[AiChatPanel] store 未实现 cancelPendingToolCall')
+    return
+  }
+  try {
+    // silently: true —— 不告诉 LLM，stop 在这里（玩家"放弃直接 stop"语义）
+    await cancelPendingToolCall(toolCall.id, undefined, { silently: true })
+  } catch (e) {
+    console.error('[AiChatPanel] onCancelAltCard failed:', e)
+    localError.value = getErrorMessage('unknown', String(e)).title
+  }
+}
+
+/** v0.4.4+ ask_choose_option AltCard "重新生成" 按钮
+ *  - 玩家不满意这些备选 → 发 1 条 tool_result（"玩家要新备选"）→ LLM 重新调 ask_choose_option 出新备选
+ *  - reason 默认让 LLM 自由重新出；v0.4.4+ 不锁 chip，让 LLM 决定方向
+ *  - 跟 onCancelAltCard 区别：放弃 = 不要备选要自己写；重新生成 = 不要这些，但还要 LLM 给新的
+ *  - 协议：1 round 1 tool_call → 1 tool_result 配对（不破坏协议） */
+async function onRegenerateAltCard(
+  toolCall: ToolCallInfo | undefined,
+  direction?: 'polish' | 'expand' | 'calibrate' | 'reflect',
+): Promise<void> {
+  if (!toolCall) return
+  if (!cancelPendingToolCall) {
+    console.error('[AiChatPanel] store 未实现 cancelPendingToolCall')
+    return
+  }
+  // v0.5+ tool name 重命名：
+  // - 旧 ask_user_question（给选项）→ ask_choose_option
+  // - 旧 ask_free_text（反问）→ ask_user_question
+  const reasonMap: Record<string, string> = {
+    polish: '玩家想看润色版。请重新调 ask_choose_option 给 N 个不同表达方向的备选（不改变内容方向）',
+    expand: '玩家想看更厚版。请重新调 ask_choose_option 给 N 个加细节/例子/场景的备选（不改变内容方向）',
+    calibrate: '玩家点了校准。请重新调 ask_choose_option，给用 L1 立意 / L2 pillars 校准后的备选',
+    reflect: '玩家想换个角度反问。请重新调 ask_choose_option tool 给 1-3 个主题层反思问题',
+  }
+  const reason =
+    reasonMap[direction ?? ''] ?? '玩家要新备选。请重新调 ask_choose_option 给 N 个不同方向的备选'
+  try {
+    await cancelPendingToolCall(toolCall.id, reason)
+  } catch (e) {
+    console.error('[AiChatPanel] onRegenerateAltCard failed:', e)
     localError.value = getErrorMessage('unknown', String(e)).title
   }
 }
@@ -514,43 +751,149 @@ function onAdoptBlock() {
       </div>
       <template v-for="(d, i) in decorated" :key="i">
         <MessageBubble v-if="d.kind === 'user'" :msg="d.msg" />
-        <!-- v0.4+ ask_user_question tool → AltCard 卡片组（替代 v0.3+ JSON 解析） -->
+        <!-- v0.4+ ask_choose_option tool → AltCard 卡片组（替代 v0.3+ JSON 解析）
+             v0.4.4+ 加 2 个按钮：玩家不挑这些备选时的两条出路
+             - "重新生成"（accent 色，primary）：让 LLM 重新调 ask_choose_option 出新备选
+             - "放弃备选，自己写"（muted 色，secondary）：玩家不要任何备选，自己写
+             - 都走 cancelPendingToolCall 路径（同款 sendToolResult），不破坏协议
+             - 锁 composer 时给玩家这两条出路（比纯 lock 友好）
+             v0.4.4+ 整体 v-if 锁：pendingToolCalls 不在 → 不显示 AltCard + 显示 "✓ 已答" -->
         <div v-else-if="d.kind === 'assistant-tool-question'" class="tool-question">
-          <div v-if="d.question" class="tool-question-prompt">💬 {{ d.question }}</div>
-          <div class="card-list">
-            <AltCard
-              v-for="(opt, ci) in d.options"
-              :key="ci"
-              :text="opt.preview"
-              :title="opt.label"
-              :description="opt.description"
-              @adopt="() => onAdoptAltCard(opt, d.toolCall)"
-            />
-          </div>
+          <template v-if="d.toolCall && pendingToolCalls?.has(d.toolCall.id)">
+            <div v-if="d.question" class="tool-question-prompt">💬 {{ d.question }}</div>
+            <div class="card-list">
+              <AltCard
+                v-for="(opt, ci) in d.options"
+                :key="ci"
+                :text="opt.preview"
+                :title="opt.label"
+                :description="opt.description"
+                @adopt="() => onAdoptAltCard(opt, d.toolCall)"
+              />
+            </div>
+            <div class="tool-question-actions">
+              <button
+                type="button"
+                class="tool-regenerate-btn"
+                :disabled="streaming"
+                :title="'让 LLM 重新调 ask_choose_option 出新备选'"
+                @click="() => onRegenerateAltCard(d.toolCall)"
+              >
+                🔄 重新生成
+              </button>
+              <button
+                type="button"
+                class="tool-cancel-btn"
+                :disabled="streaming"
+                :title="'告诉 LLM 你不要这些备选，要自己写'"
+                @click="() => onCancelAltCard(d.toolCall)"
+              >
+                ✍️ 放弃
+              </button>
+            </div>
+          </template>
+          <template v-else-if="d.toolCall && askFreeTextAnswered(d.toolCall.id)">
+            <div class="tool-question-answered">
+              <div class="tool-question-answered-label">✓ 已答</div>
+              <div
+                v-for="(line, li) in (askFreeTextAnswered(d.toolCall.id) ?? '').split('\n').filter(Boolean)"
+                :key="li"
+                class="tool-question-answered-text"
+              >{{ line }}</div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="tool-question-answered">
+              <div class="tool-question-answered-label">✓ 已答</div>
+              <!-- v0.5.1+ silently 改写后：assistant content 是"玩家放弃..."语义，显示给玩家看 -->
+              <div
+                v-if="d.msg.content"
+                class="tool-question-answered-text"
+              >{{ d.msg.content }}</div>
+            </div>
+          </template>
         </div>
-        <!-- v0.4+ ask_free_text tool → 气泡 + "我去答" 按钮 -->
+        <!-- v0.4.4.1+ ask_free_text tool → 气泡只显示 LLM 的问题（不可编辑）+ 状态指示
+             强制回复 UX 整合到下方 composer（v0.4.4.1+ 之前是 bubble 内嵌 N 个 input，"上下一对输入框" 玩家
+             反馈冗余 —— 现在 REFLECT_TAIL 钉死 1 个问题，composer 解锁，UX 跟普通聊天一致）
+             协议要求：1 round 1 ask_free_text → 1 tool_result 配对
+             三种状态：
+             1. pending + 未答 → 气泡显示 LLM 的问题 + "💭 等待你的回答（下方输入框）"提示
+             2. pending + 已填（玩家在 composer 打字，pending.answer 已写入）→ 气泡显示问题 + 玩家 answer
+             3. 已提交（chatHistories 有 tool_result）→ 渲染 "✓ 已答" + 答案
+             4. v0.5.1+ silently 改写后：显示 ✓ 已答 + d.msg.content（"玩家放弃..."）
+        -->
         <div v-else-if="d.kind === 'assistant-tool-freetext'" class="tool-freetext">
-          <MessageBubble :msg="d.msg" />
-          <div class="tool-freetext-prompt">💭 {{ d.question }}</div>
-          <div class="tool-freetext-hint">在下方输入框写你的想法，发送后会作为回答继续对话</div>
+          <template v-if="d.toolCall && askFreeTextPending?.has(d.toolCall.id)">
+            <div class="tool-freetext-question">
+              <div class="tool-freetext-question-text">{{ d.question }}</div>
+              <div class="tool-freetext-pending-hint">💭 等待你的回答（下方输入框）</div>
+            </div>
+          </template>
+          <template v-else-if="d.toolCall && askFreeTextAnswered(d.toolCall.id)">
+            <div class="tool-freetext-answered">
+              <div class="tool-freetext-answered-label">✓ 已答</div>
+              <div
+                v-for="line in (askFreeTextAnswered(d.toolCall.id) ?? '').split('\n').filter(Boolean)"
+                :key="line"
+                class="tool-freetext-answered-text"
+              >{{ line }}</div>
+            </div>
+          </template>
+          <template v-else>
+            <!-- v0.5.1+ silently 改写后：assistant content 是"玩家放弃..."语义，显示给玩家看 -->
+            <div v-if="d.msg.content" class="tool-freetext-answered">
+              <div class="tool-freetext-answered-label">✓ 已答</div>
+              <div
+                v-for="line in d.msg.content.split('\n').filter(Boolean)"
+                :key="line"
+                class="tool-freetext-answered-text"
+              >{{ line }}</div>
+            </div>
+            <div v-else class="tool-freetext-hint">在下方输入框写你的想法，发送后会作为回答继续对话</div>
+          </template>
         </div>
         <!-- v0.4+ update_doc_item tool → "AI 建议写入 X" + 确认按钮
              v0.4.1+ mode 区分：replace = 覆盖（✨），append = 追加（📝）
+             v0.4.4+ 加 "放弃写入" 按钮：玩家不要 LLM 的建议写入 → 发 tool_result 喂回 LLM
              显示 content 而不是原始 JSON arguments（玩家可读性） -->
         <div v-else-if="d.kind === 'assistant-tool-update'" class="tool-update">
           <div class="tool-update-title">
             {{ d.updateMode === 'append' ? '📝 AI 建议补充' : '✨ AI 建议覆盖' }}
           </div>
           <div class="tool-update-content">{{ d.updateContent }}</div>
-          <button
-            type="button"
-            class="tool-update-btn"
-            :disabled="streaming"
-            @click="onConfirmUpdate(d.toolCall, d.updateMode ?? 'replace')"
+          <!-- v0.5.1+ silently 改写后：pending 已 remove，显示"✓ 已放弃"+ assistant content（玩家放弃语义），
+               不显示 ✍️ 放弃/📝 写入按钮（玩家已处理，不再二次操作） -->
+          <div
+            v-if="d.toolCall && pendingToolCalls?.has(d.toolCall.id)"
+            class="tool-update-actions"
           >
-            <span class="tool-update-icon">{{ d.updateMode === 'append' ? '📝' : '✨' }}</span>
-            <span>{{ d.updateMode === 'append' ? '追加到编辑器末尾' : '确认覆盖编辑器' }}</span>
-          </button>
+            <button
+              type="button"
+              class="tool-cancel-btn"
+              :disabled="streaming"
+              :title="'告诉 LLM 你不要这个写入，要自己改'"
+              @click="() => onCancelAltCard(d.toolCall)"
+            >
+              ✍️ 放弃
+            </button>
+            <button
+              type="button"
+              class="tool-update-btn"
+              :disabled="streaming"
+              @click="onConfirmUpdate(d.toolCall, d.updateMode ?? 'replace')"
+            >
+              <span class="tool-update-icon">{{ d.updateMode === 'append' ? '📝' : '✨' }}</span>
+              <span>{{ d.updateMode === 'append' ? '追加到编辑器末尾' : '确认覆盖编辑器' }}</span>
+            </button>
+          </div>
+          <div v-else class="tool-update-answered">
+            <div class="tool-update-answered-label">✓ 已放弃</div>
+            <div
+              v-if="d.msg.content"
+              class="tool-update-answered-text"
+            >{{ d.msg.content }}</div>
+          </div>
         </div>
         <!-- v0.3+ 老路径：polish（流中 placeholder）-->
         <div
@@ -657,26 +1000,29 @@ function onAdoptBlock() {
         :key="p.label"
         type="button"
         class="chip"
-        :title="p.prompt"
-        :disabled="streaming"
+        :title="chipDisabled ? (askFreeTextPending && askFreeTextPending.size > 0 ? '请先在下方输入框回答 LLM 的问题' : '请先处理上面的备选/写入确认（或点 AltCard 旁边的「重新生成」/「放弃备选」）') : p.prompt"
+        :disabled="streaming || chipDisabled"
         @click="onSendPreset(p)"
       >
         {{ p.label }}
       </button>
     </div>
 
+    <!-- v0.4.4.1+ 去掉 askFreeTextBar 进度条（UX 整合到 composer） -->
+
     <div class="composer">
       <textarea
         v-model="input"
         rows="4"
-        placeholder="聊这一步的想法、疑问……（Enter 发送）"
+        :placeholder="composerPlaceholder"
+        :disabled="composerDisabled"
         @keydown.enter.exact.prevent="onEnter"
       />
       <button
         class="send-btn"
         type="button"
-        :disabled="!input.trim() || streaming"
-        title="发送"
+        :disabled="!input.trim() || streaming || composerDisabled"
+        :title="composerTitle"
         @click="onSend"
       >
         <Send :size="14" />
@@ -910,6 +1256,53 @@ function onAdoptBlock() {
   color: var(--text-muted);
   font-style: italic;
 }
+/* v0.4.4.1+ ask_free_text 气泡问题文本（v0.4.4+ 之前 AskFreeTextInput 的 placeholder 显示问题，
+   整合到 composer 后 bubble 自己显示问题文本 —— 玩家必须知道 LLM 问的是啥才能答）*/
+.tool-freetext-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+}
+.tool-freetext-question-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tool-freetext-pending-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+/* v0.4.4+ ask_free_text 已答状态 */
+.tool-freetext-answered {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--success, #22c55e) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success, #22c55e) 30%, transparent);
+  border-radius: 6px;
+}
+.tool-freetext-answered-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--success, #22c55e);
+}
+.tool-freetext-answered-text {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .tool-update {
   display: flex;
   flex-direction: column;
@@ -960,6 +1353,97 @@ function onAdoptBlock() {
 }
 .tool-update-icon {
   font-size: 12px;
+}
+
+/* v0.4.4+ 工具通用 "放弃" 按钮（玩家不要 LLM 给的备选/写入，自己来）
+   - 用 muted 色区别于 accent 的"确认"按钮（让玩家知道这是退路，不是主线） */
+.tool-cancel-btn {
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.15));
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.tool-cancel-btn:hover:not(:disabled) {
+  background: var(--hover, rgba(255, 255, 255, 0.05));
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+.tool-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* v0.4.4+ "重新生成" 按钮（玩家不挑这些备选但还要 LLM 给新的——accent 色 primary 操作）
+   - 跟 tool-cancel-btn 一起放在 .tool-question-actions 行 */
+.tool-regenerate-btn {
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.tool-regenerate-btn:hover:not(:disabled) {
+  background: var(--accent-soft, color-mix(in srgb, var(--accent) 12%, transparent));
+}
+.tool-regenerate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* v0.4.4+ ask_user_question actions 行（重新生成 + 放弃 并列，靠右对齐） */
+.tool-question-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+/* v0.4.4+ ask_user_question 已答态（玩家已采用/放弃/重新生成后显示） */
+.tool-question-answered {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.03));
+  border: 1px solid color-mix(in srgb, var(--success, #22c55e) 30%, transparent);
+  border-radius: 6px;
+  align-self: stretch;
+}
+.tool-question-answered-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--success, #22c55e);
+}
+.tool-question-answered-text {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* v0.4.4+ update 工具 actions 行（放弃 + 确认并列） */
+.tool-update-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .spinning {
@@ -1179,6 +1663,45 @@ function onAdoptBlock() {
 }
 .composer textarea:focus {
   border-color: var(--accent);
+}
+.composer textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.02));
+}
+/* v0.4.4+ ask_free_text 强制回复进度条（嵌在 composer 上方） */
+.ask-freetext-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 6px;
+}
+.ask-freetext-bar-text {
+  font-size: 11px;
+  color: var(--text);
+  font-weight: 500;
+}
+.ask-freetext-bar-btn {
+  padding: 4px 12px;
+  background: var(--accent, #6366f1);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+}
+.ask-freetext-bar-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.ask-freetext-bar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .send-btn {
   display: flex;

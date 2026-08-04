@@ -379,9 +379,12 @@ fn build_openai_responses_body(
     // 4 种 item 类型（不是 Chat Completions 那种 `role: tool` message）：
     //   - user  → `{type: "message", role: "user", content: [{type: "input_text", text}]}`
     //   - assistant text  → `{type: "message", role: "assistant", content: [{type: "output_text", text}]}`
-    //   - assistant tool_call  → `{type: "function_call", call_id, name, arguments}`
+    //   - assistant tool_call  → `{type: "function_call", id, call_id, name, arguments}`
     //     (text 空时只出 function_call item，不出空 message item)
-    //   - tool (tool result)  → `{type: "function_call_output", call_id, output}`
+    //   - tool (tool result)  → `{type: "function_call_output", id, call_id, tool_call_id, output}`
+    //     **v0.4.4+ 三重 id 同值**：id + call_id + tool_call_id。
+    //     OpenAI Responses 2025-09+ 标准用 `call_id`；deepseek openai_responses + 老 Responses
+    //     用 `id` 关联（玩家 2026-08-02 撞坑实证）；`tool_call_id` 是 Chat Completions 风格兼容别名。
     //
     // 之前 v0.4+ 直接套 Chat Completions 格式发 Responses API → deepseek openai_responses
     // 中转报 `unknown variant 'tool', expected one of 'user','assistant','system','developer'`
@@ -461,12 +464,20 @@ fn build_openai_responses_body(
                     items
                 }
                 MessageRole::Tool => {
-                    // 同时写 `call_id` + `tool_call_id` —— 同款兼容策略
+                    // v0.4.4+ 三重 id 兼容：`id` + `call_id` + `tool_call_id` 同值
+                    // - OpenAI Responses 2025-09+ 标准用 `call_id` 字段
+                    // - **deepseek openai_responses 中转 + 早期 Responses 用 `id` 字段关联**
+                    //   （玩家 2026-08-02 撞 "No tool output found for tool call call_00_xxx" 实证：
+                    //    只写 call_id 不够，deepseek 配对要 `id`）
+                    // - `tool_call_id` 字段是 Chat Completions 风格兼容别名
+                    // 之前 v0.4.2+ 这边只写 `call_id` + `tool_call_id`——漏了 `id`，
+                    // 老测试也只 assert `call_id`，没 assert `id`，bug 漏到现在。
                     let mut obj = serde_json::json!({
                         "type": "function_call_output",
                         "output": m.content,
                     });
                     if let Some(ref tcid) = m.tool_call_id {
+                        obj["id"] = serde_json::Value::String(tcid.clone());
                         obj["call_id"] = serde_json::Value::String(tcid.clone());
                         obj["tool_call_id"] = serde_json::Value::String(tcid.clone());
                     }
@@ -689,8 +700,14 @@ mod tests {
         assert_eq!(input.len(), 2, "user message + tool result = 2 items");
         let tool_item = &input[1];
         assert_eq!(tool_item.get("type").and_then(|v| v.as_str()), Some("function_call_output"));
+        // v0.4.4+ 三重 id 兼容：id + call_id + tool_call_id 同值
+        // - OpenAI Responses 2025-09+ 标准用 `call_id`
+        // - deepseek openai_responses 中转 + 早期 Responses 用 `id`（玩家 2026-08-02 撞 "No tool output found" 实证）
+        // - `tool_call_id` 字段是 Chat Completions 风格兼容别名
+        // 之前 v0.4.2+ 这边只 assert call_id + tool_call_id，漏了 id 字段的 assert，
+        // bug 一直漏到现在。
+        assert_eq!(tool_item.get("id").and_then(|v| v.as_str()), Some("fc_abc"));
         assert_eq!(tool_item.get("call_id").and_then(|v| v.as_str()), Some("fc_abc"));
-        // v0.4.2+ 兼容：同时写 tool_call_id 字段（deepseek / 老 Responses 用）
         assert_eq!(tool_item.get("tool_call_id").and_then(|v| v.as_str()), Some("fc_abc"));
         assert_eq!(tool_item.get("output").and_then(|v| v.as_str()), Some("answer"));
         // 严格：不能有 Chat Completions 风格的 role 字段（type 已表达）

@@ -50,28 +50,35 @@ export const SECTION_HINTS: Record<string, string> = {
 
 // === Preset 共享片段 ===
 
-/** v0.3+ preset 都拼这段尾巴 —— v0.4+ 改走 tool calling 后的兜底
- *  - v0.4+ 主路径：LLM 收到 tools schema（`ask_user_question` / `update_doc_item`）→
- *    schema 强制 LLM 调 tool 返结构化数据（AltCard / 确认按钮）
- *  - 本段 prompt 是**兜底**：万一 LLM 不调 tool，prompt 仍约束 content 字段返
- *    "JSON 数组"形态（前端 v0.3+ parseAlternatives 已删，v0.4+ 直接当 markdown bubble
- *    显示，但 LLM 至少返稳定形态而非自由发挥）
- *  - v0.3+ 强化: **第一个字符必须是 `[`, 最后一个必须是 `]`** —— 之前 LLM 会加
- *    "让我分析一下" / 思考过程 / 多版本混排 等, 前端 fallback 按 \n\n 切段造假 cards
- *  - v0.3+ 防御：流式开始那一刻 system prompt 固定，过程中玩家改编辑器 chat 不会重发，
- *    显式告诉 LLM "以最新内容为准"（虽然 system 已注入"当前「X」已有内容"，这是双保险） */
-const JSON_TAIL =
-  '**优先用 ask_user_question tool 提问**：每项 option 是 1 个备选，label 10 字内，preview 是完整内容。\n' +
-  '**如果 LLM 不调 tool，content 字段严格 JSON 数组**（第一个 `[`、最后一个 `]`，3-5 项）。\n' +
-  '**禁止**输出任何额外文字、preamble、思考过程、解释、markdown 代码围栏。\n' +
-  '**禁止**说"好的"、"让我分析一下"、"以下是"、"方案 1"等任何人类语言前缀。\n' +
+// v0.5+ 备选类 chip 通用尾巴（强制调 ask_choose_option tool）
+// - 玩家 2026-08-03 反馈：点「✨ 润色」类 chip 后 LLM 完全沉默 → fallback "(AI 无回复)"
+// - 根因：旧 JSON_TAIL 写"**优先**用 ask_choose_option tool + **如果不调 tool** 就返 JSON 数组"
+//   （软约束 + fallback），跟 SYSTEM_PROMPT "1 round 1 tool call" 硬规则互相打架，
+//   deepseek-v4-flash 在矛盾指令下选沉默（既不调 tool 也不出 text）→ AltCard 一个不渲染
+// - 修：钉死**必须**调 ask_choose_option tool，去掉 markdown / JSON 数组兜底
+//   - 跟 concept store OPTION_TAIL 同款；REFLECT_TAIL（ask_user_question 强制回复）也对称
+const OPTION_TAIL =
+  '**必须**用 ask_choose_option tool 提问（不要返 markdown 文本 / JSON 数组）：\n' +
+  '- 调 1 次 ask_choose_option tool（不要调多次）\n' +
+  '- options 数组给 2-5 个互斥备选（不要重复 / 不要"其他"兜底）\n' +
+  '- 每项：label（≤10 字）+ preview（完整备选内容）+ description（可选，hover tooltip）\n' +
+  '- **不要**在 tool call 前后加 preamble / 客套话 / 解释 / 思考过程\n' +
   '基于当前节最新内容回答。'
 
-/** 反思/追问类 preset 通用尾巴（v0.4+ 走 ask_free_text tool，prompt 兜底走 markdown）
- *  - 玩家主导：只给追问，玩家自己答，绝不替玩家做决定 */
+/** v0.5+ 反思/追问类 preset 通用尾巴（钉死 1 个问题，对齐 concept store + tool name 重命名）
+ *  - 跟 concept REFLECT_TAIL 同款：1 round 1 ask_user_question (旧名 ask_free_text) + question 字段只写 1 个问题
+ *  - v0.4.4+ 之前是"兜底走 markdown"（LLM 自由调 ask_choose_option / 直接 markdown 答），
+ *    UX 不一致：有时强制回复（ask_user_question），有时普通聊天（markdown）
+ *  - 现在钉死走 ask_user_question 工具，UX 跟玩家在 concept REFLECT chip 一致（UX 整合到 composer）
+ *  - 玩家主导：只问问题，玩家自己答，绝不替玩家做决定 */
 const REFLECT_TAIL =
-  '玩家主导：你只给备选/追问，玩家挑+改，绝不替玩家做决定。' +
-  '基于当前节最新内容回答。'
+  '**强制走 ask_user_question tool（1 round 1 次调用，question 字段写 1 个问题）**：\n' +
+  '1. **调 1 次** ask_user_question（不要调多次 / 不要调 ask_choose_option / 不要调 update_doc_item）\n' +
+  '2. **question 字段**里**只写 1 个问题**（不要用 1./2./3. 编号拆多个问题）—— 玩家在下方 composer 直接打字回答，\n' +
+  '   UX 跟普通聊天一致，不要让玩家在多个 input 之间跳来跳去\n' +
+  '3. 玩家**回车提交**后，UI 自动把内容作为 ask_user_question 的 tool_result 喂回 LLM\n' +
+  '4. **不要**给选项 / 不要替玩家做决定 / 不要说"好的""让我分析"等客套话\n' +
+  '5. 基于当前分节最新内容回答。'
 
 /** 润色 / 扩展 类 preset 通用指令（v0.3+ 改成"出 3-5 个不同方向的备选"）
  *  - v0.3 早期是"输出完整润色/扩展后的版本" (一个 bubble), 玩家只能采用或放弃
@@ -104,7 +111,7 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
       label: '💡 给 3-5 个不同基调的版本',
       prompt:
         '200 字以内讲完这个世界。给 3-5 个不同基调的版本（写实冷感 / 史诗浪漫 / 怪奇童话 / 江湖市井 / 后工业废土 之类挑 3-5），每个必须体现概念宪法里的核心体验 —— 玩家会感受到什么，不是百科条目。' +
-        JSON_TAIL,
+        OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -116,13 +123,17 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
     },
     {
       label: '✨ 润色世界观速览',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
+      prompt: POLISH_INSTRUCTION + OPTION_TAIL,
       action: 'polish',
+      // v0.4.4+ 让 LLM 重新调 ask_choose_option 出新备选（玩家可换思路）；不锁 chip
+      allowDuringPending: true,
     },
     {
       label: '🌱 扩展世界观速览',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
+      prompt: EXPAND_INSTRUCTION + OPTION_TAIL,
       action: 'expand',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
   geography: [
@@ -130,7 +141,7 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
       label: '💡 给 3-5 个关键地点设计',
       prompt:
         '每个地点必须带「它给故事提供什么舞台 / 冲突」—— 纯百科式的地理罗列要打回。给 3-5 个关键地点设计。' +
-        JSON_TAIL,
+        OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -140,13 +151,17 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
     },
     {
       label: '✨ 润色地理',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
+      prompt: POLISH_INSTRUCTION + OPTION_TAIL,
       action: 'polish',
+      // v0.4.4+ 让 LLM 重新调 ask_choose_option 出新备选（玩家可换思路）；不锁 chip
+      allowDuringPending: true,
     },
     {
       label: '🌱 扩展地理',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
+      prompt: EXPAND_INSTRUCTION + OPTION_TAIL,
       action: 'expand',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
   history: [
@@ -154,7 +169,7 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
       label: '💡 给 3-5 条关键历史',
       prompt:
         '只写「对现在还有影响」的历史，每条带「它造成了今天的什么」—— 对今天没影响的事件不要写。给 3-5 条。' +
-        JSON_TAIL,
+        OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -164,13 +179,17 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
     },
     {
       label: '✨ 润色历史',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
+      prompt: POLISH_INSTRUCTION + OPTION_TAIL,
       action: 'polish',
+      // v0.4.4+ 让 LLM 重新调 ask_choose_option 出新备选（玩家可换思路）；不锁 chip
+      allowDuringPending: true,
     },
     {
       label: '🌱 扩展历史',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
+      prompt: EXPAND_INSTRUCTION + OPTION_TAIL,
       action: 'expand',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
   'magic-system': [
@@ -178,7 +197,7 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
       label: '💡 给 3-5 套不同机制',
       prompt:
         '给 3-5 套不同机制的魔法体系（符文 / 血脉 / 信仰 / 炼金 / 契约 之类挑 3-5），每套规则必须有代价 / 限制（对齐概念设计支柱）。' +
-        JSON_TAIL,
+        OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -190,19 +209,23 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
     },
     {
       label: '✨ 润色魔法体系',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
+      prompt: POLISH_INSTRUCTION + OPTION_TAIL,
       action: 'polish',
+      // v0.4.4+ 让 LLM 重新调 ask_choose_option 出新备选（玩家可换思路）；不锁 chip
+      allowDuringPending: true,
     },
     {
       label: '🌱 扩展魔法体系',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
+      prompt: EXPAND_INSTRUCTION + OPTION_TAIL,
       action: 'expand',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
   factions: [
     {
       label: '💡 给 3-5 个阵营',
-      prompt: '每个阵营必须带「想要什么 + 跟谁的什么冲突」。给 3-5 个阵营。' + JSON_TAIL,
+      prompt: '每个阵营必须带「想要什么 + 跟谁的什么冲突」。给 3-5 个阵营。' + OPTION_TAIL,
       action: 'generate',
     },
     {
@@ -214,13 +237,17 @@ export const SECTION_PRESETS: Record<string, PresetAction[]> = {
     },
     {
       label: '✨ 润色阵营',
-      prompt: POLISH_INSTRUCTION + JSON_TAIL,
+      prompt: POLISH_INSTRUCTION + OPTION_TAIL,
       action: 'polish',
+      // v0.4.4+ 让 LLM 重新调 ask_choose_option 出新备选（玩家可换思路）；不锁 chip
+      allowDuringPending: true,
     },
     {
       label: '🌱 扩展阵营',
-      prompt: EXPAND_INSTRUCTION + JSON_TAIL,
+      prompt: EXPAND_INSTRUCTION + OPTION_TAIL,
       action: 'expand',
+      // v0.4.4+ 同上
+      allowDuringPending: true,
     },
   ],
 }
@@ -375,6 +402,15 @@ export const useWorldStore = defineStore('world', () => {
   const chatErrorDiags = shallowRef(new Map<string, ChatErrorDiag | null>())
   const chatRunIds = shallowRef(new Map<string, string | null>())
 
+  // v0.4.4+ ask_free_text tool 强制回复协议（"就地输入" 模式，对齐 concept store）
+  // - Map<itemId, Map<toolCallId, { question, answer? }>>
+  // - 详见 concept.ts 同款注释
+  const askFreeTextPending = shallowRef(new Map<string, Map<string, { question: string; answer?: string }>>())
+
+  // v0.4.4+ 全 tool 通用 pending（ask_choose_option / ask_user_question / update_doc_item 都在等玩家反应）
+  // - 详见 concept.ts 同款注释
+  const pendingToolCalls = shallowRef(new Map<string, Set<string>>())
+
   function mapGet<T>(ref: Ref<Map<string, T>>, key: string, fallback: T): T {
     return ref.value.get(key) ?? fallback
   }
@@ -447,6 +483,67 @@ export const useWorldStore = defineStore('world', () => {
     mapSetToolCalls(itemId, tc)
   }
 
+  // === v0.4.4+ ask_free_text pending helpers（对齐 concept store） ===
+  function mapGetAskFreeText(itemId: string): Map<string, { question: string; answer?: string }> {
+    return askFreeTextPending.value.get(itemId) ?? new Map()
+  }
+  function mapSetAskFreeText(
+    itemId: string,
+    pending: Map<string, { question: string; answer?: string }>,
+  ): void {
+    askFreeTextPending.value.set(itemId, pending)
+    triggerRef(askFreeTextPending)
+  }
+  function clearAskFreeTextForItem(itemId: string): void {
+    const next = new Map(askFreeTextPending.value)
+    next.delete(itemId)
+    askFreeTextPending.value = next
+    triggerRef(askFreeTextPending)
+  }
+
+  // === v0.4.4+ 全 tool 通用 pending helpers（对齐 concept store）===
+  function mapGetPendingToolCalls(itemId: string): Set<string> {
+    return new Set(pendingToolCalls.value.get(itemId) ?? [])
+  }
+  function addPendingToolCall(itemId: string, toolCallId: string): void {
+    const cur = pendingToolCalls.value.get(itemId)
+    const next = cur ? new Set(cur) : new Set<string>()
+    next.add(toolCallId)
+    pendingToolCalls.value.set(itemId, next)
+    triggerRef(pendingToolCalls)
+  }
+  function removePendingToolCall(itemId: string, toolCallId: string): void {
+    const cur = pendingToolCalls.value.get(itemId)
+    if (!cur || !cur.has(toolCallId)) return
+    const next = new Set(cur)
+    next.delete(toolCallId)
+    if (next.size === 0) {
+      const outer = new Map(pendingToolCalls.value)
+      outer.delete(itemId)
+      pendingToolCalls.value = outer
+    } else {
+      pendingToolCalls.value.set(itemId, next)
+    }
+    triggerRef(pendingToolCalls)
+  }
+  function clearPendingToolCallsForItem(itemId: string): void {
+    const outer = new Map(pendingToolCalls.value)
+    if (outer.delete(itemId)) {
+      pendingToolCalls.value = outer
+      triggerRef(pendingToolCalls)
+    }
+  }
+
+  function parseAskFreeTextArgs(tc: ToolCallInfo): { question: string } | null {
+    try {
+      const args = JSON.parse(tc.arguments)
+      if (typeof args.question !== 'string') return null
+      return { question: args.question }
+    } catch {
+      return null
+    }
+  }
+
   async function init(): Promise<void> {
     if (listenerInit) return
     listenerInit = true
@@ -490,6 +587,20 @@ export const useWorldStore = defineStore('world', () => {
           console.log(
             `[world.onChatDone] ${id} run=${payload.run_id} OK: contentLen=${accumulated.length}, action=${lastUser?.action ?? 'none'}, toolCalls=${toolCalls?.length ?? 0}`,
           )
+          // v0.4.4.1+ 诊断：打出 LLM 实际回复的 content + tool_calls（玩家截图"AI 回复"空内容 bug 排查用）
+          // - 仅 dev 模式输出（import.meta.env.DEV 是 Vite 原生 dev 标志）
+          // - 生产 release 前可整体删
+          if (import.meta.env.DEV) {
+            console.log(
+              `[world.onChatDone.DIAG] ${id} run=${payload.run_id} CONTENT: ${JSON.stringify(accumulated).slice(0, 200)}`,
+            )
+            if (toolCalls && toolCalls.length > 0) {
+              console.log(
+                `[world.onChatDone.DIAG] ${id} run=${payload.run_id} TOOL_CALLS:`,
+                toolCalls.map((tc) => ({ name: tc.name, arguments: tc.arguments?.slice(0, 300) })),
+              )
+            }
+          }
         } else if (tcs.size > 0) {
           // v0.4+ 纯 tool call reply（无 text content）
           const cur = mapGet(chatHistories, id, [])
@@ -508,7 +619,58 @@ export const useWorldStore = defineStore('world', () => {
             `[world.onChatDone] ${id} run=${payload.run_id} OK: pure tool_call, toolCalls=${toolCalls.length}, names=${toolCalls.map((t) => t.name).join(',')}`,
           )
         } else {
-          console.warn(`[world.onChatDone] ${id} run=${payload.run_id} empty content (LLM returned 0 chars?)`)
+          // v0.4+ 真沉默（accumulated === '' && tcs.size === 0）：LLM 收到 tool_result / user message 后
+          // 既不出 text 也不调 tool —— 协议层异常（对齐 concept store 修法）
+          // 玩家 2026-08-03 截图：deepseek-v4-flash 收到 tool_result 后沉默
+          // 修：写 fallback message 让 UI 不"卡住"
+          // **v0.5+ 文案智能判断**（玩家 2026-08-03 截图反馈"AI 可以拒绝？"）：
+          //   - 上一条 message 是 tool_result → LLM 刚调过 tool + 写完 → 沉默是"已交付"
+          //     → fallback 显示 "✓ 已完成"
+          //   - 上一条 message 是 user 打字 → LLM 主动沉默
+          //     → fallback 显示 "（AI 无回复）"
+          const cur = mapGet(chatHistories, id, [])
+          const lastUser = [...cur].reverse().find((m) => m.role === 'user')
+          const lastMsg = cur.length > 0 ? cur[cur.length - 1] : undefined
+          const fallbackContent =
+            lastMsg && (lastMsg.role === 'tool' || (lastMsg.role === 'user' && lastMsg.tool_call_id))
+              ? '✓ 已完成'
+              : '（AI 无回复）'
+          mapSet(chatHistories, id, [
+            ...cur,
+            { role: 'assistant', content: fallbackContent, action: lastUser?.action },
+          ])
+          console.warn(
+            `[world.onChatDone] ${id} run=${payload.run_id} empty content (LLM 沉默边界 case: 0 chars + 0 tool_call，写 fallback message "${fallbackContent}")`,
+          )
+        }
+        // v0.4.4+ ask_free_text 强制回复：扫描本轮 tool_calls 把 ask_free_text 写入 pending map
+        // （对齐 concept store 行为）
+        if (tcs.size > 0) {
+          const next = new Map<string, { question: string; answer?: string }>()
+          for (const tc of tcs.values()) {
+            // v0.5+ tool name 重命名：旧 ask_free_text → ask_user_question
+            if (tc.name === 'ask_user_question') {
+              const parsed = parseAskFreeTextArgs(tc)
+              if (parsed && tc.id) {
+                next.set(tc.id, { question: parsed.question })
+              }
+            }
+          }
+          if (next.size > 0) {
+            mapSetAskFreeText(id, next)
+          } else {
+            clearAskFreeTextForItem(id)
+          }
+          // v0.4.4+ 全 tool 通用 pending：把本轮 tool_call 加到 pendingToolCalls（**v0.4.4.1+ ask_free_text 除外**）
+          // - 玩家反应时 remove（sendToolResult / sendAllAskFreeTextAnswers 内部）
+          // - 玩家"放弃"时 remove（cancelPendingToolCall 内部）
+          // - **v0.4.4.1+ ask_free_text 跳过**（UX 整合到 composer，composer 解锁让玩家打字）
+          for (const tc of tcs.values()) {
+            // v0.4.4.1+ ask_user_question (旧名 ask_free_text) 跳过 pendingToolCalls（避免锁 composer）
+            if (tc.id && tc.name !== 'ask_user_question') addPendingToolCall(id, tc.id)
+          }
+        } else {
+          clearAskFreeTextForItem(id)
         }
         mapSet(chatTexts, id, '')
         mapSet(chatRunIds, id, null)
@@ -611,7 +773,7 @@ export const useWorldStore = defineStore('world', () => {
       mapSet(chatStreamings, id, true)
       const conn = await resolveLlmConnection()
       // v0.4+ 走 tool calling：runChatRound 内部自动 resolveEnabledTools 注入 tools 字段，
-      // LLM 收到 schema 强制调 ask_user_question / update_doc_item 返结构化数据
+      // LLM 收到 schema 强制调 ask_choose_option / update_doc_item 返结构化数据
       await runChatRound({ id, conn, contextStr })
     } catch (e) {
       mapSet(chatStreamings, id, false)
@@ -646,6 +808,8 @@ export const useWorldStore = defineStore('world', () => {
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
     mapSet(chatErrorDiags, id, null)
+    // v0.4.4+ pendingToolCalls：玩家已反应，从 pending 移除
+    removePendingToolCall(id, toolCallId)
 
     try {
       mapSet(chatStreamings, id, true)
@@ -658,6 +822,140 @@ export const useWorldStore = defineStore('world', () => {
       throw e
     }
   }
+
+  // === v0.4.4.1+ ask_free_text 强制回复协议（UX 整合到 composer，单问题版，对齐 concept store） ===
+  // v0.4.4+ 老的"bubble 内嵌 N 个 input"多问题版已删：setAskFreeTextAnswer / askFreeTextAllAnswered 不再需要
+
+  const askFreeTextPendingForItem = computed(() => mapGetAskFreeText(currentItemKey()))
+
+  /** v0.4.4.1+ playerText 必填（UX 整合到 composer，对齐 concept store）
+   *  - 玩家在 composer 打的字直接作为 ask_free_text 的 answer
+   *  - 1 round 1 ask_free_text → 1 tool_result 配对（协议要求）*/
+  async function sendAllAskFreeTextAnswers(playerText?: string): Promise<void> {
+    const id = currentItemKey()
+    if (mapGet(chatStreamings, id, false)) {
+      console.log(`[world.sendAllAskFreeTextAnswers] ${id} ignored: already streaming`)
+      return
+    }
+    if (!docs.value.find((d) => d.id === currentDocId.value)) {
+      throw new Error('未知分节')
+    }
+    const pending = askFreeTextPendingForItem.value
+    if (pending.size === 0) {
+      console.log(`[world.sendAllAskFreeTextAnswers] ${id} ignored: no pending ask_free_text`)
+      return
+    }
+    // v0.4.4.1+ playerText 优先（composer 整合 UX）—— fallback 到 entry.answer 兼容旧 UI 路径
+    const allAnswered: Array<{ toolCallId: string; content: string }> = []
+    const trimmedText = playerText?.trim()
+    for (const [toolCallId, entry] of pending) {
+      const a = trimmedText || entry.answer?.trim()
+      if (!a) {
+        throw new Error('还有未填的 ask_free_text 答案')
+      }
+      allAnswered.push({ toolCallId, content: a })
+    }
+    // v0.4.4.1+ 玩家在 composer 打字 → 覆盖 pending.answer（保证后续 chatHistories 派生状态一致）
+    if (trimmedText) {
+      const next = new Map(askFreeTextPending.value)
+      for (const toolCallId of pending.keys()) {
+        const cur = next.get(toolCallId)
+        if (cur) next.set(toolCallId, { question: cur.question, answer: trimmedText })
+      }
+      mapSetAskFreeText(id, next)
+    }
+
+    await init()
+    console.log(
+      `[world.sendAllAskFreeTextAnswers] ${id} starting: ${allAnswered.length} tool_results, contentLen=${allAnswered[0]?.content.length ?? 0}`,
+    )
+
+    let cur = mapGet(chatHistories, id, [])
+    for (const { toolCallId, content } of allAnswered) {
+      cur = [
+        ...cur,
+        { role: 'tool' as const, content, tool_call_id: toolCallId },
+      ]
+    }
+    mapSet(chatHistories, id, cur)
+    mapSet(chatErrorKinds, id, null)
+    mapSet(chatErrorRaws, id, null)
+    mapSet(chatErrorDiags, id, null)
+    clearAskFreeTextForItem(id)
+    // v0.4.4+ pendingToolCalls：玩家已提交，从 pending 移除
+    for (const { toolCallId } of allAnswered) {
+      removePendingToolCall(id, toolCallId)
+    }
+
+    try {
+      mapSet(chatStreamings, id, true)
+      const conn = await resolveLlmConnection()
+      await runChatRound({ id, conn })
+    } catch (e) {
+      mapSet(chatStreamings, id, false)
+      console.error('[world.sendAllAskFreeTextAnswers] startChat FAILED:', e)
+      throw e
+    }
+  }
+
+  /** v0.4.4+ 玩家点"放弃备选"按钮时调 —— 1 条 function_call_output 喂回 LLM（对齐 concept store）
+   *  - 非 silently 模式：发 1 条 tool_result（"玩家放弃：<reason>"）→ LLM 知道玩家不要 → 可以出 text 引导
+   *  - 协议层：1 round 1 tool_call → 1 tool_result 配对（不破坏协议）
+   *  - **v0.4.4+ silently 模式**：玩家点"放弃"时**不想让 LLM 立刻再调 tool**（避免 LLM 又出一批新备选）→
+   *    改 chatHistories 写「玩家放弃」语义 + **不调 LLM**。玩家解锁 composer 后自己写
+   *  - **v0.5+ silently 改成主流做法**（玩家 2026-08-03 反馈）：跟 concept store 同款——
+   *    改写 assistant content + **保留** tool_calls 字段（LLM 看到上下文）+ **不**追加 tool message
+   *    to chatHistories（避免 UI 重复显示"✓ 已答"+ 独立 tool message bubble，截图反馈）
+   *    + runChatRound 拼 messages 时**临时**为 silently 改写的 assistant message 补 1 条 tool message
+   *    给 LLM（OpenAI 协议层 tool_calls + tool_result 配对）。具体见
+   *    `buildMessagesWithSilentAbandonToolResult` 函数（v0.5+ 新增）
+   *  - 效果：协议层 OK（LLM 看到 tool_calls + tool_result 配对，deepseek 不会报 "No tool output found"）+
+   *    LLM 看到完整 tool_call 上下文 + 玩家放弃信号 → 玩家打字时 LLM 不会脑补"那你就直接写吧"
+   *  - 永久性：chatHistories 存盘后 replay 仍能 detect（"玩家放弃"改写 + tool_calls 保留 2 个条件即可）*/
+  async function cancelPendingToolCall(
+    toolCallId: string,
+    reason?: string,
+    options?: { silently?: boolean },
+  ): Promise<void> {
+    const id = currentItemKey()
+    const finalReason = reason ?? '玩家放弃这个备选'
+    const silently = options?.silently ?? false
+    console.log(
+      `[world.cancelPendingToolCall] ${id} starting: tool_call_id=${toolCallId}, reason=${finalReason}, silently=${silently}`,
+    )
+    if (silently) {
+      // v0.5+ 主流做法（对齐 concept store，UI 不重复版）：
+      // 1) 改写 assistant content（玩家放弃语义）
+      // 2) 保留 tool_calls 字段（UI 走"✓ 已答"tool-question bubble，LLM 看到 tool_call 上下文）
+      // 3) 不追加 tool message to chatHistories（避免 UI 重复）
+      // 4) runChatRound 拼 messages 时**临时**为这种 assistant message 补 tool_result
+      //    （从 chatHistories 检测 content === SILENTLY_ABANDONED_CONTENT）
+      const histories = mapGet(chatHistories, id, [])
+      const idx = histories.findIndex(
+        (m) => m.role === 'assistant' && m.tool_calls?.some((tc) => tc.id === toolCallId),
+      )
+      if (idx >= 0) {
+        const next = [...histories]
+        const orig = next[idx]!
+        const abandonMsg = '玩家放弃这批备选，等玩家打字。'
+        // 改写 content + 保留 tool_calls 字段
+        next[idx] = { ...orig, content: abandonMsg }
+        mapSet(chatHistories, id, next)
+        console.log(
+          `[world.cancelPendingToolCall] ${id} silently rewrote assistant message idx=${idx} (preserved tool_calls, content='${abandonMsg}'; tool result 临时拼给 LLM 不存)`,
+        )
+      } else {
+        console.warn(
+          `[world.cancelPendingToolCall] ${id} silently: no assistant message found with tool_call_id=${toolCallId}`,
+        )
+      }
+      removePendingToolCall(id, toolCallId)
+      return
+    }
+    await sendToolResult(toolCallId, finalReason)
+  }
+
+  const pendingToolCallsForItem = computed(() => mapGetPendingToolCalls(currentItemKey()))
 
   /** 内部：发一轮 LLM（user 消息流 / tool result 流 共用）—— 对称 concept store */
   async function runChatRound(opts: {
@@ -678,19 +976,67 @@ export const useWorldStore = defineStore('world', () => {
     const runId = await rpcStartChat(
       [
         { role: 'system', content: systemContent },
-        ...mapGet(chatHistories, id, [])
-          .filter((m) => m.role !== 'system')
-          .map((m) => ({
-            role: m.role,
-            content: m.content,
-            partial: m.partial,
-            tool_calls: m.tool_calls,
-            tool_call_id: m.tool_call_id,
-          })),
+        // **v0.5+ silently 临时补 tool message**：跟 concept store 同款——遇到 silently 改写的
+        //   assistant message 临时补 tool_result 给 LLM（OpenAI 协议层配对）
+        ...buildMessagesWithSilentAbandonToolResult(id),
       ],
       { model: conn.model, effort: null, tools },
     )
     mapSet(chatRunIds, id, runId)
+  }
+
+  /** v0.5+ silently 改写常量（对齐 concept store）
+   *  - runChatRound 拼 messages 时扫 chatHistories，匹配这个 content 的 assistant message → 临时补 tool message
+   *    给 LLM（OpenAI 协议层 tool_calls + tool_result 配对），**不**改 chatHistories
+   *  - 不用维护 separate state（per item Set）——直接 string 匹配（content 固定就是这串）
+   *  - 永久性：chatHistories 存盘后 replay 仍能 detect
+   *  - 跟 concept store 完全一致——同一常量 */
+  const SILENTLY_ABANDONED_CONTENT = '玩家放弃这批备选，等玩家打字。'
+
+  /** v0.5+ 拼 messages 给 LLM 时，临时为 silently 放弃的 assistant message 补 tool_result
+   *  - 跟 concept store 同款：见 `concept.ts:buildMessagesWithSilentAbandonToolResult` 注释
+   *  - 不用维护 separate state——直接 string 匹配 */
+  function buildMessagesWithSilentAbandonToolResult(itemId: string): Array<{
+    role: ChatMessage['role']
+    content: string
+    partial?: boolean
+    tool_calls?: ToolCallInfo[]
+    tool_call_id?: string
+  }> {
+    const result: Array<{
+      role: ChatMessage['role']
+      content: string
+      partial?: boolean
+      tool_calls?: ToolCallInfo[]
+      tool_call_id?: string
+    }> = []
+    const histories = mapGet(chatHistories, itemId, [])
+    for (const m of histories) {
+      if (m.role === 'system') continue
+      result.push({
+        role: m.role,
+        content: m.content,
+        partial: m.partial,
+        tool_calls: m.tool_calls,
+        tool_call_id: m.tool_call_id,
+      })
+      // silently 改写的 assistant message：临时补 tool message（不存 chatHistories）
+      if (
+        m.role === 'assistant' &&
+        m.content === SILENTLY_ABANDONED_CONTENT &&
+        m.tool_calls &&
+        m.tool_calls.length > 0
+      ) {
+        for (const tc of m.tool_calls) {
+          result.push({
+            role: 'tool',
+            content: SILENTLY_ABANDONED_CONTENT,
+            tool_call_id: tc.id,
+          })
+        }
+      }
+    }
+    return result
   }
 
   function resetStepChat(): void {
@@ -703,6 +1049,10 @@ export const useWorldStore = defineStore('world', () => {
     mapSet(chatErrorKinds, id, null)
     mapSet(chatErrorRaws, id, null)
     mapSet(chatErrorDiags, id, null)
+    // v0.4.4+ ask_free_text pending 也要清
+    clearAskFreeTextForItem(id)
+    // v0.4.4+ pendingToolCalls 也要清
+    clearPendingToolCallsForItem(id)
     const project = useProjectStore()
     if (project.current) {
       void deleteChat(project.current.folder, id).catch((e) =>
@@ -720,6 +1070,12 @@ export const useWorldStore = defineStore('world', () => {
     chatErrorKinds.value = new Map()
     chatErrorRaws.value = new Map()
     chatErrorDiags.value = new Map()
+    // v0.4.4+ ask_free_text pending 也要清
+    askFreeTextPending.value = new Map()
+    triggerRef(askFreeTextPending)
+    // v0.4.4+ pendingToolCalls 也要清
+    pendingToolCalls.value = new Map()
+    triggerRef(pendingToolCalls)
     const project = useProjectStore()
     if (project.current) {
       void deleteAllChats(project.current.folder).catch((e) =>
@@ -787,6 +1143,12 @@ export const useWorldStore = defineStore('world', () => {
     /** v0.4+ tool result 喂回 LLM（多轮 tool calling） */
     sendToolResult,
     reset: resetStepChat,
+    // === v0.4.4.1+ ask_free_text 强制回复（UX 整合到 composer，1 round 1 ask_free_text 单问题版，对齐 concept store） ===
+    askFreeTextPending: askFreeTextPendingForItem,
+    sendAllAskFreeTextAnswers,
+    // === v0.4.4+ 全 tool 通用 pending（对齐 concept store） ===
+    pendingToolCalls: pendingToolCallsForItem,
+    cancelPendingToolCall,
   })
 
   return {
